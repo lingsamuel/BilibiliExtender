@@ -16,6 +16,7 @@
         "https://space.bilibili.com/*"
       ],
       "js": ["content.js"],
+      "css": ["assets/style.css"],
       "run_at": "document_idle"
     }
   ],

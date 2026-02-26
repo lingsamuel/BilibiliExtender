@@ -2,29 +2,52 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
-export default defineConfig({
+const sharedResolve = {
+  alias: {
+    '@': resolve(__dirname, 'src')
+  }
+};
+
+const target = process.env.BUILD_TARGET;
+
+// Content Script：不支持 ESM，必须构建为 IIFE 并内联所有依赖
+const contentConfig = defineConfig({
   plugins: [vue()],
-  resolve: {
-    alias: {
-      '@': resolve(__dirname, 'src')
+  resolve: sharedResolve,
+  build: {
+    outDir: 'dist',
+    emptyOutDir: false,
+    cssCodeSplit: false,
+    rollupOptions: {
+      input: {
+        content: resolve(__dirname, 'src/content/main.ts')
+      },
+      output: {
+        format: 'iife',
+        entryFileNames: 'content.js',
+        inlineDynamicImports: true,
+        assetFileNames: 'assets/[name][extname]'
+      }
     }
-  },
+  }
+});
+
+// Background + Options：支持 ESM 的环境
+const mainConfig = defineConfig({
+  plugins: [vue()],
+  resolve: sharedResolve,
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       input: {
         options: resolve(__dirname, 'options.html'),
-        content: resolve(__dirname, 'src/content/main.ts'),
         background: resolve(__dirname, 'src/background/index.ts')
       },
       output: {
         entryFileNames: (chunkInfo) => {
           if (chunkInfo.name === 'background') {
             return 'background.js';
-          }
-          if (chunkInfo.name === 'content') {
-            return 'content.js';
           }
           return 'assets/[name].js';
         },
@@ -34,3 +57,5 @@ export default defineConfig({
     }
   }
 });
+
+export default target === 'content' ? contentConfig : mainConfig;
