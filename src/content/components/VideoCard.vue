@@ -5,6 +5,7 @@
     target="_blank"
     rel="noreferrer"
     @click="onCardClick"
+    @auxclick.middle="onCardClick"
   >
     <div class="bbe-card-cover">
       <img :src="video.cover" :alt="video.title" />
