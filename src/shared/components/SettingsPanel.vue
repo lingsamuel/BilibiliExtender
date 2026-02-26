@@ -100,6 +100,15 @@
         <input v-model="settings.useStorageSync" type="checkbox" /> 启用
       </label>
     </div>
+    <div class="bbe-setting-row">
+      <div>
+        调试模式
+        <div class="bbe-setting-hint">开启后侧边栏显示调试入口，可查看调度器状态</div>
+      </div>
+      <label>
+        <input v-model="settings.debugMode" type="checkbox" /> 启用
+      </label>
+    </div>
     <div class="bbe-row" style="margin-top: 14px">
       <button class="bbe-btn primary" @click="saveSettingsOnly">保存设置</button>
     </div>
@@ -121,14 +130,15 @@ const emit = defineEmits<{
 const folders = ref<FavoriteFolder[]>([]);
 const groups = ref<GroupConfig[]>([]);
 // 保存各分组的原始快照，用于脏检查
-const groupSnapshots = ref<Record<string, { alias?: string; enabled: boolean }>({});
+const groupSnapshots = ref<Record<string, { alias?: string; enabled: boolean }>>({})
 const settings = ref<ExtensionSettings>({
   refreshIntervalMinutes: 30,
   backgroundRefreshIntervalMinutes: 15,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
-  useStorageSync: true
+  useStorageSync: true,
+  debugMode: false
 });
 
 const selectedMediaId = ref('');

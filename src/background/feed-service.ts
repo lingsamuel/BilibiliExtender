@@ -1,5 +1,5 @@
 import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
-import { getAllFavVideos, getUploaderVideos, getUserFace, type FavMediaItem } from '@/shared/api/bilibili';
+import { getUploaderVideos, getUserFace, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
   AuthorFeed,
   AuthorReadMark,
@@ -42,7 +42,6 @@ function mergeVideos(existing: VideoItem[], incoming: VideoItem[]): VideoItem[] 
   const map = new Map<string, VideoItem>();
   existing.forEach((video) => map.set(video.bvid, video));
   incoming.forEach((video) => map.set(video.bvid, video));
-
   return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
 }
 
@@ -65,6 +64,7 @@ function isFaceExpired(cache: AuthorVideoCache | undefined): boolean {
 /**
  * 刷新单个作者的视频缓存：重置分页游标，拉取首页并与已有数据合并。
  * 同时在头像缓存过期时拉取头像。
+ * 仅由调度器调用，不应被前台路径直接使用。
  */
 export async function refreshAuthorCache(
   mid: number,
@@ -104,56 +104,28 @@ export async function refreshAuthorCache(
 }
 
 /**
- * 确保作者缓存可用：未过期直接返回，过期则刷新。
+ * 从收藏夹拉取视频列表并提取作者列表，同时更新 feedCacheMap。
+ * 返回作者列表供调度器生成任务。
+ * 注意：此函数会发起 getAllFavVideos API 请求，仅由调度器/后台初始化调用。
  */
-async function ensureAuthorCache(
-  mid: number,
-  name: string,
-  authorCacheMap: AuthorCacheMap,
-  settings: ExtensionSettings,
-  forceRefresh: boolean
-): Promise<AuthorVideoCache> {
-  const existing = authorCacheMap[mid];
-  if (!forceRefresh && existing && !isAuthorCacheExpired(existing, settings)) {
-    // 视频缓存未过期，但头像可能缺失（旧缓存）或已过期，补拉头像
-    if (isFaceExpired(existing)) {
-      try {
-        existing.face = await getUserFace(mid);
-        existing.faceFetchedAt = Date.now();
-      } catch {
-        // 头像拉取失败不影响主流程
-      }
-    }
-    return existing;
-  }
-  return refreshAuthorCache(mid, name, authorCacheMap);
+export async function buildAuthorListFromFav(
+  group: GroupConfig,
+  feedCacheMap: FeedCacheMap
+): Promise<Array<{ mid: number; name: string }>> {
+  const favVideos = await getAllFavVideos(group.mediaId);
+  const authors = buildAuthorList(favVideos);
+  const authorMids = authors.map((a) => a.mid);
+
+  feedCacheMap[group.groupId] = {
+    groupId: group.groupId,
+    authorMids,
+    updatedAt: Date.now()
+  };
+
+  return authors;
 }
 
-/**
- * 为作者追加拉取更多视频（翻页），用于混合模式加载更多和作者模式补全。
- */
-async function fetchMoreForAuthor(
-  mid: number,
-  authorCacheMap: AuthorCacheMap,
-  pageSize: number
-): Promise<boolean> {
-  const cache = authorCacheMap[mid];
-  if (!cache || !cache.hasMore) {
-    return false;
-  }
-
-  const { videos, hasMore } = await getUploaderVideos(mid, cache.nextPn, pageSize);
-  cache.nextPn += 1;
-  cache.hasMore = hasMore;
-
-  if (videos.length > 0) {
-    cache.videos = mergeVideos(cache.videos, videos);
-    return true;
-  }
-  return false;
-}
-
-// ─── 分组级操作 ───
+// ─── 分组级纯函数 ───
 
 function ensureRuntimeState(
   runtimeMap: RuntimeMap,
@@ -197,9 +169,6 @@ function aggregateMixedVideos(authorMids: number[], authorCacheMap: AuthorCacheM
   return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
 }
 
-/**
- * 获取分组内所有作者的名称映射。
- */
 function getAuthorNames(authorMids: number[], authorCacheMap: AuthorCacheMap): Map<number, string> {
   const names = new Map<number, string>();
   for (const mid of authorMids) {
@@ -211,140 +180,8 @@ function getAuthorNames(authorMids: number[], authorCacheMap: AuthorCacheMap): M
   return names;
 }
 
-/**
- * 全量刷新分组缓存：从收藏夹重建作者列表，刷新所有作者的视频缓存。
- */
-export async function refreshGroupCache(
-  group: GroupConfig,
-  settings: ExtensionSettings,
-  runtimeMap: RuntimeMap,
-  feedCacheMap: FeedCacheMap,
-  authorCacheMap: AuthorCacheMap
-): Promise<void> {
-  const favVideos = await getAllFavVideos(group.mediaId);
-  const authors = buildAuthorList(favVideos);
-  const authorMids = authors.map((a) => a.mid);
-
-  feedCacheMap[group.groupId] = {
-    groupId: group.groupId,
-    authorMids,
-    updatedAt: Date.now()
-  };
-
-  for (const author of authors) {
-    await ensureAuthorCache(author.mid, author.name, authorCacheMap, settings, true);
-  }
-
-  const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
-  runtime.mixedTargetCount = settings.timelineMixedMaxCount;
-  runtime.lastRefreshAt = Date.now();
-
-  const mixedVideos = aggregateMixedVideos(authorMids, authorCacheMap);
-  runtime.unreadCount = calcUnreadCount(mixedVideos, runtime.lastReadAt);
-}
-
-/**
- * 确保分组缓存可用：检查分组内作者是否有过期的，有则刷新。
- */
-export async function ensureGroupCache(
-  group: GroupConfig,
-  settings: ExtensionSettings,
-  runtimeMap: RuntimeMap,
-  feedCacheMap: FeedCacheMap,
-  authorCacheMap: AuthorCacheMap,
-  forceRefresh: boolean
-): Promise<void> {
-  const feedCache = feedCacheMap[group.groupId];
-
-  if (forceRefresh || !feedCache) {
-    await refreshGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
-    return;
-  }
-
-  for (const mid of feedCache.authorMids) {
-    const existing = authorCacheMap[mid];
-    const name = existing?.name ?? String(mid);
-    await ensureAuthorCache(mid, name, authorCacheMap, settings, false);
-  }
-
-  const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
-  // 走缓存路径时不更新 lastRefreshAt，保留上次真正刷新的时间
-  if (!runtime.lastRefreshAt) {
-    runtime.lastRefreshAt = feedCache.updatedAt;
-  }
-}
-
-/**
- * 混合模式加载更多：逐作者翻页追加，直到达到目标数量或无更多数据。
- */
-export async function loadMoreForMixed(
-  group: GroupConfig,
-  settings: ExtensionSettings,
-  runtimeMap: RuntimeMap,
-  feedCacheMap: FeedCacheMap,
-  authorCacheMap: AuthorCacheMap,
-  increaseTarget: boolean
-): Promise<void> {
-  const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
-  await ensureGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap, false);
-
-  if (increaseTarget) {
-    runtime.mixedTargetCount += MIXED_LOAD_INCREMENT;
-  }
-
-  const feedCache = feedCacheMap[group.groupId];
-  if (!feedCache) return;
-
-  let mixedVideos = aggregateMixedVideos(feedCache.authorMids, authorCacheMap);
-  const hasMoreAuthors = () => feedCache.authorMids.some((mid) => authorCacheMap[mid]?.hasMore);
-
-  while (mixedVideos.length < runtime.mixedTargetCount && hasMoreAuthors()) {
-    let appended = false;
-    for (const mid of feedCache.authorMids) {
-      const didAppend = await fetchMoreForAuthor(mid, authorCacheMap, 20);
-      if (didAppend) appended = true;
-    }
-    if (!appended) break;
-    mixedVideos = aggregateMixedVideos(feedCache.authorMids, authorCacheMap);
-  }
-
-  runtime.unreadCount = calcUnreadCount(mixedVideos, runtime.lastReadAt);
-}
-
-/**
- * 作者模式：确保每位作者至少有 20 条视频数据用于已阅过滤展示。
- */
-export async function ensureAuthorModePrepared(
-  group: GroupConfig,
-  settings: ExtensionSettings,
-  runtimeMap: RuntimeMap,
-  feedCacheMap: FeedCacheMap,
-  authorCacheMap: AuthorCacheMap
-): Promise<void> {
-  await ensureGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap, false);
-
-  const feedCache = feedCacheMap[group.groupId];
-  if (!feedCache) return;
-
-  const limit = 20;
-  for (const mid of feedCache.authorMids) {
-    while ((authorCacheMap[mid]?.videos.length ?? 0) < limit) {
-      if (!authorCacheMap[mid]?.hasMore) break;
-      const didAppend = await fetchMoreForAuthor(mid, authorCacheMap, Math.max(20, limit));
-      if (!didAppend) break;
-    }
-  }
-
-  const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
-  const mixedVideos = aggregateMixedVideos(feedCache.authorMids, authorCacheMap);
-  runtime.unreadCount = calcUnreadCount(mixedVideos, runtime.lastReadAt);
-}
-
 // ─── 视图组装 ───
 
-/**
- * 收集当前分组内所有作者的已阅时间点并集（去重、倒序）。
- */
 function collectReadMarkTimestamps(authorMids: number[], readMarks: ReadMarkMap): number[] {
   const tsSet = new Set<number>();
 
@@ -399,6 +236,10 @@ function filterVideosByReadMark(
   return videos;
 }
 
+/**
+ * 纯缓存组装：从已有缓存数据构建前台展示所需的 GroupFeedResult。
+ * 不发起任何 API 请求。
+ */
 export function toFeedResult(
   group: GroupConfig,
   mode: ViewMode,
@@ -533,19 +374,16 @@ export function isMixedMode(mode: ViewMode): boolean {
 }
 
 /**
- * 判断分组内是否有作者缓存已过期，用于自动刷新判定。
+ * 增加混合模式的目标数量（加载更多）。
+ * 纯状态操作，不发起 API 请求。
  */
-export function isStaleForAutoRefresh(
+export function increaseMixedTarget(
   groupId: string,
   settings: ExtensionSettings,
-  feedCacheMap: FeedCacheMap,
-  authorCacheMap: AuthorCacheMap
-): boolean {
-  const feedCache = feedCacheMap[groupId];
-  if (!feedCache || !feedCache.authorMids) return true;
-
-  return feedCache.authorMids.some((mid) => isAuthorCacheExpired(authorCacheMap[mid], settings));
+  runtimeMap: RuntimeMap
+): void {
+  const runtime = ensureRuntimeState(runtimeMap, groupId, settings);
+  runtime.mixedTargetCount += MIXED_LOAD_INCREMENT;
 }
 
 export { isAuthorCacheExpired };
-

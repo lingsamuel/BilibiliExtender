@@ -22,18 +22,14 @@ import {
 } from '@/shared/storage/repository';
 import type { GroupConfig } from '@/shared/types';
 import {
-  ensureAuthorModePrepared,
-  ensureGroupCache,
-  isMixedMode,
-  isStaleForAutoRefresh,
-  loadMoreForMixed,
+  buildAuthorListFromFav,
+  increaseMixedTarget,
   makeSummary,
   markGroupRead,
-  refreshGroupCache,
   removeGroupState,
   toFeedResult
 } from '@/background/feed-service';
-import { setupAlarm } from '@/background/scheduler';
+import { enqueuePriority, getStatus, setupAlarm, type SchedulerTask } from '@/background/scheduler';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -149,7 +145,7 @@ async function handleSaveSettings(
 }
 
 async function handleGetGroupSummary(
-  request: Extract<MessageRequest, { type: 'GET_GROUP_SUMMARY' }>
+  _request: Extract<MessageRequest, { type: 'GET_GROUP_SUMMARY' }>
 ): Promise<ResponseMap['GET_GROUP_SUMMARY']> {
   const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, lastGroupId] = await Promise.all([
     loadGroups(),
@@ -160,25 +156,10 @@ async function handleGetGroupSummary(
     loadLastGroupId()
   ]);
 
-  for (const group of groups) {
-    if (!group.enabled) continue;
-
-    if (request.payload?.allowRefresh && isStaleForAutoRefresh(group.groupId, settings, feedCacheMap, authorCacheMap)) {
-      try {
-        await refreshGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
-      } catch (error) {
-        console.warn('[BBE] auto refresh summary failed:', group.groupId, error);
-      }
-    }
-  }
-
+  // 纯缓存读取，不再触发 API 请求；刷新由调度器 alarm 驱动
   const summaries = makeSummary(groups, settings, runtimeMap, feedCacheMap, authorCacheMap).filter((item) => item.enabled);
 
-  await Promise.all([
-    saveRuntimeStateMap(runtimeMap),
-    saveFeedCacheMap(feedCacheMap),
-    saveAuthorVideoCacheMap(authorCacheMap)
-  ]);
+  await saveRuntimeStateMap(runtimeMap);
 
   return {
     summaries,
@@ -188,6 +169,11 @@ async function handleGetGroupSummary(
   };
 }
 
+/**
+ * 纯缓存读取 + 提交调度任务。
+ * 无缓存时返回 cacheStatus: 'generating'，同时向调度器提交优先任务。
+ * 有缓存时直接组装返回 cacheStatus: 'ready'。
+ */
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
 ): Promise<ResponseMap['GET_GROUP_FEED']> {
@@ -205,23 +191,57 @@ async function handleGetGroupFeed(
     throw new Error('分组不存在或已禁用');
   }
 
-  if (request.payload.forceRefresh) {
-    await refreshGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
-  } else {
-    await ensureGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap, false);
+  const feedCache = feedCacheMap[group.groupId];
+
+  // 无缓存：首次访问，需要先拉取收藏夹建立作者列表
+  if (!feedCache) {
+    // 异步拉取收藏夹并提交调度任务，不阻塞响应
+    buildAuthorListFromFav(group, feedCacheMap)
+      .then(async (authors) => {
+        await saveFeedCacheMap(feedCacheMap);
+        const tasks: SchedulerTask[] = authors.map((a) => ({ mid: a.mid, name: a.name, groupId: group.groupId }));
+        enqueuePriority(tasks);
+      })
+      .catch((error) => {
+        console.warn('[BBE] 首次拉取收藏夹失败:', error);
+      });
+
+    return {
+      groupId: group.groupId,
+      mode: request.payload.mode,
+      mixedVideos: [],
+      videosByAuthor: [],
+      unreadCount: 0,
+      hasMoreForMixed: false,
+      readMarkTimestamps: [],
+      graceReadMarkTs: 0,
+      cacheStatus: 'generating'
+    };
   }
 
-  if (isMixedMode(request.payload.mode)) {
-    await loadMoreForMixed(group, settings, runtimeMap, feedCacheMap, authorCacheMap, Boolean(request.payload.loadMore));
-  } else {
-    await ensureAuthorModePrepared(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
+  // 有缓存但作者视频数据为空（收藏夹已拉取但作者视频尚未刷新完成）
+  const hasAnyAuthorData = feedCache.authorMids.some((mid) => authorCacheMap[mid]?.videos?.length > 0);
+  if (!hasAnyAuthorData) {
+    return {
+      groupId: group.groupId,
+      mode: request.payload.mode,
+      mixedVideos: [],
+      videosByAuthor: [],
+      unreadCount: 0,
+      hasMoreForMixed: false,
+      readMarkTimestamps: [],
+      graceReadMarkTs: 0,
+      cacheStatus: 'generating'
+    };
   }
 
-  await Promise.all([
-    saveFeedCacheMap(feedCacheMap),
-    saveAuthorVideoCacheMap(authorCacheMap),
-    saveLastGroupId(group.groupId)
-  ]);
+  // 加载更多：仅增加目标数量，不发起 API 请求
+  if (request.payload.loadMore) {
+    increaseMixedTarget(group.groupId, settings, runtimeMap);
+    await saveRuntimeStateMap(runtimeMap);
+  }
+
+  await saveLastGroupId(group.groupId);
 
   const readMarks = await loadAuthorReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
@@ -230,7 +250,7 @@ async function handleGetGroupFeed(
 
   await saveRuntimeStateMap(runtimeMap);
 
-  return result;
+  return { ...result, cacheStatus: 'ready' };
 }
 
 async function handleMarkGroupRead(
@@ -305,6 +325,53 @@ async function handleGetWatchHistory(): Promise<ResponseMap['GET_WATCH_HISTORY']
   return result;
 }
 
+/**
+ * 手动刷新：收集分组所有作者作为优先任务插入调度器队列。
+ * 立即返回，不等待刷新完成；前台通过轮询 GET_GROUP_FEED 获取最新数据。
+ */
+async function handleManualRefresh(
+  request: Extract<MessageRequest, { type: 'MANUAL_REFRESH' }>
+): Promise<ResponseMap['MANUAL_REFRESH']> {
+  const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap(),
+    loadAuthorVideoCacheMap()
+  ]);
+
+  const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
+  if (!group) {
+    throw new Error('分组不存在或已禁用');
+  }
+
+  const feedCache = feedCacheMap[group.groupId];
+  if (!feedCache) {
+    // 无缓存，需要先拉取收藏夹
+    buildAuthorListFromFav(group, feedCacheMap)
+      .then(async (authors) => {
+        await saveFeedCacheMap(feedCacheMap);
+        const tasks: SchedulerTask[] = authors.map((a) => ({ mid: a.mid, name: a.name, groupId: group.groupId }));
+        enqueuePriority(tasks);
+      })
+      .catch((error) => {
+        console.warn('[BBE] 手动刷新拉取收藏夹失败:', error);
+      });
+  } else {
+    // 有缓存，直接将所有作者作为优先任务
+    const tasks: SchedulerTask[] = feedCache.authorMids.map((mid) => ({
+      mid,
+      name: authorCacheMap[mid]?.name ?? String(mid),
+      groupId: group.groupId
+    }));
+    enqueuePriority(tasks);
+  }
+
+  return { accepted: true };
+}
+
+async function handleGetSchedulerStatus(): Promise<ResponseMap['GET_SCHEDULER_STATUS']> {
+  return getStatus();
+}
+
 async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
   switch (request.type) {
     case 'PING':
@@ -333,6 +400,10 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleGetClickedVideos(request));
     case 'GET_WATCH_HISTORY':
       return ok(await handleGetWatchHistory());
+    case 'MANUAL_REFRESH':
+      return ok(await handleManualRefresh(request));
+    case 'GET_SCHEDULER_STATUS':
+      return ok(await handleGetSchedulerStatus());
     default:
       return fail('不支持的消息类型');
   }

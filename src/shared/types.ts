@@ -17,6 +17,7 @@ export interface ExtensionSettings {
   extraOlderVideoCount: number;
   defaultReadMarkDays: number;
   useStorageSync: boolean;
+  debugMode: boolean;
 }
 
 export interface GroupRuntimeState {

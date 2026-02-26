@@ -18,7 +18,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
-  useStorageSync: true
+  useStorageSync: true,
+  debugMode: false
 };
 
 export const MIXED_LOAD_INCREMENT = 20;
@@ -32,6 +33,11 @@ export const BG_REFRESH_BATCH_SIZE = 10;
 export const BG_REFRESH_INTRA_DELAY_MS = 1000;
 // 批次间延迟下限（ms）
 export const BG_REFRESH_MIN_BATCH_DELAY_MS = 30_000;
+
+// 前台轮询间隔（ms）
+export const POLL_INTERVAL_MS = 3000;
+export const POLL_MAX_GENERATING = 10;
+export const POLL_MAX_REFRESHING = 20;
 
 export const ALARM_NAME = 'bbe:background-refresh';
 
