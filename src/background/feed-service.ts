@@ -1,5 +1,5 @@
 import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
-import { getAllFavVideos, getUploaderVideos, type FavMediaItem } from '@/shared/api/bilibili';
+import { getAllFavVideos, getUploaderVideos, getUserFace, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
   AuthorFeed,
   AuthorReadMark,
@@ -55,8 +55,16 @@ function isAuthorCacheExpired(cache: AuthorVideoCache | undefined, settings: Ext
   return Date.now() - cache.lastFetchedAt > settings.refreshIntervalMinutes * 60 * 1000;
 }
 
+const FACE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isFaceExpired(cache: AuthorVideoCache | undefined): boolean {
+  if (!cache?.face || !cache.faceFetchedAt) return true;
+  return Date.now() - cache.faceFetchedAt > FACE_CACHE_TTL_MS;
+}
+
 /**
  * 刷新单个作者的视频缓存：重置分页游标，拉取首页并与已有数据合并。
+ * 同时在头像缓存过期时拉取头像。
  */
 export async function refreshAuthorCache(
   mid: number,
@@ -68,9 +76,23 @@ export async function refreshAuthorCache(
 
   const merged = existing ? mergeVideos(existing.videos, videos) : videos;
 
+  let face = existing?.face;
+  let faceFetchedAt = existing?.faceFetchedAt;
+
+  if (isFaceExpired(existing)) {
+    try {
+      face = await getUserFace(mid);
+      faceFetchedAt = Date.now();
+    } catch {
+      // 头像拉取失败不影响主流程
+    }
+  }
+
   const cache: AuthorVideoCache = {
     mid,
     name,
+    face,
+    faceFetchedAt,
     videos: merged,
     nextPn: 2,
     hasMore,
@@ -93,6 +115,15 @@ async function ensureAuthorCache(
 ): Promise<AuthorVideoCache> {
   const existing = authorCacheMap[mid];
   if (!forceRefresh && existing && !isAuthorCacheExpired(existing, settings)) {
+    // 视频缓存未过期，但头像可能缺失（旧缓存）或已过期，补拉头像
+    if (isFaceExpired(existing)) {
+      try {
+        existing.face = await getUserFace(mid);
+        existing.faceFetchedAt = Date.now();
+      } catch {
+        // 头像拉取失败不影响主流程
+      }
+    }
     return existing;
   }
   return refreshAuthorCache(mid, name, authorCacheMap);
@@ -399,6 +430,7 @@ export function toFeedResult(
   const videosByAuthor: AuthorFeed[] = authorMids.map((mid) => ({
     authorMid: mid,
     authorName: authorNames.get(mid) ?? String(mid),
+    authorFace: authorCacheMap[mid]?.face,
     videos: filterVideosByReadMark(
       authorCacheMap[mid]?.videos ?? [],
       mid,
@@ -409,16 +441,25 @@ export function toFeedResult(
     )
   }));
 
+  // 为混合视频注入作者头像
+  const faceMap = new Map<number, string>();
+  for (const mid of authorMids) {
+    const face = authorCacheMap[mid]?.face;
+    if (face) faceMap.set(mid, face);
+  }
+  const injectFace = (videos: VideoItem[]): VideoItem[] =>
+    videos.map((v) => (faceMap.has(v.authorMid) ? { ...v, authorFace: faceMap.get(v.authorMid) } : v));
+
   let mixedVideos: VideoItem[];
   if (effectiveTs === 0) {
-    mixedVideos = aggregateMixedVideos(authorMids, authorCacheMap);
+    mixedVideos = injectFace(aggregateMixedVideos(authorMids, authorCacheMap));
   } else {
     const allFiltered = videosByAuthor.flatMap((a) => a.videos);
     const deduped = new Map<string, VideoItem>();
     for (const v of allFiltered) {
       deduped.set(v.bvid, v);
     }
-    mixedVideos = Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate);
+    mixedVideos = injectFace(Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate));
   }
 
   const allMixedVideos = aggregateMixedVideos(authorMids, authorCacheMap);

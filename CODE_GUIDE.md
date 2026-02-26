@@ -32,3 +32,7 @@ Chrome 扩展的不同入口对 JS 模块格式有不同要求：
 ## 版本号
 
 每次代码变更都需要 bump 一个小版本号（patch），除非明确指示 bump 其他级别的版本号。版本号位于 `package.json` 的 `version` 字段和 `public/manifest.json` 的 `version` 字段，两处需保持一致。
+
+## Bilibili API 文档
+
+如需查阅 Bilibili API 文档，直接搜索 `docs/bilibili-API-collect` 子模块的内容，无需联网搜索。

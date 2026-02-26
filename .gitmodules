@@ -1,0 +1,3 @@
+[submodule "docs/bilibili-API-collect"]
+	path = docs/bilibili-API-collect
+	url = git@github.com:pskdje/bilibili-API-collect.git

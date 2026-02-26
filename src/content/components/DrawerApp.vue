@@ -77,7 +77,10 @@
             :key="author.authorMid"
             class="bbe-author-section"
           >
-            <h3 class="bbe-author-title">{{ author.authorName }}</h3>
+            <h3 class="bbe-author-title">
+              <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
+              <span>{{ author.authorName }}</span>
+            </h3>
             <div class="bbe-grid">
               <VideoCard
                 v-for="video in author.videos"

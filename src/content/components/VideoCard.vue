@@ -17,8 +17,13 @@
     </div>
     <div class="bbe-card-body">
       <div class="bbe-card-title" :title="video.title">{{ video.title }}</div>
-      <div class="bbe-card-meta">{{ video.authorName }}</div>
-      <div class="bbe-card-meta">{{ formatPubdate(video.pubdate) }}</div>
+      <div class="bbe-card-author">
+        <img v-if="video.authorFace" class="bbe-avatar-sm" :src="video.authorFace" alt="" />
+        <div class="bbe-card-author-info">
+          <span class="bbe-card-author-name">{{ video.authorName }}</span>
+          <span class="bbe-card-author-date">{{ formatPubdate(video.pubdate) }}</span>
+        </div>
+      </div>
     </div>
   </a>
 </template>

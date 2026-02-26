@@ -38,11 +38,13 @@ export interface VideoItem {
   pubdate: number;
   authorMid: number;
   authorName: string;
+  authorFace?: string;
 }
 
 export interface AuthorFeed {
   authorMid: number;
   authorName: string;
+  authorFace?: string;
   videos: VideoItem[];
 }
 
@@ -86,6 +88,8 @@ export interface CurrentUser {
 export interface AuthorVideoCache {
   mid: number;
   name: string;
+  face?: string;
+  faceFetchedAt?: number;
   videos: VideoItem[];
   nextPn: number;
   hasMore: boolean;

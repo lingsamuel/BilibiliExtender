@@ -249,6 +249,33 @@ export async function getUploaderVideos(
 
 export type { FavMediaItem };
 
+interface AccInfoData {
+  face: string;
+}
+
+/**
+ * 获取用户头像 URL（WBI 签名接口）。
+ * 遇到 412 时自动清除 WBI key 缓存并重试一次。
+ */
+export async function getUserFace(mid: number): Promise<string> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { imgKey, subKey } = await getWbiKeys();
+      const signedParams = signWbiParams({ mid }, imgKey, subKey);
+      const payload = await fetchApi<AccInfoData>('/x/space/wbi/acc/info', signedParams);
+      const face = payload.data.face;
+      return face.startsWith('http') ? face : `https:${face}`;
+    } catch (error) {
+      if (error instanceof WbiExpiredError && attempt === 0) {
+        invalidateWbiKeys();
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('获取用户头像失败');
+}
+
 interface HistoryCursorData {
   cursor: {
     max: number;
