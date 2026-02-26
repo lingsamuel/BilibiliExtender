@@ -235,7 +235,16 @@ async function loadFeed(options?: { loadMore?: boolean; forceRefresh?: boolean }
       throw new Error(resp.error ?? '加载分组内容失败');
     }
 
-    feed.value = resp.data;
+    // 加载更多时增量追加，避免整体替换导致列表跳动
+    if (isLoadMore && feed.value) {
+      const existingBvids = new Set(feed.value.mixedVideos.map((v) => v.bvid));
+      const newVideos = resp.data.mixedVideos.filter((v) => !existingBvids.has(v.bvid));
+      feed.value.mixedVideos.push(...newVideos);
+      feed.value.hasMoreForMixed = resp.data.hasMoreForMixed;
+    } else {
+      feed.value = resp.data;
+    }
+
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
 
