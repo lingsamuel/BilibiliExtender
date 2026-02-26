@@ -74,18 +74,26 @@
 
     <div class="bbe-setting-row">
       <div>
-        混合模式初始目标数量
-        <div class="bbe-setting-hint">首次进入分组时目标条数（滚动到底自动追加）</div>
+        时间流模式最大加载数量
+        <div class="bbe-setting-hint">时间流模式下最多加载的视频总数上限</div>
       </div>
-      <input v-model.number="settings.mixedInitialTargetCount" class="bbe-input" type="number" min="10" max="500" />
+      <input v-model.number="settings.timelineMixedMaxCount" class="bbe-input" type="number" min="10" max="500" />
     </div>
 
     <div class="bbe-setting-row">
       <div>
-        作者模式每作者数量
-        <div class="bbe-setting-hint">每位作者最多展示的投稿条数</div>
+        已阅前额外显示数量
+        <div class="bbe-setting-hint">选中已阅时间点后，每位作者额外显示已阅之前最新的 N 个视频</div>
       </div>
-      <input v-model.number="settings.authorPerCreatorCount" class="bbe-input" type="number" min="1" max="100" />
+      <input v-model.number="settings.extraOlderVideoCount" class="bbe-input" type="number" min="0" max="20" />
+    </div>
+
+    <div class="bbe-setting-row">
+      <div>
+        默认已阅天数
+        <div class="bbe-setting-hint">无已阅记录时，默认只显示最近 N 天的视频（0 表示不限制）</div>
+      </div>
+      <input v-model.number="settings.defaultReadMarkDays" class="bbe-input" type="number" min="0" max="90" />
     </div>
 
     <div class="bbe-setting-row">
@@ -116,8 +124,9 @@ const folders = ref<FavoriteFolder[]>([]);
 const groups = ref<GroupConfig[]>([]);
 const settings = ref<ExtensionSettings>({
   refreshIntervalMinutes: 10,
-  mixedInitialTargetCount: 50,
-  authorPerCreatorCount: 10,
+  timelineMixedMaxCount: 50,
+  extraOlderVideoCount: 1,
+  defaultReadMarkDays: 7,
   useStorageSync: true
 });
 
@@ -242,8 +251,9 @@ async function saveSettingsOnly(): Promise<void> {
   const normalized = {
     ...settings.value,
     refreshIntervalMinutes: Math.min(120, Math.max(1, Number(settings.value.refreshIntervalMinutes) || 10)),
-    mixedInitialTargetCount: Math.min(500, Math.max(10, Number(settings.value.mixedInitialTargetCount) || 50)),
-    authorPerCreatorCount: Math.min(100, Math.max(1, Number(settings.value.authorPerCreatorCount) || 10))
+    timelineMixedMaxCount: Math.min(500, Math.max(10, Number(settings.value.timelineMixedMaxCount) || 50)),
+    extraOlderVideoCount: Math.min(20, Math.max(0, Number(settings.value.extraOlderVideoCount) || 1)),
+    defaultReadMarkDays: Math.min(90, Math.max(0, Number(settings.value.defaultReadMarkDays) || 7))
   };
 
   try {

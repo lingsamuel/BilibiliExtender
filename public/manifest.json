@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Extender",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "按收藏夹分组查看作者投稿动态",
-  "permissions": ["storage", "alarms"],
+  "permissions": ["storage", "unlimitedStorage", "alarms"],
   "host_permissions": ["https://*.bilibili.com/*"],
   "background": {
     "service_worker": "background.js",

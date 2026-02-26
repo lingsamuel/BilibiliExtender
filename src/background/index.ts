@@ -1,12 +1,17 @@
 import { DEFAULT_SETTINGS } from '@/shared/constants';
-import { getMyCreatedFolders } from '@/shared/api/bilibili';
+import { getMyCreatedFolders, getWatchHistory } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import {
+  appendReadMarks,
+  cleanExpiredClicks,
+  loadAuthorReadMarks,
+  loadClickedVideos,
   loadFeedCacheMap,
   loadGroups,
   loadLastGroupId,
   loadRuntimeStateMap,
   loadSettings,
+  recordVideoClick,
   saveFeedCacheMap,
   saveGroups,
   saveLastGroupId,
@@ -175,7 +180,8 @@ async function handleGetGroupSummary(
   return {
     summaries,
     hasUnread: summaries.some((item) => item.unreadCount > 0),
-    lastGroupId
+    lastGroupId,
+    settings
   };
 }
 
@@ -213,7 +219,10 @@ async function handleGetGroupFeed(
     saveLastGroupId(group.groupId)
   ]);
 
-  return toFeedResult(group, request.payload.mode, settings, runtimeMap, cacheMap);
+  const readMarks = await loadAuthorReadMarks();
+  const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
+
+  return toFeedResult(group, request.payload.mode, settings, runtimeMap, cacheMap, readMarks, selectedReadMarkTs);
 }
 
 async function handleMarkGroupRead(
@@ -227,6 +236,55 @@ async function handleMarkGroupRead(
     groupId: request.payload.groupId,
     unreadCount
   };
+}
+
+async function handleMarkAuthorsRead(
+  request: Extract<MessageRequest, { type: 'MARK_AUTHORS_READ' }>
+): Promise<ResponseMap['MARK_AUTHORS_READ']> {
+  const marks = await appendReadMarks(request.payload.mids);
+  return { marks };
+}
+
+async function handleGetAuthorReadMarks(
+  request: Extract<MessageRequest, { type: 'GET_AUTHOR_READ_MARKS' }>
+): Promise<ResponseMap['GET_AUTHOR_READ_MARKS']> {
+  const allMarks = await loadAuthorReadMarks();
+  const filtered: Record<number, typeof allMarks[number]> = {};
+
+  for (const mid of request.payload.mids) {
+    if (allMarks[mid]) {
+      filtered[mid] = allMarks[mid];
+    }
+  }
+
+  return { marks: filtered };
+}
+
+async function handleRecordVideoClick(
+  request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
+): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
+  await recordVideoClick(request.payload.bvid);
+  return { bvid: request.payload.bvid };
+}
+
+async function handleGetClickedVideos(
+  request: Extract<MessageRequest, { type: 'GET_CLICKED_VIDEOS' }>
+): Promise<ResponseMap['GET_CLICKED_VIDEOS']> {
+  const allClicked = await loadClickedVideos();
+  const clicked: Record<string, number> = {};
+
+  for (const bvid of request.payload.bvids) {
+    if (allClicked[bvid]) {
+      clicked[bvid] = allClicked[bvid];
+    }
+  }
+
+  return { clicked };
+}
+
+async function handleGetWatchHistory(): Promise<ResponseMap['GET_WATCH_HISTORY']> {
+  const history = await getWatchHistory();
+  return { history };
 }
 
 async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
@@ -247,6 +305,16 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleGetGroupFeed(request));
     case 'MARK_GROUP_READ':
       return ok(await handleMarkGroupRead(request));
+    case 'MARK_AUTHORS_READ':
+      return ok(await handleMarkAuthorsRead(request));
+    case 'GET_AUTHOR_READ_MARKS':
+      return ok(await handleGetAuthorReadMarks(request));
+    case 'RECORD_VIDEO_CLICK':
+      return ok(await handleRecordVideoClick(request));
+    case 'GET_CLICKED_VIDEOS':
+      return ok(await handleGetClickedVideos(request));
+    case 'GET_WATCH_HISTORY':
+      return ok(await handleGetWatchHistory());
     default:
       return fail('不支持的消息类型');
   }
@@ -258,6 +326,8 @@ chrome.runtime.onInstalled.addListener(async () => {
     ...DEFAULT_SETTINGS,
     ...settings
   });
+
+  await cleanExpiredClicks();
 });
 
 chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse) => {

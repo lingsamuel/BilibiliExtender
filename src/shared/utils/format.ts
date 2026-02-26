@@ -31,3 +31,10 @@ export function formatPubdate(seconds: number): string {
   const mm = `${date.getMinutes()}`.padStart(2, '0');
   return `${y}-${m}-${d} ${hh}:${mm}`;
 }
+
+/**
+ * 将 Unix 秒级时间戳格式化为可读的日期时间字符串，用于已阅时间点下拉菜单。
+ */
+export function formatReadMarkTs(seconds: number): string {
+  return formatPubdate(seconds);
+}

@@ -1,6 +1,6 @@
 <template>
-  <div v-if="visible" class="bbe-mask" @click="closeDrawer" />
-  <section v-if="visible" class="bbe-drawer">
+  <div v-show="visible" class="bbe-mask" @click="closeDrawer" />
+  <section v-show="visible" class="bbe-drawer">
     <aside class="bbe-sidebar">
       <div v-if="summaries.length === 0" class="bbe-empty">
         还没有分组
@@ -24,6 +24,13 @@
         <div class="bbe-toolbar-left">
           <button class="bbe-btn" :class="{ active: mode === 'mixed' }" @click="switchMode('mixed')">时间流</button>
           <button class="bbe-btn" :class="{ active: mode === 'byAuthor' }" @click="switchMode('byAuthor')">按作者</button>
+          <span class="bbe-toolbar-sep" />
+          <select v-model.number="selectedReadMarkTs" class="bbe-select-sm" @change="onReadMarkTsChange">
+            <option :value="0">全部</option>
+            <option v-if="graceReadMarkTs > 0" :value="-1">{{ graceLabel }}</option>
+            <option v-for="ts in readMarkTimestamps" :key="ts" :value="ts">{{ formatReadMarkTs(ts) }}</option>
+          </select>
+          <button class="bbe-btn" :disabled="loading" @click="markAuthorsRead">标记已阅</button>
         </div>
 
         <div class="bbe-toolbar-right">
@@ -42,7 +49,14 @@
 
         <template v-else-if="mode === 'mixed'">
           <div class="bbe-grid">
-            <VideoCard v-for="video in feed.mixedVideos" :key="video.bvid" :video="video" />
+            <VideoCard
+              v-for="video in feed.mixedVideos"
+              :key="video.bvid"
+              :video="video"
+              :clicked="clickedMap[video.bvid] !== undefined"
+              :watched="watchedMap[video.bvid]"
+              @click="onVideoClick"
+            />
           </div>
           <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
           <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
@@ -56,7 +70,14 @@
           >
             <h3 class="bbe-author-title">{{ author.authorName }}</h3>
             <div class="bbe-grid">
-              <VideoCard v-for="video in author.videos" :key="video.bvid" :video="video" />
+              <VideoCard
+                v-for="video in author.videos"
+                :key="video.bvid"
+                :video="video"
+                :clicked="clickedMap[video.bvid] !== undefined"
+                :watched="watchedMap[video.bvid]"
+                @click="onVideoClick"
+              />
             </div>
           </section>
         </template>
@@ -69,8 +90,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { EXTENSION_EVENT } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
-import type { GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
-import { formatRelativeMinutes } from '@/shared/utils/format';
+import type { GroupFeedResult, GroupSummary, ViewMode, WatchedVideo } from '@/shared/types';
+import { formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 
 const visible = ref(false);
@@ -83,8 +104,25 @@ const feed = ref<GroupFeedResult | null>(null);
 const errorMsg = ref('');
 const listRef = ref<HTMLElement | null>(null);
 let summaryTimer: number | null = null;
+let userExplicitlyChoseAll = false;
+
+const selectedReadMarkTs = ref(0);
+const readMarkTimestamps = ref<number[]>([]);
+const graceReadMarkTs = ref(0);
+const clickedMap = ref<Record<string, number>>({});
+const watchedMap = ref<Record<string, WatchedVideo>>({});
 
 const refreshText = computed(() => formatRelativeMinutes(feed.value?.lastRefreshAt));
+
+const graceLabel = computed(() => {
+  const settings = currentSettings.value;
+  if (!settings) {
+    return '7天前';
+  }
+  return `${settings.defaultReadMarkDays}天前`;
+});
+
+const currentSettings = ref<{ defaultReadMarkDays: number } | null>(null);
 
 function emitUnreadChanged(): void {
   const hasUnread = summaries.value.some((item) => item.unreadCount > 0);
@@ -106,6 +144,7 @@ async function loadSummary(allowRefresh: boolean): Promise<void> {
   }
 
   summaries.value = resp.data.summaries;
+  currentSettings.value = { defaultReadMarkDays: resp.data.settings.defaultReadMarkDays };
   emitUnreadChanged();
 
   if (!activeGroupId.value) {
@@ -114,6 +153,40 @@ async function loadSummary(allowRefresh: boolean): Promise<void> {
 
   if (activeGroupId.value && !summaries.value.some((item) => item.groupId === activeGroupId.value)) {
     activeGroupId.value = summaries.value[0]?.groupId ?? '';
+  }
+}
+
+function collectAllBvids(): string[] {
+  if (!feed.value) {
+    return [];
+  }
+  const bvids = new Set<string>();
+  feed.value.mixedVideos.forEach((v) => bvids.add(v.bvid));
+  feed.value.videosByAuthor.forEach((a) => a.videos.forEach((v) => bvids.add(v.bvid)));
+  return Array.from(bvids);
+}
+
+async function fetchClickedAndWatched(): Promise<void> {
+  const bvids = collectAllBvids();
+  if (bvids.length === 0) {
+    return;
+  }
+
+  const [clickedResp, watchResp] = await Promise.all([
+    sendMessage({ type: 'GET_CLICKED_VIDEOS', payload: { bvids } }),
+    sendMessage({ type: 'GET_WATCH_HISTORY' })
+  ]);
+
+  if (clickedResp.ok && clickedResp.data) {
+    clickedMap.value = clickedResp.data.clicked;
+  }
+
+  if (watchResp.ok && watchResp.data) {
+    const map: Record<string, WatchedVideo> = {};
+    for (const item of watchResp.data.history) {
+      map[item.bvid] = item;
+    }
+    watchedMap.value = map;
   }
 }
 
@@ -138,7 +211,8 @@ async function loadFeed(options?: { loadMore?: boolean; forceRefresh?: boolean }
         groupId: activeGroupId.value,
         mode: mode.value,
         loadMore: options?.loadMore,
-        forceRefresh: options?.forceRefresh
+        forceRefresh: options?.forceRefresh,
+        selectedReadMarkTs: selectedReadMarkTs.value
       }
     });
 
@@ -147,13 +221,56 @@ async function loadFeed(options?: { loadMore?: boolean; forceRefresh?: boolean }
     }
 
     feed.value = resp.data;
+    readMarkTimestamps.value = resp.data.readMarkTimestamps;
+    graceReadMarkTs.value = resp.data.graceReadMarkTs;
+
+    // 首次加载（selectedReadMarkTs 为 0 且非用户主动选择"全部"）：自动选择默认时间点
+    if (selectedReadMarkTs.value === 0 && !userExplicitlyChoseAll) {
+      if (readMarkTimestamps.value.length > 0) {
+        selectedReadMarkTs.value = readMarkTimestamps.value[0];
+      } else if (graceReadMarkTs.value > 0) {
+        selectedReadMarkTs.value = -1;
+      }
+      if (selectedReadMarkTs.value !== 0) {
+        await reloadFeedWithReadMark();
+        return;
+      }
+    }
 
     if (!options?.loadMore) {
       await markCurrentGroupRead();
     }
+
+    await fetchClickedAndWatched();
   } finally {
     loading.value = false;
     loadingMore.value = false;
+  }
+}
+
+async function reloadFeedWithReadMark(): Promise<void> {
+  loading.value = true;
+  try {
+    const resp = await sendMessage({
+      type: 'GET_GROUP_FEED',
+      payload: {
+        groupId: activeGroupId.value,
+        mode: mode.value,
+        selectedReadMarkTs: selectedReadMarkTs.value
+      }
+    });
+
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '加载分组内容失败');
+    }
+
+    feed.value = resp.data;
+    readMarkTimestamps.value = resp.data.readMarkTimestamps;
+    graceReadMarkTs.value = resp.data.graceReadMarkTs;
+    await markCurrentGroupRead();
+    await fetchClickedAndWatched();
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -172,12 +289,27 @@ async function markCurrentGroupRead(): Promise<void> {
 
 async function openDrawer(): Promise<void> {
   visible.value = true;
+  clickedMap.value = {};
+  watchedMap.value = {};
+  userExplicitlyChoseAll = false;
 
   try {
     await loadSummary(true);
 
     if (!activeGroupId.value) {
       return;
+    }
+
+    // 恢复记忆的 mode 和 selectedReadMarkTs
+    const summary = summaries.value.find((s) => s.groupId === activeGroupId.value);
+    if (summary?.savedMode) {
+      mode.value = summary.savedMode;
+    }
+    if (summary?.savedReadMarkTs !== undefined) {
+      selectedReadMarkTs.value = summary.savedReadMarkTs;
+      userExplicitlyChoseAll = summary.savedReadMarkTs === 0;
+    } else {
+      selectedReadMarkTs.value = 0;
     }
 
     await loadFeed();
@@ -205,6 +337,19 @@ async function selectGroup(groupId: string): Promise<void> {
   }
 
   activeGroupId.value = groupId;
+  userExplicitlyChoseAll = false;
+
+  // 从 summary 恢复记忆的 mode 和 selectedReadMarkTs
+  const summary = summaries.value.find((s) => s.groupId === groupId);
+  if (summary?.savedMode) {
+    mode.value = summary.savedMode;
+  }
+  if (summary?.savedReadMarkTs !== undefined) {
+    selectedReadMarkTs.value = summary.savedReadMarkTs;
+    userExplicitlyChoseAll = summary.savedReadMarkTs === 0;
+  } else {
+    selectedReadMarkTs.value = 0;
+  }
 
   try {
     await loadFeed();
@@ -225,6 +370,42 @@ async function switchMode(nextMode: ViewMode): Promise<void> {
     await loadFeed();
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '切换视图失败';
+  }
+}
+
+async function onReadMarkTsChange(): Promise<void> {
+  userExplicitlyChoseAll = selectedReadMarkTs.value === 0;
+  try {
+    await reloadFeedWithReadMark();
+  } catch (error) {
+    errorMsg.value = error instanceof Error ? error.message : '切换已阅时间点失败';
+  }
+}
+
+async function markAuthorsRead(): Promise<void> {
+  if (!feed.value) {
+    return;
+  }
+
+  const mids = feed.value.videosByAuthor.map((a) => a.authorMid);
+  if (mids.length === 0) {
+    return;
+  }
+
+  try {
+    await sendMessage({ type: 'MARK_AUTHORS_READ', payload: { mids } });
+    await loadFeed();
+  } catch (error) {
+    errorMsg.value = error instanceof Error ? error.message : '标记已阅失败';
+  }
+}
+
+async function onVideoClick(bvid: string): Promise<void> {
+  clickedMap.value = { ...clickedMap.value, [bvid]: Date.now() };
+  try {
+    await sendMessage({ type: 'RECORD_VIDEO_CLICK', payload: { bvid } });
+  } catch {
+    // 静默失败
   }
 }
 

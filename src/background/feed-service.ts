@@ -2,6 +2,7 @@ import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
 import { getAllFavVideos, getUploaderVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
   AuthorFeed,
+  AuthorReadMark,
   ExtensionSettings,
   GroupConfig,
   GroupFeedCache,
@@ -13,6 +14,7 @@ import type {
 
 type RuntimeMap = Record<string, GroupRuntimeState>;
 type CacheMap = Record<string, GroupFeedCache>;
+type ReadMarkMap = Record<number, AuthorReadMark>;
 
 function getGroupTitle(group: GroupConfig): string {
   return group.alias?.trim() || group.mediaTitle;
@@ -66,12 +68,12 @@ function ensureRuntimeState(
     runtimeMap[groupId] = {
       groupId,
       unreadCount: 0,
-      mixedTargetCount: settings.mixedInitialTargetCount
+      mixedTargetCount: settings.timelineMixedMaxCount
     };
   }
 
   if (!runtimeMap[groupId].mixedTargetCount) {
-    runtimeMap[groupId].mixedTargetCount = settings.mixedInitialTargetCount;
+    runtimeMap[groupId].mixedTargetCount = settings.timelineMixedMaxCount;
   }
 
   return runtimeMap[groupId];
@@ -138,11 +140,11 @@ export async function refreshGroupCache(
   };
 
   const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
-  runtime.mixedTargetCount = settings.mixedInitialTargetCount;
+  runtime.mixedTargetCount = settings.timelineMixedMaxCount;
   runtime.lastRefreshAt = Date.now();
 
   if (authors.length > 0) {
-    await fetchOneRound(cache, Math.max(20, settings.authorPerCreatorCount));
+    await fetchOneRound(cache, 20);
   }
 
   runtime.unreadCount = calcUnreadCount(cache.mixedVideos, runtime.lastReadAt);
@@ -207,7 +209,8 @@ export async function loadMoreForMixed(
 }
 
 /**
- * 作者模式要求每位作者至少达到配置条数；不足时继续按作者分页补齐。
+ * 作者模式：确保每位作者至少有足够的视频数据用于已阅过滤展示。
+ * 拉取策略改为每位作者至少拉取 20 条，以覆盖已阅时间点之后的视频。
  */
 export async function ensureAuthorModePrepared(
   group: GroupConfig,
@@ -216,7 +219,7 @@ export async function ensureAuthorModePrepared(
   cacheMap: CacheMap
 ): Promise<GroupFeedCache> {
   const cache = await ensureGroupCache(group, settings, runtimeMap, cacheMap, false);
-  const limit = settings.authorPerCreatorCount;
+  const limit = 20;
 
   for (const author of cache.authors) {
     while ((cache.videosByAuthor[author.mid]?.length ?? 0) < limit) {
@@ -247,12 +250,73 @@ export async function ensureAuthorModePrepared(
   return cache;
 }
 
+/**
+ * 收集当前分组内所有作者的已阅时间点并集（去重、倒序）。
+ */
+function collectReadMarkTimestamps(cache: GroupFeedCache, readMarks: ReadMarkMap): number[] {
+  const tsSet = new Set<number>();
+
+  for (const author of cache.authors) {
+    const mark = readMarks[author.mid];
+    if (mark) {
+      for (const ts of mark.timestamps) {
+        tsSet.add(ts);
+      }
+    }
+  }
+
+  return Array.from(tsSet).sort((a, b) => b - a);
+}
+
+/**
+ * 按已阅时间点过滤某位作者的视频列表。
+ * selectedTs: 用户选中的已阅时间点（0 表示"全部"，不过滤）。
+ * graceTs: 无真实已阅记录时的 grace 默认时间点，用于没有自身已阅记录的作者。
+ */
+function filterVideosByReadMark(
+  videos: VideoItem[],
+  authorMid: number,
+  selectedTs: number,
+  readMarks: ReadMarkMap,
+  extraCount: number,
+  graceTs: number
+): VideoItem[] {
+  if (selectedTs === 0) {
+    return videos;
+  }
+
+  const mark = readMarks[authorMid];
+
+  // 该作者有已阅记录：按原逻辑查找 <= selectedTs 的最大值
+  if (mark && mark.timestamps.length > 0) {
+    const authorTs = mark.timestamps.find((ts) => ts <= selectedTs);
+    if (authorTs === undefined) {
+      return videos;
+    }
+
+    const newVideos = videos.filter((v) => v.pubdate >= authorTs);
+    const olderVideos = videos.filter((v) => v.pubdate < authorTs).slice(0, extraCount);
+    return [...newVideos, ...olderVideos];
+  }
+
+  // 该作者无已阅记录但有 grace 时间点：用 graceTs 作为统一过滤线
+  if (graceTs > 0) {
+    const newVideos = videos.filter((v) => v.pubdate >= graceTs);
+    const olderVideos = videos.filter((v) => v.pubdate < graceTs).slice(0, extraCount);
+    return [...newVideos, ...olderVideos];
+  }
+
+  return videos;
+}
+
 export function toFeedResult(
   group: GroupConfig,
   mode: ViewMode,
   settings: ExtensionSettings,
   runtimeMap: RuntimeMap,
-  cacheMap: CacheMap
+  cacheMap: CacheMap,
+  readMarks: ReadMarkMap,
+  selectedReadMarkTs: number
 ): GroupFeedResult {
   const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
   const cache = cacheMap[group.groupId];
@@ -261,23 +325,59 @@ export function toFeedResult(
     throw new Error(`分组缓存不存在: ${getGroupTitle(group)}`);
   }
 
+  const readMarkTimestamps = collectReadMarkTimestamps(cache, readMarks);
+
+  // grace 逻辑：无真实已阅记录时，用 N 天前作为默认时间点
+  let graceReadMarkTs = 0;
+  if (readMarkTimestamps.length === 0 && settings.defaultReadMarkDays > 0) {
+    graceReadMarkTs = Math.floor(Date.now() / 1000) - settings.defaultReadMarkDays * 24 * 60 * 60;
+  }
+
+  // 实际用于过滤的时间戳：grace 时间点直接作为所有作者的统一过滤线
+  const effectiveTs = selectedReadMarkTs === -1 ? graceReadMarkTs : selectedReadMarkTs;
+
   const videosByAuthor: AuthorFeed[] = cache.authors.map((author) => ({
     authorMid: author.mid,
     authorName: author.name,
-    videos: (cache.videosByAuthor[author.mid] ?? []).slice(0, settings.authorPerCreatorCount)
+    videos: filterVideosByReadMark(
+      cache.videosByAuthor[author.mid] ?? [],
+      author.mid,
+      effectiveTs,
+      readMarks,
+      settings.extraOlderVideoCount,
+      graceReadMarkTs
+    )
   }));
 
+  let mixedVideos: VideoItem[];
+  if (effectiveTs === 0) {
+    mixedVideos = cache.mixedVideos;
+  } else {
+    const allFiltered = videosByAuthor.flatMap((a) => a.videos);
+    const deduped = new Map<string, VideoItem>();
+    for (const v of allFiltered) {
+      deduped.set(v.bvid, v);
+    }
+    mixedVideos = Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate);
+  }
+
   runtime.unreadCount = calcUnreadCount(cache.mixedVideos, runtime.lastReadAt);
+
+  // 记忆用户选择
+  runtime.savedMode = mode;
+  runtime.savedReadMarkTs = selectedReadMarkTs;
 
   return {
     groupId: group.groupId,
     mode,
-    mixedVideos: cache.mixedVideos,
+    mixedVideos,
     videosByAuthor,
     lastRefreshAt: runtime.lastRefreshAt,
     lastReadAt: runtime.lastReadAt,
     unreadCount: runtime.unreadCount,
-    hasMoreForMixed: hasMoreAuthors(cache)
+    hasMoreForMixed: hasMoreAuthors(cache),
+    readMarkTimestamps,
+    graceReadMarkTs
   };
 }
 
@@ -293,7 +393,7 @@ export function makeSummary(
   settings: ExtensionSettings,
   runtimeMap: RuntimeMap,
   cacheMap: CacheMap
-): Array<{ groupId: string; title: string; unreadCount: number; lastRefreshAt?: number; enabled: boolean }> {
+): Array<{ groupId: string; title: string; unreadCount: number; lastRefreshAt?: number; enabled: boolean; savedMode?: ViewMode; savedReadMarkTs?: number }> {
   return groups.map((group) => {
     const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
     const cache = cacheMap[group.groupId];
@@ -307,7 +407,9 @@ export function makeSummary(
       title: getGroupTitle(group),
       unreadCount: runtime.unreadCount,
       lastRefreshAt: runtime.lastRefreshAt,
-      enabled: group.enabled
+      enabled: group.enabled,
+      savedMode: runtime.savedMode,
+      savedReadMarkTs: runtime.savedReadMarkTs
     };
   });
 }

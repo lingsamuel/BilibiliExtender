@@ -28,3 +28,7 @@ Chrome 扩展的不同入口对 JS 模块格式有不同要求：
 ## 构建验证
 
 每次代码变更完成后，必须执行 `npm run build` 确认构建无报错。
+
+## 版本号
+
+每次代码变更都需要 bump 一个小版本号（patch），除非明确指示 bump 其他级别的版本号。版本号位于 `package.json` 的 `version` 字段和 `public/manifest.json` 的 `version` 字段，两处需保持一致。

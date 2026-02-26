@@ -12,8 +12,9 @@ export interface GroupConfig {
 
 export interface ExtensionSettings {
   refreshIntervalMinutes: number;
-  mixedInitialTargetCount: number;
-  authorPerCreatorCount: number;
+  timelineMixedMaxCount: number;
+  extraOlderVideoCount: number;
+  defaultReadMarkDays: number;
   useStorageSync: boolean;
 }
 
@@ -23,6 +24,9 @@ export interface GroupRuntimeState {
   lastReadAt?: number;
   unreadCount: number;
   mixedTargetCount: number;
+  // 记忆用户上次选择的视图模式和已阅时间点
+  savedMode?: ViewMode;
+  savedReadMarkTs?: number;
 }
 
 export interface VideoItem {
@@ -50,6 +54,10 @@ export interface GroupFeedResult {
   lastReadAt?: number;
   unreadCount: number;
   hasMoreForMixed: boolean;
+  // 当前分组内所有作者的已阅时间点并集（去重、倒序）
+  readMarkTimestamps: number[];
+  // 无真实已阅记录时的 grace 默认时间点（秒级时间戳），0 表示不适用
+  graceReadMarkTs: number;
 }
 
 export interface GroupSummary {
@@ -58,6 +66,8 @@ export interface GroupSummary {
   unreadCount: number;
   lastRefreshAt?: number;
   enabled: boolean;
+  savedMode?: ViewMode;
+  savedReadMarkTs?: number;
 }
 
 export interface FavoriteFolder {
@@ -78,6 +88,22 @@ export interface GroupFeedCache {
   videosByAuthor: Record<number, VideoItem[]>;
   mixedVideos: VideoItem[];
   updatedAt: number;
+}
+
+// 每位作者的已阅记录，按作者 mid 索引，跨分组共享
+export interface AuthorReadMark {
+  mid: number;
+  // 最多保留 10 条，按时间倒序排列（最新在前）
+  // 每条记录为 Unix 时间戳（秒），表示该时间点及之前的视频已阅
+  timestamps: number[];
+}
+
+export interface WatchedVideo {
+  bvid: string;
+  // 观看进度（秒），-1 表示已看完
+  progress: number;
+  // 视频总时长（秒）
+  duration: number;
 }
 
 export interface GroupOptionsData {
