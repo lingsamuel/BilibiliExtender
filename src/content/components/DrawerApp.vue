@@ -38,7 +38,7 @@
       </section>
 
       <section v-else-if="showSettings" class="bbe-list bbe-settings-scroll">
-        <SettingsPanel @group-created="onGroupListChanged" />
+        <SettingsPanel @group-created="onGroupListChanged" @settings-saved="onSettingsSaved" />
       </section>
 
       <template v-else>
@@ -642,15 +642,16 @@ function toggleDebug(): void {
 async function onGroupListChanged(): Promise<void> {
   try {
     await loadSummary();
-    if (summaries.value.length > 0 && showSettings.value) {
-      showSettings.value = false;
-      if (!activeGroupId.value) {
-        activeGroupId.value = summaries.value[0].groupId;
-      }
-      await loadFeed();
-    }
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '刷新分组失败';
+  }
+}
+
+async function onSettingsSaved(): Promise<void> {
+  try {
+    await loadSummary();
+  } catch {
+    // 静默忽略
   }
 }
 

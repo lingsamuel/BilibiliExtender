@@ -40,6 +40,7 @@ export interface VideoItem {
   authorMid: number;
   authorName: string;
   authorFace?: string;
+  playbackPosiiton?: number;
 }
 
 export interface AuthorFeed {
@@ -124,4 +125,6 @@ export interface GroupOptionsData {
   groups: GroupConfig[];
   settings: ExtensionSettings;
   folders: FavoriteFolder[];
+  groupAuthorCounts: Record<string, number>;
+  totalTrackedAuthors: number;
 }

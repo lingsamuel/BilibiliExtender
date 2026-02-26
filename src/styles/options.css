@@ -88,8 +88,8 @@ body {
 
 .bbe-settings-grid {
   display: grid;
-  grid-template-columns: 2fr 2fr 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: 2fr 2fr 60px 1fr 1fr;
+  gap: 4px 8px;
   align-items: center;
 }
 
@@ -100,8 +100,14 @@ body {
 }
 
 .bbe-settings-grid-row {
-  padding: 10px 0;
+  padding: 6px 0;
   border-top: 1px dashed var(--line);
+}
+
+.bbe-settings-grid-row .bbe-input {
+  height: 30px;
+  min-width: 120px;
+  font-size: 13px;
 }
 
 .bbe-message {

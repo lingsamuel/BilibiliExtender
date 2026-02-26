@@ -22,10 +22,11 @@
   </section>
 
   <section class="bbe-panel">
-    <h2 class="bbe-panel-title">分组列表</h2>
+    <h2 class="bbe-panel-title">分组列表<span v-if="totalTrackedAuthors > 0" class="bbe-setting-hint" style="margin-left: 8px; font-size: 13px; font-weight: normal">共追踪 {{ totalTrackedAuthors }} 位作者</span></h2>
     <div class="bbe-settings-grid bbe-settings-grid-header">
       <div>收藏夹</div>
       <div>别名</div>
+      <div>作者数</div>
       <div>启用</div>
       <div>操作</div>
     </div>
@@ -42,6 +43,7 @@
           @blur="saveGroup(group)"
         />
       </div>
+      <div>{{ groupAuthorCounts[group.groupId] ?? '-' }}</div>
       <div>
         <label>
           <input type="checkbox" v-model="group.enabled" @change="saveGroup(group)" />
@@ -125,6 +127,7 @@ import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/ty
 
 const emit = defineEmits<{
   (e: 'group-created'): void;
+  (e: 'settings-saved'): void;
 }>();
 
 const folders = ref<FavoriteFolder[]>([]);
@@ -145,6 +148,8 @@ const selectedMediaId = ref('');
 const newAlias = ref('');
 const message = ref('');
 const errorMsg = ref('');
+const groupAuthorCounts = ref<Record<string, number>>({});
+const totalTrackedAuthors = ref(0);
 
 const availableFolders = computed(() => {
   const usedIds = new Set(groups.value.map((item) => item.mediaId));
@@ -171,6 +176,8 @@ async function reloadOptionsData(): Promise<void> {
     groups.value = resp.data.groups;
     snapshotGroups();
     settings.value = resp.data.settings;
+    groupAuthorCounts.value = resp.data.groupAuthorCounts;
+    totalTrackedAuthors.value = resp.data.totalTrackedAuthors;
     setNotice('已加载最新数据');
   } catch (error) {
     setError(error instanceof Error ? error.message : '加载失败，请检查登录状态');
@@ -288,6 +295,7 @@ async function saveSettingsOnly(): Promise<void> {
     }
     settings.value = resp.data.settings;
     setNotice('设置已保存');
+    emit('settings-saved');
   } catch (error) {
     setError(error instanceof Error ? error.message : '保存设置失败');
   }

@@ -163,6 +163,8 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
+  const alarm = await chrome.alarms.get(ALARM_NAME);
+
   return {
     running: state.running,
     queueLength: state.queue.length,
@@ -170,6 +172,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     batchCompleted: state.batchCompleted,
     batchFailed: state.batchFailed.length,
     lastRunAt: state.lastRunAt,
+    nextAlarmAt: alarm?.scheduledTime,
     queue: state.queue.map((t) => ({ mid: t.mid, name: t.name, groupId: t.groupId })),
     authorCaches,
     groupCaches,

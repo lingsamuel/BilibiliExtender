@@ -54,6 +54,7 @@ interface ArcSearchItem {
   created: number;
   author: string;
   mid: number;
+  playback_position?: number;
 }
 
 interface ArcSearchData {
@@ -221,14 +222,15 @@ export async function getUploaderVideos(
       );
 
       const payload = await fetchApi<ArcSearchData>('/x/space/wbi/arc/search', signedParams);
-      const videos = (payload.data.list?.vlist ?? []).map((item) => ({
+      const videos: VideoItem[] = (payload.data.list?.vlist ?? []).map((item) => ({
         bvid: item.bvid,
         aid: item.aid,
         title: item.title,
         cover: item.pic.startsWith('http') ? item.pic : `https:${item.pic}`,
         pubdate: item.created,
         authorMid: item.mid || mid,
-        authorName: item.author
+        authorName: item.author,
+        playbackPosiiton: item.playback_position,
       }));
 
       const page = payload.data.page;

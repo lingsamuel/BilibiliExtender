@@ -11,8 +11,8 @@
       <img :src="video.cover" :alt="video.title" />
       <span v-if="clicked" class="bbe-tag-clicked">已查看</span>
       <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
-      <div v-if="watchProgress > 0" class="bbe-progress-bar">
-        <div class="bbe-progress-fill" :style="{ width: watchProgress + '%' }" />
+      <div v-if="video.playbackPosiiton && video.playbackPosiiton > 0" class="bbe-progress-bar">
+        <div class="bbe-progress-fill" :style="{ width: video.playbackPosiiton + '%' }" />
       </div>
     </div>
     <div class="bbe-card-body">

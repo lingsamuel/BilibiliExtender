@@ -14,6 +14,8 @@
       <span>{{ status?.batchFailed ?? 0 }}</span>
       <span>上次调度</span>
       <span>{{ lastRunText }}</span>
+      <span>下次刷新</span>
+      <span>{{ nextAlarmText }}</span>
     </div>
 
     <h3 v-if="status && status.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
@@ -47,7 +49,7 @@
     <div v-else class="bbe-debug-table">
       <div class="bbe-debug-table-header">
         <span>作者</span>
-        <span>视频数</span>
+        <span>缓存视频数</span>
         <span>上次拉取</span>
       </div>
       <div v-for="a in status.authorCaches" :key="a.mid" class="bbe-debug-table-row">
@@ -89,6 +91,14 @@ let timer: number | null = null;
 const lastRunText = computed(() => {
   if (!status.value?.lastRunAt) return '从未';
   return formatRelativeMinutes(status.value.lastRunAt);
+});
+
+const nextAlarmText = computed(() => {
+  if (!status.value?.nextAlarmAt) return '未注册';
+  const diff = status.value.nextAlarmAt - Date.now();
+  if (diff <= 0) return '即将触发';
+  const mins = Math.ceil(diff / 60_000);
+  return `${formatTime(status.value.nextAlarmAt)}（${mins} 分钟后）`;
 });
 
 function formatTime(ms: number): string {

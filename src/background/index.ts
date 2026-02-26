@@ -54,13 +54,27 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
 }
 
 async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
-  const [groups, settings, folders] = await Promise.all([
+  const [groups, settings, folders, feedCacheMap] = await Promise.all([
     loadGroups(),
     loadSettings(),
-    getMyCreatedFolders()
+    getMyCreatedFolders(),
+    loadFeedCacheMap()
   ]);
 
-  return { groups, settings, folders };
+  const groupAuthorCounts: Record<string, number> = {};
+  const allMids = new Set<number>();
+  for (const group of groups) {
+    const cache = feedCacheMap[group.groupId];
+    const count = cache?.authorMids?.length ?? 0;
+    groupAuthorCounts[group.groupId] = count;
+    if (cache?.authorMids) {
+      for (const mid of cache.authorMids) {
+        allMids.add(mid);
+      }
+    }
+  }
+
+  return { groups, settings, folders, groupAuthorCounts, totalTrackedAuthors: allMids.size };
 }
 
 async function handleUpsertGroup(

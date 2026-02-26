@@ -39,6 +39,7 @@ export interface SchedulerStatusResponse {
   batchCompleted: number;
   batchFailed: number;
   lastRunAt?: number;
+  nextAlarmAt?: number;
   queue: Array<{ mid: number; name: string; groupId?: string }>;
   // 已缓存的作者摘要
   authorCaches: Array<{
