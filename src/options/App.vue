@@ -74,6 +74,14 @@
 
     <div class="bbe-setting-row">
       <div>
+        后台刷新间隔（分钟）
+        <div class="bbe-setting-hint">后台自动刷新作者投稿缓存的周期，请求会均匀分散在周期内</div>
+      </div>
+      <input v-model.number="settings.backgroundRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
+    </div>
+
+    <div class="bbe-setting-row">
+      <div>
         时间流模式最大加载数量
         <div class="bbe-setting-hint">时间流模式下最多加载的视频总数上限</div>
       </div>
@@ -123,7 +131,8 @@ import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/ty
 const folders = ref<FavoriteFolder[]>([]);
 const groups = ref<GroupConfig[]>([]);
 const settings = ref<ExtensionSettings>({
-  refreshIntervalMinutes: 10,
+  refreshIntervalMinutes: 30,
+  backgroundRefreshIntervalMinutes: 15,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
@@ -250,7 +259,8 @@ async function removeGroup(groupId: string): Promise<void> {
 async function saveSettingsOnly(): Promise<void> {
   const normalized = {
     ...settings.value,
-    refreshIntervalMinutes: Math.min(120, Math.max(1, Number(settings.value.refreshIntervalMinutes) || 10)),
+    refreshIntervalMinutes: Math.min(120, Math.max(1, Number(settings.value.refreshIntervalMinutes) || 30)),
+    backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(settings.value.backgroundRefreshIntervalMinutes) || 15)),
     timelineMixedMaxCount: Math.min(500, Math.max(10, Number(settings.value.timelineMixedMaxCount) || 50)),
     extraOlderVideoCount: Math.min(20, Math.max(0, Number(settings.value.extraOlderVideoCount) || 1)),
     defaultReadMarkDays: Math.min(90, Math.max(0, Number(settings.value.defaultReadMarkDays) || 7))

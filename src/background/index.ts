@@ -5,6 +5,7 @@ import {
   appendReadMarks,
   cleanExpiredClicks,
   loadAuthorReadMarks,
+  loadAuthorVideoCacheMap,
   loadClickedVideos,
   loadFeedCacheMap,
   loadGroups,
@@ -12,6 +13,7 @@ import {
   loadRuntimeStateMap,
   loadSettings,
   recordVideoClick,
+  saveAuthorVideoCacheMap,
   saveFeedCacheMap,
   saveGroups,
   saveLastGroupId,
@@ -31,6 +33,7 @@ import {
   removeGroupState,
   toFeedResult
 } from '@/background/feed-service';
+import { setupAlarm } from '@/background/scheduler';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -61,17 +64,13 @@ async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> 
     getMyCreatedFolders()
   ]);
 
-  return {
-    groups,
-    settings,
-    folders
-  };
+  return { groups, settings, folders };
 }
 
 async function handleUpsertGroup(
   request: Extract<MessageRequest, { type: 'UPSERT_GROUP' }>
 ): Promise<ResponseMap['UPSERT_GROUP']> {
-  const [groups, runtimeMap, cacheMap] = await Promise.all([
+  const [groups, runtimeMap, feedCacheMap] = await Promise.all([
     loadGroups(),
     loadRuntimeStateMap(),
     loadFeedCacheMap()
@@ -99,7 +98,7 @@ async function handleUpsertGroup(
     };
 
     if (previous.mediaId !== incoming.mediaId) {
-      removeGroupState(previous.groupId, runtimeMap, cacheMap);
+      removeGroupState(previous.groupId, runtimeMap, feedCacheMap);
     }
   } else {
     groups.push(incoming);
@@ -108,7 +107,7 @@ async function handleUpsertGroup(
   await Promise.all([
     saveGroups(groups),
     saveRuntimeStateMap(runtimeMap),
-    saveFeedCacheMap(cacheMap)
+    saveFeedCacheMap(feedCacheMap)
   ]);
 
   return { groups };
@@ -117,19 +116,19 @@ async function handleUpsertGroup(
 async function handleDeleteGroup(
   request: Extract<MessageRequest, { type: 'DELETE_GROUP' }>
 ): Promise<ResponseMap['DELETE_GROUP']> {
-  const [groups, runtimeMap, cacheMap] = await Promise.all([
+  const [groups, runtimeMap, feedCacheMap] = await Promise.all([
     loadGroups(),
     loadRuntimeStateMap(),
     loadFeedCacheMap()
   ]);
 
   const nextGroups = groups.filter((item) => item.groupId !== request.payload.groupId);
-  removeGroupState(request.payload.groupId, runtimeMap, cacheMap);
+  removeGroupState(request.payload.groupId, runtimeMap, feedCacheMap);
 
   await Promise.all([
     saveGroups(nextGroups),
     saveRuntimeStateMap(runtimeMap),
-    saveFeedCacheMap(cacheMap)
+    saveFeedCacheMap(feedCacheMap)
   ]);
 
   return { groups: nextGroups };
@@ -144,6 +143,7 @@ async function handleSaveSettings(
   };
 
   await saveSettings(settings);
+  await setupAlarm(settings);
 
   return { settings };
 }
@@ -151,31 +151,34 @@ async function handleSaveSettings(
 async function handleGetGroupSummary(
   request: Extract<MessageRequest, { type: 'GET_GROUP_SUMMARY' }>
 ): Promise<ResponseMap['GET_GROUP_SUMMARY']> {
-  const [groups, settings, runtimeMap, cacheMap, lastGroupId] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, lastGroupId] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
+    loadAuthorVideoCacheMap(),
     loadLastGroupId()
   ]);
 
   for (const group of groups) {
-    if (!group.enabled) {
-      continue;
-    }
+    if (!group.enabled) continue;
 
-    if (request.payload?.allowRefresh && isStaleForAutoRefresh(group.groupId, settings, runtimeMap)) {
+    if (request.payload?.allowRefresh && isStaleForAutoRefresh(group.groupId, settings, feedCacheMap, authorCacheMap)) {
       try {
-        await refreshGroupCache(group, settings, runtimeMap, cacheMap);
+        await refreshGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
       } catch (error) {
         console.warn('[BBE] auto refresh summary failed:', group.groupId, error);
       }
     }
   }
 
-  const summaries = makeSummary(groups, settings, runtimeMap, cacheMap).filter((item) => item.enabled);
+  const summaries = makeSummary(groups, settings, runtimeMap, feedCacheMap, authorCacheMap).filter((item) => item.enabled);
 
-  await Promise.all([saveRuntimeStateMap(runtimeMap), saveFeedCacheMap(cacheMap)]);
+  await Promise.all([
+    saveRuntimeStateMap(runtimeMap),
+    saveFeedCacheMap(feedCacheMap),
+    saveAuthorVideoCacheMap(authorCacheMap)
+  ]);
 
   return {
     summaries,
@@ -188,11 +191,12 @@ async function handleGetGroupSummary(
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
 ): Promise<ResponseMap['GET_GROUP_FEED']> {
-  const [groups, settings, runtimeMap, cacheMap] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
-    loadFeedCacheMap()
+    loadFeedCacheMap(),
+    loadAuthorVideoCacheMap()
   ]);
 
   const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
@@ -202,28 +206,28 @@ async function handleGetGroupFeed(
   }
 
   if (request.payload.forceRefresh) {
-    await refreshGroupCache(group, settings, runtimeMap, cacheMap);
+    await refreshGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
   } else {
-    await ensureGroupCache(group, settings, runtimeMap, cacheMap, false);
+    await ensureGroupCache(group, settings, runtimeMap, feedCacheMap, authorCacheMap, false);
   }
 
   if (isMixedMode(request.payload.mode)) {
-    await loadMoreForMixed(group, settings, runtimeMap, cacheMap, Boolean(request.payload.loadMore));
+    await loadMoreForMixed(group, settings, runtimeMap, feedCacheMap, authorCacheMap, Boolean(request.payload.loadMore));
   } else {
-    await ensureAuthorModePrepared(group, settings, runtimeMap, cacheMap);
+    await ensureAuthorModePrepared(group, settings, runtimeMap, feedCacheMap, authorCacheMap);
   }
 
   await Promise.all([
-    saveFeedCacheMap(cacheMap),
+    saveFeedCacheMap(feedCacheMap),
+    saveAuthorVideoCacheMap(authorCacheMap),
     saveLastGroupId(group.groupId)
   ]);
 
   const readMarks = await loadAuthorReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
 
-  const result = toFeedResult(group, request.payload.mode, settings, runtimeMap, cacheMap, readMarks, selectedReadMarkTs);
+  const result = toFeedResult(group, request.payload.mode, settings, runtimeMap, feedCacheMap, authorCacheMap, readMarks, selectedReadMarkTs);
 
-  // toFeedResult 会写入 runtime.savedMode / savedReadMarkTs，需要在之后持久化
   await saveRuntimeStateMap(runtimeMap);
 
   return result;
@@ -336,12 +340,10 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
 
 chrome.runtime.onInstalled.addListener(async () => {
   const settings = await loadSettings();
-  await saveSettings({
-    ...DEFAULT_SETTINGS,
-    ...settings
-  });
-
+  const merged = { ...DEFAULT_SETTINGS, ...settings };
+  await saveSettings(merged);
   await cleanExpiredClicks();
+  await setupAlarm(merged);
 });
 
 chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse) => {
@@ -351,3 +353,4 @@ chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResp
 
   return true;
 });
+

@@ -12,6 +12,7 @@ export interface GroupConfig {
 
 export interface ExtensionSettings {
   refreshIntervalMinutes: number;
+  backgroundRefreshIntervalMinutes: number;
   timelineMixedMaxCount: number;
   extraOlderVideoCount: number;
   defaultReadMarkDays: number;
@@ -81,12 +82,20 @@ export interface CurrentUser {
   uname: string;
 }
 
+// 按作者缓存视频数据，跨分组共享
+export interface AuthorVideoCache {
+  mid: number;
+  name: string;
+  videos: VideoItem[];
+  nextPn: number;
+  hasMore: boolean;
+  lastFetchedAt: number;
+}
+
+// 分组仅持有作者引用，不直接持有视频数据
 export interface GroupFeedCache {
   groupId: string;
-  authors: Array<{ mid: number; name: string }>;
-  authorCursorMap: Record<number, { nextPn: number; hasMore: boolean; name: string }>;
-  videosByAuthor: Record<number, VideoItem[]>;
-  mixedVideos: VideoItem[];
+  authorMids: number[];
   updatedAt: number;
 }
 

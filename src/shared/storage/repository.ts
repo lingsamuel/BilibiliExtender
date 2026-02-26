@@ -1,6 +1,7 @@
 import { CLICKED_VIDEO_EXPIRE_DAYS, DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
 import type {
   AuthorReadMark,
+  AuthorVideoCache,
   ExtensionSettings,
   GroupConfig,
   GroupFeedCache,
@@ -9,6 +10,7 @@ import type {
 
 type RuntimeStateMap = Record<string, GroupRuntimeState>;
 type FeedCacheMap = Record<string, GroupFeedCache>;
+type AuthorVideoCacheMap = Record<number, AuthorVideoCache>;
 
 async function storageGet<T>(
   area: chrome.storage.StorageArea,
@@ -98,12 +100,30 @@ export async function saveRuntimeStateMap(stateMap: RuntimeStateMap): Promise<vo
   await storageSet(chrome.storage.local, STORAGE_KEYS.RUNTIME, stateMap);
 }
 
+/**
+ * 读取分组 feed 缓存，自动丢弃不含 authorMids 的旧格式条目。
+ */
 export async function loadFeedCacheMap(): Promise<FeedCacheMap> {
-  return storageGet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, {} as FeedCacheMap);
+  const raw = await storageGet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, {} as FeedCacheMap);
+  const cleaned: FeedCacheMap = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value && Array.isArray(value.authorMids)) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
 }
 
 export async function saveFeedCacheMap(cacheMap: FeedCacheMap): Promise<void> {
   await storageSet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, cacheMap);
+}
+
+export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
+  return storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
+}
+
+export async function saveAuthorVideoCacheMap(cacheMap: AuthorVideoCacheMap): Promise<void> {
+  await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, cacheMap);
 }
 
 export async function loadLastGroupId(): Promise<string | undefined> {
