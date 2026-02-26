@@ -20,6 +20,7 @@ function createRoot(): HTMLElement {
 }
 
 const NAV_ENTRY_TARGET_INDEX = 2;
+const RIGHT_ENTRY_SVG_HEIGHT = 20;
 
 // 将按钮插入到 container 的第 NAV_ENTRY_TARGET_INDEX 个子元素之前（即第三个位置）
 function insertAtTargetPosition(container: Element, entry: HTMLElement): void {
@@ -31,12 +32,25 @@ function insertAtTargetPosition(container: Element, entry: HTMLElement): void {
   container.insertBefore(entry, ref);
 }
 
+/**
+ * 直接规范 right-entry 下所有 SVG 的高度，避免依赖样式层被站点覆盖。
+ * 同时写入属性和内联样式，尽可能兼容不同来源的图标实现。
+ */
+function normalizeRightEntrySvgHeight(container: Element): void {
+  const svgs = container.querySelectorAll('svg');
+
+  svgs.forEach((svg) => {
+    svg.setAttribute('height', String(RIGHT_ENTRY_SVG_HEIGHT));
+    svg.style.height = `${RIGHT_ENTRY_SVG_HEIGHT}px`;
+  });
+}
+
 // 分组动态图标：网格布局 SVG，表示分组/分类概念
-const NAV_ICON_SVG = `<svg width="20" height="21" viewBox="0 0 20 21" fill="none" xmlns="http://www.w3.org/2000/svg" class="right-entry-icon">
-  <rect x="2" y="2.5" width="7" height="7" rx="1.5" fill="currentColor"/>
-  <rect x="11" y="2.5" width="7" height="7" rx="1.5" fill="currentColor"/>
-  <rect x="2" y="11.5" width="7" height="7" rx="1.5" fill="currentColor"/>
-  <rect x="11" y="11.5" width="7" height="7" rx="1.5" fill="currentColor"/>
+const NAV_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="right-entry-icon">
+  <rect x="2" y="2" width="7" height="7" rx="1.5" fill="currentColor"/>
+  <rect x="11" y="2" width="7" height="7" rx="1.5" fill="currentColor"/>
+  <rect x="2" y="11" width="7" height="7" rx="1.5" fill="currentColor"/>
+  <rect x="11" y="11" width="7" height="7" rx="1.5" fill="currentColor"/>
 </svg>`;
 
 function ensureNavEntry(container: Element): HTMLLIElement {
@@ -49,6 +63,7 @@ function ensureNavEntry(container: Element): HTMLLIElement {
   const li = document.createElement('li');
   li.id = NAV_ENTRY_ID;
   li.className = 'right-entry-item';
+  li.style.marginRight = '0';
 
   const dot = document.createElement('div');
   dot.className = 'bbe-nav-dot';
@@ -133,6 +148,7 @@ function startInjectNavEntry(): void {
       return false;
     }
     ensureNavEntry(container);
+    normalizeRightEntrySvgHeight(container);
     return true;
   };
 
