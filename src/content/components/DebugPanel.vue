@@ -29,13 +29,15 @@
   <section class="bbe-panel bbe-debug-panel">
     <h2 class="bbe-panel-title">分组缓存</h2>
     <div v-if="!status || status.groupCaches.length === 0" class="bbe-sub">暂无缓存</div>
-    <div v-else class="bbe-debug-table">
+    <div v-else class="bbe-debug-table bbe-debug-table-groups">
       <div class="bbe-debug-table-header">
+        <span>分组名</span>
         <span>分组 ID</span>
         <span>作者数</span>
         <span>更新时间</span>
       </div>
       <div v-for="g in status.groupCaches" :key="g.groupId" class="bbe-debug-table-row">
+        <span :title="g.title">{{ g.title }}</span>
         <span class="bbe-debug-mono">{{ g.groupId.slice(0, 8) }}</span>
         <span>{{ g.authorCount }}</span>
         <span>{{ formatTime(g.updatedAt) }}</span>
@@ -46,14 +48,23 @@
   <section class="bbe-panel bbe-debug-panel">
     <h2 class="bbe-panel-title">作者缓存 ({{ status?.authorCaches.length ?? 0 }})</h2>
     <div v-if="!status || status.authorCaches.length === 0" class="bbe-sub">暂无缓存</div>
-    <div v-else class="bbe-debug-table">
+    <div v-else class="bbe-debug-table bbe-debug-table-authors">
       <div class="bbe-debug-table-header">
         <span>作者</span>
+        <span>所属分组</span>
         <span>缓存视频数</span>
         <span>上次拉取</span>
       </div>
       <div v-for="a in status.authorCaches" :key="a.mid" class="bbe-debug-table-row">
         <span>{{ a.name }}</span>
+        <span class="bbe-debug-group-list">
+          <template v-if="a.groupNames.length > 0">
+            <span v-for="groupName in a.groupNames" :key="`${a.mid}-${groupName}`" class="bbe-debug-chip" :title="groupName">
+              {{ groupName }}
+            </span>
+          </template>
+          <span v-else class="bbe-debug-empty">-</span>
+        </span>
         <span>{{ a.videoCount }}</span>
         <span>{{ formatTime(a.lastFetchedAt) }}</span>
       </div>

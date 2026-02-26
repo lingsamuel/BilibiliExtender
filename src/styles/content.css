@@ -513,3 +513,41 @@
 .bbe-debug-mono {
   font-family: monospace;
 }
+
+.bbe-debug-table-groups .bbe-debug-table-header,
+.bbe-debug-table-groups .bbe-debug-table-row {
+  grid-template-columns: minmax(130px, 1.4fr) 88px 56px 80px;
+}
+
+.bbe-debug-table-authors .bbe-debug-table-header,
+.bbe-debug-table-authors .bbe-debug-table-row {
+  grid-template-columns: minmax(90px, 0.9fr) minmax(160px, 2fr) 72px 80px;
+}
+
+.bbe-debug-table-authors .bbe-debug-table-row {
+  align-items: start;
+}
+
+.bbe-debug-group-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  line-height: 1.4;
+}
+
+.bbe-debug-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid #dce5ee;
+  border-radius: 999px;
+  background: #f5f9fd;
+  color: #3f4e67;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bbe-debug-empty {
+  color: #999;
+}

@@ -45,6 +45,7 @@ export interface SchedulerStatusResponse {
   authorCaches: Array<{
     mid: number;
     name: string;
+    groupNames: string[];
     videoCount: number;
     lastFetchedAt: number;
     face?: string;
@@ -52,6 +53,7 @@ export interface SchedulerStatusResponse {
   // 分组缓存摘要
   groupCaches: Array<{
     groupId: string;
+    title: string;
     authorCount: number;
     updatedAt: number;
   }>;

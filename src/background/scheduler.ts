@@ -53,6 +53,10 @@ interface SchedulerInternalState {
   liveAuthorCacheMap: AuthorCacheMap | null;
 }
 
+function getGroupTitle(group: { groupId: string; alias?: string; mediaTitle: string }): string {
+  return group.alias?.trim() || group.mediaTitle || group.groupId;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -142,13 +146,34 @@ export function enqueuePriority(tasks: SchedulerTask[]): void {
  */
 export async function getStatus(): Promise<SchedulerStatusResponse> {
   // 调度器运行期间优先读内存中的实时缓存，避免读到过时的 storage 快照
-  const authorCacheMap = state.liveAuthorCacheMap ?? await loadAuthorVideoCacheMap();
-  const feedCacheMap = await loadFeedCacheMap();
+  const [authorCacheMap, feedCacheMap, groups] = await Promise.all([
+    state.liveAuthorCacheMap ?? loadAuthorVideoCacheMap(),
+    loadFeedCacheMap(),
+    loadGroups()
+  ]);
+
+  const groupTitleMap = new Map<string, string>();
+  for (const group of groups) {
+    groupTitleMap.set(group.groupId, getGroupTitle(group));
+  }
+
+  // 预先构建“作者 -> 所属分组名列表”，前台渲染时直接读取，避免在模板层做嵌套循环。
+  const authorGroupNamesMap = new Map<number, Set<string>>();
+  for (const cache of Object.values(feedCacheMap)) {
+    const groupTitle = groupTitleMap.get(cache.groupId) ?? cache.groupId;
+
+    for (const mid of cache.authorMids) {
+      const names = authorGroupNamesMap.get(mid) ?? new Set<string>();
+      names.add(groupTitle);
+      authorGroupNamesMap.set(mid, names);
+    }
+  }
 
   const authorCaches = Object.values(authorCacheMap)
     .map((c) => ({
       mid: c.mid,
       name: c.name,
+      groupNames: Array.from(authorGroupNamesMap.get(c.mid) ?? []).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')),
       videoCount: c.videos.length,
       lastFetchedAt: c.lastFetchedAt,
       face: c.face
@@ -158,6 +183,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
   const groupCaches = Object.values(feedCacheMap)
     .map((c) => ({
       groupId: c.groupId,
+      title: groupTitleMap.get(c.groupId) ?? c.groupId,
       authorCount: c.authorMids.length,
       updatedAt: c.updatedAt
     }))
