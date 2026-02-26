@@ -76,49 +76,88 @@ function ensureNavEntry(container: Element): HTMLLIElement {
   return li;
 }
 
-function findHeaderContainer(): Element | null {
+/**
+ * 判断 .right-entry 是否已完成渲染。
+ * B 站 header 渲染完成后，.right-entry 下至少包含 5 个 .right-entry-text 元素
+ * （消息、动态、收藏、历史、创作中心等），以此作为就绪信号，
+ * 避免在 header 半渲染状态下注入导致额外 DOM 抖动。
+ */
+const NAV_READY_MIN_ENTRY_TEXT_COUNT = 5;
+
+function isHeaderReady(container: Element): boolean {
+  return container.querySelectorAll('.right-entry-text').length >= NAV_READY_MIN_ENTRY_TEXT_COUNT;
+}
+
+function findReadyHeaderContainer(): Element | null {
   const selectors = [
     '.right-entry',
     '.mini-header__content .right-entry',
-    '.bili-header__bar .right-entry',
-    '.h .h-right',
-    '.h .wrapper .right',
-    'header .right'
+    '.bili-header__bar .right-entry'
   ];
 
   for (const selector of selectors) {
     const matched = document.querySelector(selector);
-    if (matched) {
+    if (matched && isHeaderReady(matched)) {
       return matched;
     }
   }
 
-  const header = document.querySelector('header');
-  return header;
+  return null;
 }
 
-function startInjectNavEntry(): void {
-  const inject = () => {
-    const container = findHeaderContainer();
-    if (!container) {
-      return;
-    }
+const INJECT_INITIAL_DELAY_MS = 300;
+const INJECT_FAST_RETRIES = 5;
+const INJECT_MAX_DELAY_MS = 5000;
+const INJECT_MAX_TOTAL_MS = 30_000;
 
+/**
+ * 计算第 n 次重试的延迟（指数退避）。
+ * 前 INJECT_FAST_RETRIES 次使用固定短间隔，之后每次翻倍，上限 INJECT_MAX_DELAY_MS。
+ */
+function retryDelay(attempt: number): number {
+  if (attempt < INJECT_FAST_RETRIES) {
+    return INJECT_INITIAL_DELAY_MS;
+  }
+  return Math.min(INJECT_INITIAL_DELAY_MS * 2 ** (attempt - INJECT_FAST_RETRIES), INJECT_MAX_DELAY_MS);
+}
+
+/**
+ * 尝试注入导航入口按钮。
+ * 采用指数退避重试，等待 .right-entry 渲染就绪后再注入，
+ * 避免在视频播放页等 DOM 高频变化的场景下引发性能雪崩。
+ */
+function startInjectNavEntry(): void {
+  const tryInject = (): boolean => {
+    const container = findReadyHeaderContainer();
+    if (!container) {
+      return false;
+    }
     ensureNavEntry(container);
+    return true;
   };
 
-  inject();
+  if (tryInject()) {
+    return;
+  }
 
-  const observer = new MutationObserver(() => {
-    inject();
-  });
+  let attempt = 0;
+  let elapsed = 0;
 
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
+  const scheduleNext = () => {
+    const delay = retryDelay(attempt);
+    elapsed += delay;
+    if (elapsed > INJECT_MAX_TOTAL_MS) {
+      return;
+    }
+    setTimeout(() => {
+      attempt++;
+      if (!tryInject()) {
+        scheduleNext();
+      }
+    }, delay);
+  };
 
-  window.addEventListener('beforeunload', () => observer.disconnect(), { once: true });
+  scheduleNext();
 }
 
 function bindUnreadDot(): void {
