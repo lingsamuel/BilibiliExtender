@@ -327,9 +327,9 @@ export function toFeedResult(
 
   const readMarkTimestamps = collectReadMarkTimestamps(cache, readMarks);
 
-  // grace 逻辑：无真实已阅记录时，用 N 天前作为默认时间点
+  // grace 逻辑：始终计算 N 天前的时间点，供下拉菜单作为兜底选项
   let graceReadMarkTs = 0;
-  if (readMarkTimestamps.length === 0 && settings.defaultReadMarkDays > 0) {
+  if (settings.defaultReadMarkDays > 0) {
     graceReadMarkTs = Math.floor(Date.now() / 1000) - settings.defaultReadMarkDays * 24 * 60 * 60;
   }
 

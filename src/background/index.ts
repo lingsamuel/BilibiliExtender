@@ -214,7 +214,6 @@ async function handleGetGroupFeed(
   }
 
   await Promise.all([
-    saveRuntimeStateMap(runtimeMap),
     saveFeedCacheMap(cacheMap),
     saveLastGroupId(group.groupId)
   ]);
@@ -222,7 +221,12 @@ async function handleGetGroupFeed(
   const readMarks = await loadAuthorReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
 
-  return toFeedResult(group, request.payload.mode, settings, runtimeMap, cacheMap, readMarks, selectedReadMarkTs);
+  const result = toFeedResult(group, request.payload.mode, settings, runtimeMap, cacheMap, readMarks, selectedReadMarkTs);
+
+  // toFeedResult 会写入 runtime.savedMode / savedReadMarkTs，需要在之后持久化
+  await saveRuntimeStateMap(runtimeMap);
+
+  return result;
 }
 
 async function handleMarkGroupRead(
