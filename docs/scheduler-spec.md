@@ -1,233 +1,262 @@
-# 统一调度器 Spec
+# 通用调度器 Spec
 
 ## 1. 背景与目标
 
 ### 1.1 问题
 
-当前实现中，前台操作（打开抽屉、切换分组、手动刷新）会直接触发 API 请求。当分组包含大量作者时，会在短时间内发出大量请求，触发 Bilibili 限流（HTTP 412）。限流后整个分组不可用。
+当前实现只覆盖作者视频缓存刷新，收藏夹内容（标题、作者列表）缺少同等级别的定时缓存更新。导致分组配置建立后，收藏夹后续变更无法稳定同步到分组缓存。
 
 ### 1.2 目标
 
-将所有 Bilibili API 请求收归到后台统一调度器管理。前台操作不再直接发起 API 请求，而是：
-- 始终优先读取缓存
-- 缓存为空时显示"正在生成缓存"提示
-- 需要刷新时，向调度器提交优先任务
+将后台调度器抽象为通用组件，支持多任务通道并行存在、独立限流与独立 alarm：
+- 通道 A：作者视频缓存刷新（`author-video`）
+- 通道 B：收藏夹缓存刷新（`group-fav`）
+
+前台行为统一为“读缓存 + 提交任务”，不直接发起重型 API 刷新请求。
 
 ### 1.3 非目标
 
-- 不改变现有的缓存数据结构（`AuthorVideoCache`、`GroupFeedCache`）。
-- 不改变视图组装逻辑（`toFeedResult`）。
+- 不改变 UI 的核心展示结构（混合模式/作者模式）。
+- 不改变红点判定规则。
+- 不引入跨设备强一致调度状态同步。
 
 ## 2. 术语
 
-- **任务（Task）**：刷新单个作者视频缓存的工作单元，包含 `mid` 和 `name`。
-- **批次（Batch）**：一组串行执行的任务，最多 `BATCH_SIZE`（10）个。
-- **优先任务**：由用户操作（手动刷新、新建分组）触发的任务，插入队列最前。
-- **常规任务**：由 alarm 定时触发的过期作者刷新任务。
+- **通道（Channel）**：一类任务的独立队列与执行参数集合。
+- **任务（Task）**：一次最小刷新单元。
+- **优先任务（Priority Task）**：由用户操作触发，立即入列到队首。
+- **常规任务（Routine Task）**：由定时 alarm 触发。
 
-## 3. 调度器设计
+## 3. 设计方案
 
-### 3.1 核心数据结构
+### 3.1 通用调度器内核
 
 ```ts
-interface SchedulerTask {
-  mid: number;
-  name: string;
-  // 关联的分组 ID，用于通知前台刷新完成
+interface SchedulerTaskBase {
+  key: string; // 任务去重键
   groupId?: string;
 }
 
-interface SchedulerState {
-  // 待执行任务队列（FIFO，优先任务插入队首）
-  queue: SchedulerTask[];
-  // 当前正在执行的任务（null 表示空闲）
-  currentTask: SchedulerTask | null;
-  // 当前批次已完成的任务数
+interface SchedulerChannel<TTask extends SchedulerTaskBase> {
+  name: string;
+  queue: TTask[];
+  currentTask: TTask | null;
   batchCompleted: number;
-  // 当前批次失败的任务（放入下一批次重试）
-  batchFailed: SchedulerTask[];
-  // 调度器是否正在运行
+  batchFailed: TTask[];
   running: boolean;
-  // 上次调度循环开始时间
   lastRunAt?: number;
+
+  batchSize: number;
+  intraDelayMs: number;
+  minBatchDelayMs: number;
+
+  collectRoutineTasks(): Promise<TTask[]>;
+  runTask(task: TTask): Promise<void>;
+  onTaskSuccess?(task: TTask): Promise<void>;
 }
 ```
 
-### 3.2 调度流程
+内核职责：
+1. 去重入列（`key`）。
+2. 串行执行同一通道任务。
+3. 批次计数、批次间延迟、失败重排。
+4. 状态查询（供调试面板）。
+5. 按通道注册 `chrome.alarms`。
 
-#### 3.2.1 Alarm 触发
+### 3.2 任务通道
 
-1. `chrome.alarms` 按 `backgroundRefreshIntervalMinutes` 周期触发。
-2. 触发时检查调度器状态：
-   - **有正在执行的任务**：不生成新批次，等待当前批次完成后自然继续。
-   - **空闲**：收集所有启用分组的过期作者，按 `lastFetchedAt` 升序排列，生成任务队列，开始执行。
+#### 3.2.1 作者视频通道（`author-video`）
 
-#### 3.2.2 优先任务插入
-
-当用户触发手动刷新或新建分组时：
-
-1. 收集需要刷新的作者列表。
-2. 去重：跳过队列中已存在的 `mid`。
-3. 插入到队列最前面（在 `currentTask` 之后）。
-4. 检查当前批次剩余任务数（`batchCompleted` + 队列中属于当前批次的任务）：
-   - 如果插入后当前批次总任务数超过 `BATCH_SIZE`，将超出部分移到下一批次位置。
-5. 如果调度器空闲，立即启动执行循环。
-
-#### 3.2.3 执行循环
-
-```
-while (queue 非空) {
-  取出队首任务 → currentTask
-  执行 refreshAuthorCache(mid, name, authorCacheMap)
-  if (成功) {
-    batchCompleted++
-  } else {
-    将任务加入 batchFailed
-  }
-  currentTask = null
-
-  if (batchCompleted >= BATCH_SIZE) {
-    // 当前批次结束
-    将 batchFailed 追加到队列末尾
-    batchFailed = []
-    batchCompleted = 0
-    持久化缓存
-    等待批次间延迟
-  } else if (queue 非空) {
-    等待 INTRA_DELAY（1秒）
-  }
-}
-
-// 队列清空，处理最后一批的失败任务
-将 batchFailed 追加到队列末尾（留给下次 alarm）
-持久化缓存
-running = false
-```
-
-#### 3.2.4 批次间延迟计算
-
-与现有逻辑一致：
-
-```
-batchCount = ceil(总任务数 / BATCH_SIZE)
-batchDelay = max(MIN_BATCH_DELAY, backgroundRefreshIntervalMinutes * 60 * 1000 / batchCount)
-```
-
-### 3.3 前台交互变更
-
-#### 3.3.1 打开抽屉 / 切换分组
-
-1. 前台发送 `GET_GROUP_FEED` 消息。
-2. 后台检查 `feedCacheMap` 和 `authorCacheMap`：
-   - **有缓存**：直接用 `toFeedResult` 组装返回。不触发任何 API 请求。
-   - **无缓存（首次）**：返回特殊响应 `{ cacheStatus: 'generating' }`，同时向调度器提交该分组的作者列表为优先任务。
-3. 前台收到 `generating` 状态后显示"正在生成缓存，请稍候..."提示。
-4. 前台启动轮询（间隔 3 秒，最多轮询 10 次），每次发送 `GET_GROUP_FEED` 检查缓存是否就绪。
-
-#### 3.3.2 手动刷新
-
-1. 前台发送 `MANUAL_REFRESH` 消息（新消息类型），携带 `groupId`。
-2. 后台收集该分组所有作者，作为优先任务插入调度器队列。
-3. 立即返回 `{ accepted: true }`，不等待刷新完成。
-4. 前台启动轮询（间隔 3 秒，最多轮询 20 次），每次发送 `GET_GROUP_FEED` 获取最新缓存。
-5. 轮询期间 UI 显示"正在刷新..."状态。
-
-#### 3.3.3 新建分组
-
-1. 分组创建后，后台需要先拉取收藏夹内容获取作者列表（`getAllFavVideos`）。
-2. 这个收藏夹拉取请求也通过调度器执行：提交一个特殊的"分组初始化"任务。
-3. 初始化完成后，将作者列表作为优先任务插入队列。
-
-### 3.4 消息协议变更
-
-新增消息类型：
+任务结构：
 
 ```ts
-// 手动刷新请求
+interface AuthorVideoTask extends SchedulerTaskBase {
+  key: `author:${number}`;
+  mid: number;
+  name: string;
+}
+```
+
+来源：
+- 定时：收集所有启用分组中的作者 `mid`，筛选过期缓存。
+- 优先：手动刷新、首次访问分组、新建分组初始化后触发。
+
+执行：调用 `refreshAuthorCache(mid, name, authorCacheMap)`。
+
+#### 3.2.2 收藏夹缓存通道（`group-fav`）
+
+任务结构：
+
+```ts
+interface GroupFavTask extends SchedulerTaskBase {
+  key: `group:${string}`;
+  groupId: string;
+}
+```
+
+来源：
+- 定时：遍历所有启用分组，按 `groupFavRefreshIntervalMinutes` 判断 `GroupFeedCache.updatedAt` 是否过期。
+- 优先：`MANUAL_REFRESH`、分组列表“立即刷新”。
+
+执行：
+1. 读取分组配置，调用 `getAllFavVideos(mediaId)`。
+2. 提取作者列表并更新 `GroupFeedCache.authorMids` 与 `updatedAt`。
+3. 同步收藏夹标题到 `group.mediaTitle`（`alias` 不变）。
+4. 将该分组最新作者列表转换为 `AuthorVideoTask`，立即入列 `author-video` 通道（优先）。
+
+说明：该通道与 `author-video` 通道独立限流，不共享 ratelimit。
+
+### 3.3 Alarm 与间隔设置
+
+新增/调整设置项：
+- `backgroundRefreshIntervalMinutes`：作者视频通道定时周期，默认 `10`，范围 `5–120`。
+- `groupFavRefreshIntervalMinutes`：收藏夹缓存通道定时周期，默认 `10`，范围 `5–120`。
+- `schedulerBatchSize`：调度器每批任务数，默认 `10`，范围 `1–50`，两个通道共享同一设置值。
+
+每个通道独立注册 alarm：
+- `bbe:refresh:author-video`
+- `bbe:refresh:group-fav`
+
+### 3.4 前台交互
+
+#### 3.4.1 GET_GROUP_FEED
+
+- 仅基于缓存组装返回。
+- 分组无缓存时：返回 `cacheStatus: 'generating'`，并优先入列 `group-fav` 任务。
+
+#### 3.4.2 MANUAL_REFRESH
+
+`MANUAL_REFRESH(groupId)` 的行为统一为“立即入列两段刷新链路”：
+1. 优先入列 `group-fav` 任务。
+2. `group-fav` 成功后，基于最新作者列表优先入列 `author-video` 任务。
+3. 接口立即返回 `{ accepted: true }`，前台轮询 `GET_GROUP_FEED`。
+
+#### 3.4.3 设置页“立即刷新”
+
+分组列表每行新增“立即刷新”按钮，行为与抽屉手动刷新完全一致，调用同一 `MANUAL_REFRESH` 消息。
+
+#### 3.4.4 调试页“立刻发起调度”
+
+1. 调试页新增“立刻发起调度”按钮，点击后立即执行一次“常规定时调度同款”任务收集（仅收集当前过期任务，不做全量强刷）。
+2. 目标范围为全部通道（`author-video` + `group-fav`）。
+3. 若通道空闲则立即启动执行循环；若已在运行则只合并任务队列，不创建并行循环。
+4. 触发后必须重置该通道 alarm 的下次触发时间：`nextAlarmAt = now + 对应通道 interval`。
+
+### 3.5 批次与限速规则（关键约束）
+
+以下规则为调度器强约束，`author-video` 与 `group-fav` 两个通道都适用，且互相独立执行：
+
+1. 任务串行：同一通道内一次只执行一个任务。
+2. 批次上限：每批最多 `schedulerBatchSize` 个任务（默认 `10`）。
+3. 批内间隔：同批任务之间固定等待 `INTRA_DELAY_MS`（默认 `1000ms`）。
+4. 批间延迟：每批完成后按周期均匀分散请求，公式为：
+
+```ts
+batchCount = ceil(totalTasks / schedulerBatchSize);
+batchDelay = max(MIN_BATCH_DELAY_MS, intervalMinutes * 60 * 1000 / batchCount);
+```
+
+其中 `MIN_BATCH_DELAY_MS` 默认 `30000ms`。
+
+5. 失败重试：任务失败后先放入 `batchFailed`，在当前批次结束时追加到队列尾部，进入下一批或下次 alarm 重试。
+6. 优先入列：用户触发的优先任务插入队首；去重键冲突时跳过重复任务。
+7. 运行中告警：若某通道正在运行，alarm 触发时不重复创建新执行循环，只补充队列。
+
+执行循环约束如下：
+
+```ts
+while (queue not empty) {
+  task = queue.shift();
+  runTask(task);
+  if (success) batchCompleted++;
+  else batchFailed.push(task);
+
+  if (batchCompleted >= schedulerBatchSize) {
+    queue.push(...batchFailed);
+    batchFailed = [];
+    batchCompleted = 0;
+    persist();
+    wait(batchDelay);
+  } else if (queue not empty) {
+    wait(INTRA_DELAY_MS);
+  }
+}
+
+queue.push(...batchFailed); // 留给下一批或下次 alarm
+persist();
+```
+
+## 4. 消息协议
+
+沿用现有消息，`MANUAL_REFRESH` 请求/响应不变：
+
+```ts
 | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
 
-// 获取调度器状态（调试用）
-| { type: 'GET_SCHEDULER_STATUS' }
-```
-
-`GET_GROUP_FEED` 响应变更：
-
-```ts
-interface GroupFeedResponse {
-  // 现有字段...
-  // 新增：缓存状态
-  cacheStatus: 'ready' | 'generating';
-}
-```
-
-`MANUAL_REFRESH` 响应：
-
-```ts
 interface ManualRefreshResponse {
   accepted: boolean;
 }
 ```
 
-`GET_SCHEDULER_STATUS` 响应：
+新增调试触发消息：
 
 ```ts
-interface SchedulerStatusResponse {
-  running: boolean;
-  queueLength: number;
-  currentTask: { mid: number; name: string } | null;
-  batchCompleted: number;
-  batchFailed: number;
-  lastRunAt?: number;
-  // 队列详情（调试用）
-  queue: Array<{ mid: number; name: string; groupId?: string }>;
+| { type: 'RUN_SCHEDULER_NOW' }
+
+interface RunSchedulerNowResponse {
+  accepted: true;
+  triggeredAt: number;
+  channels: Array<{
+    name: 'author-video' | 'group-fav';
+    queued: number;
+    nextAlarmAt?: number;
+  }>;
 }
 ```
 
-## 4. 调试模式
-
-### 4.1 设置项
-
-`ExtensionSettings` 新增：
+`GET_SCHEDULER_STATUS` 扩展为按通道返回状态（调试用）：
 
 ```ts
-debugMode: boolean; // 默认 false
+interface SchedulerStatusResponse {
+  schedulerBatchSize: number;
+  channels: Array<{
+    name: 'author-video' | 'group-fav';
+    running: boolean;
+    queueLength: number;
+    currentTask: Record<string, unknown> | null;
+    batchCompleted: number;
+    batchFailed: number;
+    lastRunAt?: number;
+    nextAlarmAt?: number;
+  }>;
+}
 ```
-
-### 4.2 调试页面
-
-- 入口：抽屉侧边栏，"设置"按钮下方显示"调试"按钮（仅 `debugMode` 开启时可见）。
-- 内容：
-  - 调度器状态：运行中/空闲
-  - 当前任务：mid + name
-  - 队列长度 + 队列详情列表
-  - 当前批次进度：已完成 / BATCH_SIZE
-  - 失败任务数
-  - 上次调度时间
-- 自动刷新：每 2 秒轮询 `GET_SCHEDULER_STATUS`。
 
 ## 5. 文件变更清单
 
-### 5.1 删除
+### 5.1 新增
 
-- `src/background/scheduler.ts`：现有调度器实现，将被新实现替代。
+- `src/background/scheduler/core.ts`：通用调度器内核。
+- `src/background/scheduler/channels/author-video.ts`：作者视频通道。
+- `src/background/scheduler/channels/group-fav.ts`：收藏夹缓存通道。
 
-### 5.2 新增
+### 5.2 修改
 
-- `src/background/scheduler.ts`：统一调度器（重写）。
-- `src/content/components/DebugPanel.vue`：调试面板组件。
+- `src/background/scheduler.ts`：改为通道装配与对外门面。
+- `src/background/index.ts`：
+  - `MANUAL_REFRESH` 改为触发“收藏夹刷新 → 作者视频刷新”链路。
+  - `GET_GROUP_FEED` 无缓存时触发 `group-fav` 优先任务。
+- `src/background/index.ts`：新增 `RUN_SCHEDULER_NOW` 消息路由。
+- `src/background/feed-service.ts`：补充分组收藏夹刷新原子函数（仅供调度器调用）。
+- `src/shared/types.ts`：`ExtensionSettings` 新增 `groupFavRefreshIntervalMinutes`、`schedulerBatchSize`。
+- `src/shared/constants.ts`：两个后台刷新间隔默认值均调整为 `10`。
+- `src/shared/components/SettingsPanel.vue`：
+  - 新增 `groupFavRefreshIntervalMinutes` 设置项。
+  - 新增 `schedulerBatchSize` 设置项（全调度器共享）。
+  - 分组行新增“立即刷新”按钮。
+- `src/shared/messages.ts`：新增 `RUN_SCHEDULER_NOW` 消息类型与响应，调试状态返回 `schedulerBatchSize`。
+- `src/content/components/DebugPanel.vue`：新增“立刻发起调度”按钮并展示重置后的下次触发时间。
 
-### 5.3 修改
+## 6. 与主 Spec 的关系
 
-- `src/shared/types.ts`：`ExtensionSettings` 新增 `debugMode`。
-- `src/shared/constants.ts`：`DEFAULT_SETTINGS` 新增 `debugMode: false`；移除 `API_REQUEST_DELAY_MS`。
-- `src/shared/messages.ts`：新增 `MANUAL_REFRESH`、`GET_SCHEDULER_STATUS` 消息类型。
-- `src/background/index.ts`：`handleGetGroupFeed` 不再调用 `ensureGroupCache`/`loadMoreForMixed` 等触发 API 的函数，改为纯缓存读取 + 提交调度任务。新增 `handleManualRefresh`、`handleGetSchedulerStatus`。
-- `src/background/feed-service.ts`：移除 `ensureAuthorCache`、`ensureGroupCache` 中的 API 调用逻辑和 `sleep`/`API_REQUEST_DELAY_MS`。`refreshAuthorCache` 保留为调度器调用的原子操作。
-- `src/content/components/DrawerApp.vue`：手动刷新改为发送 `MANUAL_REFRESH` + 轮询；处理 `cacheStatus: 'generating'`。
-- `src/content/components/DrawerApp.vue`：侧边栏新增调试入口。
-- `src/shared/components/SettingsPanel.vue`：新增调试模式开关。
-- `src/styles/content.css`：调试面板样式。
-
-## 6. 从主 Spec 中移除的内容
-
-原 `grouped-feed-extension-spec.md` 的 4.5.5（前台刷新）和 4.5.6（后台定时刷新）两节将被本文档替代。主 Spec 中这两节改为引用本文档。
+`grouped-feed-extension-spec.md` 仅保留刷新行为的产品级描述；具体调度执行模型以本文档为准。

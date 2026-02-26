@@ -137,38 +137,30 @@ interface GroupFeedCache {
 
 #### 4.5.5 前台刷新（用户触发）
 
-- 手动刷新：点击刷新按钮，强制刷新当前分组的作者列表 + 所有作者的视频缓存。
-- 自动刷新：打开面板或切换分组时，若分组内存在过期的作者缓存则自动刷新这些作者。
+- 手动刷新（抽屉按钮 / 设置页分组行“立即刷新”）：
+  1. 立即向调度器优先入列该分组的收藏夹刷新任务（`group-fav`）。
+  2. 收藏夹刷新成功后，基于最新作者列表继续优先入列作者视频刷新任务（`author-video`）。
+  3. 前台通过轮询 `GET_GROUP_FEED` 获取最新缓存，不等待刷新链路同步完成。
+- 自动刷新：打开面板或切换分组时，若该分组无缓存则提交收藏夹优先任务；有缓存时仅读取缓存。
 
 #### 4.5.6 后台定时刷新
 
-通过 `chrome.alarms` 实现，Service Worker 休眠后仍可被唤醒。
+通过通用调度器 + `chrome.alarms` 实现，Service Worker 休眠后仍可被唤醒。调度细节见 `docs/scheduler-spec.md`。
 
-新增设置项：
-- `backgroundRefreshIntervalMinutes`：后台刷新周期，默认 15 分钟，范围 5–120。
+后台刷新拆分为两条独立通道（互不共享 ratelimit）：
+1. `author-video`：刷新作者视频缓存，周期由 `backgroundRefreshIntervalMinutes` 控制。
+2. `group-fav`：刷新收藏夹缓存（标题 + 作者列表），周期由 `groupFavRefreshIntervalMinutes` 控制。
 
-调度策略：
-1. 注册一个固定间隔的 alarm（间隔 = `backgroundRefreshIntervalMinutes`）。
-2. alarm 触发时，从所有启用分组中收集全局唯一的作者 mid 集合。
-3. 筛选出缓存已过期的作者，按 `lastFetchedAt` 升序排列（最旧优先）。
-4. 将待刷新作者分为若干批次，每批 `BATCH_SIZE` 个（常量，初始值 10）。
-5. 同一批次内的作者串行请求，每个之间间隔 1 秒。
-6. 批次之间插入延迟：`backgroundRefreshIntervalMinutes * 60 * 1000 / 批次总数`（下限 30 秒），将请求均匀分散在整个周期内。
-7. 同时预热观看历史缓存（若已过期），在首批之前执行。
-
-示例：3 个分组共涉及 25 个唯一作者，后台间隔 15 分钟，`BATCH_SIZE = 10`：
-- 第 0 分钟：alarm 触发，25 个作者全部过期，分 3 批（10 + 10 + 5）
-- 立即执行第 1 批（10 个串行，间隔 1 秒），等待 ~5 分钟
-- 执行第 2 批（10 个串行，间隔 1 秒），等待 ~5 分钟
-- 执行第 3 批（5 个串行，间隔 1 秒）
-- 第 15 分钟：下次 alarm，只刷新再次过期的作者
+批次执行规则保持不变：每个通道都按 `schedulerBatchSize` 分批、批内串行 + 固定间隔、批间按周期均匀分散，并保留失败任务重试机制；详见 `docs/scheduler-spec.md` 3.5 节。
 
 #### 4.5.7 设置项汇总
 
 | 设置项 | UI 标签 | 含义 | 默认值 | 范围 |
 |--------|---------|------|--------|------|
 | `refreshIntervalMinutes` | 请求缓存时长（分钟） | API 请求结果的缓存有效期 | 30 | 1–120 |
-| `backgroundRefreshIntervalMinutes` | 后台刷新间隔（分钟） | 后台 alarm 触发周期 | 15 | 5–120 |
+| `backgroundRefreshIntervalMinutes` | 作者缓存刷新间隔（分钟） | `author-video` 通道 alarm 周期 | 10 | 5–120 |
+| `groupFavRefreshIntervalMinutes` | 收藏夹缓存刷新间隔（分钟） | `group-fav` 通道 alarm 周期 | 10 | 5–120 |
+| `schedulerBatchSize` | 每批任务数 | 调度器每个通道每批最多执行任务数（全通道共享） | 10 | 1–50 |
 
 ### 4.6 红点（未读）规则
 - 分组级未读判定：存在 `pubdate > lastReadAt(groupId)` 的视频即为未读。
@@ -177,7 +169,9 @@ interface GroupFeedCache {
 
 ### 4.7 设置项
 - `refreshIntervalMinutes`：请求缓存时长（默认 30）。
-- `backgroundRefreshIntervalMinutes`：后台刷新间隔（默认 15）。
+- `backgroundRefreshIntervalMinutes`：作者缓存刷新间隔（默认 10）。
+- `groupFavRefreshIntervalMinutes`：收藏夹缓存刷新间隔（默认 10）。
+- `schedulerBatchSize`：调度器每批任务数（默认 10，全通道共享）。
 - `mixedInitialTargetCount`：混合模式初始目标量（默认 50）。
 - `authorPerCreatorCount`：作者模式每作者展示量（默认 10）。
 - `useStorageSync`：是否启用 `chrome.storage.sync`（默认开；超限时回退 local 并提示）。
@@ -234,7 +228,9 @@ interface GroupConfig {
 
 interface ExtensionSettings {
   refreshIntervalMinutes: number; // default 30
-  backgroundRefreshIntervalMinutes: number; // default 15
+  backgroundRefreshIntervalMinutes: number; // default 10
+  groupFavRefreshIntervalMinutes: number; // default 10
+  schedulerBatchSize: number; // default 10
   mixedInitialTargetCount: number; // default 50
   authorPerCreatorCount: number; // default 10
   useStorageSync: boolean;
@@ -289,7 +285,7 @@ interface VideoItem {
 ### 7.2 查看分组动态
 1. 点击“分组动态”打开抽屉。
 2. 默认选中上次查看分组（或第一个启用分组）。
-3. 判断是否超过刷新间隔，必要时自动刷新。
+3. 先读取缓存；若分组无缓存则提交收藏夹优先刷新任务并显示“生成中”状态。
 4. 展示内容并更新分组已读时间。
 
 ### 7.3 混合模式加载更多
@@ -315,15 +311,17 @@ interface VideoItem {
 2. `www` 与 `space` 页面 Header 均出现"分组动态"入口。
 3. 面板支持分组切换、混合/作者模式切换、手动刷新。
 4. 请求缓存时长可配置，默认 30 分钟。
-5. 后台定时刷新可配置，默认 15 分钟，按批次均匀分散请求。
+5. 作者缓存与收藏夹缓存均支持独立后台定时刷新，两个默认间隔均为 10 分钟。
 6. 作者级视频缓存跨分组共享，避免重复请求同一 UP 主。
 7. 混合模式初始目标默认 50，触底追加 20，超出目标不裁剪。
 8. 作者模式默认每作者 10 条，数量可配置。
 9. 红点按"仅当前分组已读清除"生效，Header 红点聚合正确。
+10. 设置页“分组列表”每行提供“立即刷新”按钮，行为与抽屉手动刷新一致。
+11. 设置页支持配置 `schedulerBatchSize`，并对所有调度通道同时生效。
+12. 调试页支持“立刻发起调度”；触发后下一次自动调度时间从当前时刻重新起算（`now + interval`）。
 
 ## 11. 里程碑拆分
 - M1：扩展骨架 + Header 注入 + 基础抽屉 UI
 - M2：登录态 API + 收藏夹分组管理 + 设置页
 - M3：投稿聚合（混合/作者）+ 刷新策略 + 红点
 - M4：稳定性与错误处理 + 打包说明与 README
-
