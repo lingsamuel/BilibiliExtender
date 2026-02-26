@@ -65,13 +65,13 @@
     <div v-if="!status || status.history.length === 0" class="bbe-sub">暂无记录</div>
     <div v-else class="bbe-debug-table">
       <div class="bbe-debug-table-header">
-        <span>时间</span>
         <span>作者</span>
+        <span>时间</span>
         <span>结果</span>
       </div>
       <div v-for="(h, i) in status.history" :key="i" class="bbe-debug-table-row" :class="{ 'bbe-debug-fail': !h.success }">
-        <span>{{ formatTime(h.timestamp) }}</span>
         <span>{{ h.name }}</span>
+        <span>{{ formatTime(h.timestamp) }}</span>
         <span>{{ h.success ? '成功' : h.error || '失败' }}</span>
       </div>
     </div>
