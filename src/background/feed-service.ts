@@ -237,7 +237,10 @@ export async function ensureGroupCache(
   }
 
   const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
-  runtime.lastRefreshAt = Date.now();
+  // 走缓存路径时不更新 lastRefreshAt，保留上次真正刷新的时间
+  if (!runtime.lastRefreshAt) {
+    runtime.lastRefreshAt = feedCache.updatedAt;
+  }
 }
 
 /**
@@ -275,7 +278,6 @@ export async function loadMoreForMixed(
   }
 
   runtime.unreadCount = calcUnreadCount(mixedVideos, runtime.lastReadAt);
-  runtime.lastRefreshAt = Date.now();
 }
 
 /**
@@ -305,7 +307,6 @@ export async function ensureAuthorModePrepared(
   const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
   const mixedVideos = aggregateMixedVideos(feedCache.authorMids, authorCacheMap);
   runtime.unreadCount = calcUnreadCount(mixedVideos, runtime.lastReadAt);
-  runtime.lastRefreshAt = Date.now();
 }
 
 // ─── 视图组装 ───

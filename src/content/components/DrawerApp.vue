@@ -2,24 +2,33 @@
   <div v-show="visible" class="bbe-mask" @click="closeDrawer" />
   <section v-show="visible" class="bbe-drawer">
     <aside class="bbe-sidebar">
-      <div v-if="summaries.length === 0" class="bbe-empty">
-        还没有分组
-        <button class="bbe-link-btn" @click="openOptions">去设置页创建</button>
+      <div class="bbe-sidebar-groups">
+        <div
+          v-for="item in summaries"
+          :key="item.groupId"
+          class="bbe-group-item"
+          :class="{ active: item.groupId === activeGroupId && !showSettings }"
+          @click="selectGroup(item.groupId)"
+        >
+          <span>{{ item.title }}</span>
+          <span v-if="item.unreadCount > 0" class="bbe-dot">{{ item.unreadCount > 99 ? '99+' : item.unreadCount }}</span>
+        </div>
       </div>
-
       <div
-        v-for="item in summaries"
-        :key="item.groupId"
-        class="bbe-group-item"
-        :class="{ active: item.groupId === activeGroupId }"
-        @click="selectGroup(item.groupId)"
+        class="bbe-group-item bbe-sidebar-settings"
+        :class="{ active: showSettings }"
+        @click="toggleSettings"
       >
-        <span>{{ item.title }}</span>
-        <span v-if="item.unreadCount > 0" class="bbe-dot">{{ item.unreadCount > 99 ? '99+' : item.unreadCount }}</span>
+        <span>设置</span>
       </div>
     </aside>
 
     <main class="bbe-main">
+      <section v-if="showSettings" class="bbe-list bbe-settings-scroll">
+        <SettingsPanel @group-created="onGroupListChanged" />
+      </section>
+
+      <template v-else>
       <header class="bbe-toolbar">
         <div class="bbe-toolbar-left">
           <button class="bbe-btn" :class="{ active: mode === 'mixed' }" @click="switchMode('mixed')">时间流</button>
@@ -82,6 +91,7 @@
           </section>
         </template>
       </section>
+      </template>
     </main>
   </section>
 </template>
@@ -93,6 +103,7 @@ import { sendMessage } from '@/shared/messages';
 import type { GroupFeedResult, GroupSummary, ViewMode, WatchedVideo } from '@/shared/types';
 import { formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
+import SettingsPanel from '@/shared/components/SettingsPanel.vue';
 
 const visible = ref(false);
 const loading = ref(false);
@@ -102,6 +113,7 @@ const summaries = ref<GroupSummary[]>([]);
 const activeGroupId = ref('');
 const feed = ref<GroupFeedResult | null>(null);
 const errorMsg = ref('');
+const showSettings = ref(false);
 const listRef = ref<HTMLElement | null>(null);
 let summaryTimer: number | null = null;
 let userExplicitlyChoseAll = false;
@@ -296,6 +308,13 @@ async function openDrawer(): Promise<void> {
   try {
     await loadSummary(true);
 
+    // 无分组时自动切换到设置页
+    if (summaries.value.length === 0) {
+      showSettings.value = true;
+      return;
+    }
+    showSettings.value = false;
+
     if (!activeGroupId.value) {
       return;
     }
@@ -428,8 +447,24 @@ async function onListScroll(event: Event): Promise<void> {
   }
 }
 
-function openOptions(): void {
-  chrome.runtime.openOptionsPage();
+function toggleSettings(): void {
+  showSettings.value = !showSettings.value;
+}
+
+// 分组列表变更（创建/删除），重新加载概要，无分组时留在设置页，有分组时自动切回
+async function onGroupListChanged(): Promise<void> {
+  try {
+    await loadSummary(false);
+    if (summaries.value.length > 0 && showSettings.value) {
+      showSettings.value = false;
+      if (!activeGroupId.value) {
+        activeGroupId.value = summaries.value[0].groupId;
+      }
+      await loadFeed();
+    }
+  } catch (error) {
+    errorMsg.value = error instanceof Error ? error.message : '刷新分组失败';
+  }
 }
 
 function onToggleDrawer(): void {

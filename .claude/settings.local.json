@@ -5,7 +5,9 @@
       "Bash(npm run build)",
       "WebSearch",
       "WebFetch(domain:socialsisteryi.github.io)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npx vite build --config vite.config.content.ts)",
+      "Bash(npm run typecheck)"
     ],
     "deny": [],
     "ask": []
