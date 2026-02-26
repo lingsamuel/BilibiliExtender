@@ -66,8 +66,8 @@
 
     <div class="bbe-setting-row">
       <div>
-        自动刷新间隔（分钟）
-        <div class="bbe-setting-hint">打开面板/切换分组时超过该阈值会自动刷新</div>
+        请求缓存时长（分钟）
+        <div class="bbe-setting-hint">API 请求结果的缓存有效期，过期后才会重新请求</div>
       </div>
       <input v-model.number="settings.refreshIntervalMinutes" class="bbe-input" type="number" min="1" max="120" />
     </div>

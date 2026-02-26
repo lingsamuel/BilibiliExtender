@@ -19,6 +19,13 @@ function sanitizeValue(value: string): string {
   return value.replace(/[!'()*]/g, '');
 }
 
+export class WbiExpiredError extends Error {
+  constructor() {
+    super('WBI 签名过期');
+    this.name = 'WbiExpiredError';
+  }
+}
+
 /**
  * 生成 WBI 签名参数：用于调用要求 w_rid / wts 的空间投稿接口。
  */

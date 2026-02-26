@@ -286,9 +286,19 @@ async function handleGetClickedVideos(
   return { clicked };
 }
 
+let watchHistoryCache: { data: ResponseMap['GET_WATCH_HISTORY']; expiredAt: number } | null = null;
+
 async function handleGetWatchHistory(): Promise<ResponseMap['GET_WATCH_HISTORY']> {
+  if (watchHistoryCache && watchHistoryCache.expiredAt > Date.now()) {
+    return watchHistoryCache.data;
+  }
+
+  const settings = await loadSettings();
+  const cacheTtlMs = settings.refreshIntervalMinutes * 60 * 1000;
   const history = await getWatchHistory();
-  return { history };
+  const result = { history };
+  watchHistoryCache = { data: result, expiredAt: Date.now() + cacheTtlMs };
+  return result;
 }
 
 async function routeMessage(request: MessageRequest): Promise<MessageResponse> {

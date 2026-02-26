@@ -1,5 +1,5 @@
 import type { CurrentUser, FavoriteFolder, VideoItem, WatchedVideo } from '@/shared/types';
-import { extractWbiKey, signWbiParams } from '@/shared/utils/wbi';
+import { extractWbiKey, signWbiParams, WbiExpiredError } from '@/shared/utils/wbi';
 
 const API_BASE = 'https://api.bilibili.com';
 
@@ -84,6 +84,9 @@ async function fetchApi<T>(
   });
 
   if (!response.ok) {
+    if (response.status === 412) {
+      throw new WbiExpiredError();
+    }
     throw new Error(`请求失败: HTTP ${response.status}`);
   }
 
@@ -136,7 +139,7 @@ async function getWbiKeys(): Promise<{ imgKey: string; subKey: string }> {
   cachedWbiKey = {
     imgKey,
     subKey,
-    expiredAt: Date.now() + 10 * 60 * 1000
+    expiredAt: Date.now() + 2 * 60 * 1000
   };
 
   return { imgKey, subKey };
@@ -193,40 +196,55 @@ export async function getAllFavVideos(mediaId: number): Promise<FavMediaItem[]> 
 }
 
 /**
+ * 清除 WBI 密钥缓存，强制下次调用重新获取。
+ */
+function invalidateWbiKeys(): void {
+  cachedWbiKey = null;
+}
+
+/**
  * 按作者分页拉取投稿视频（WBI 签名接口）。
+ * 遇到 412 时自动清除 WBI key 缓存并重试一次。
  */
 export async function getUploaderVideos(
   mid: number,
   pn: number,
   ps: number
 ): Promise<{ videos: VideoItem[]; hasMore: boolean }> {
-  const { imgKey, subKey } = await getWbiKeys();
-  const signedParams = signWbiParams(
-    {
-      mid,
-      pn,
-      ps,
-      order: 'pubdate'
-    },
-    imgKey,
-    subKey
-  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { imgKey, subKey } = await getWbiKeys();
+      const signedParams = signWbiParams(
+        { mid, pn, ps, order: 'pubdate' },
+        imgKey,
+        subKey
+      );
 
-  const payload = await fetchApi<ArcSearchData>('/x/space/wbi/arc/search', signedParams);
-  const videos = (payload.data.list?.vlist ?? []).map((item) => ({
-    bvid: item.bvid,
-    aid: item.aid,
-    title: item.title,
-    cover: item.pic.startsWith('http') ? item.pic : `https:${item.pic}`,
-    pubdate: item.created,
-    authorMid: item.mid || mid,
-    authorName: item.author
-  }));
+      const payload = await fetchApi<ArcSearchData>('/x/space/wbi/arc/search', signedParams);
+      const videos = (payload.data.list?.vlist ?? []).map((item) => ({
+        bvid: item.bvid,
+        aid: item.aid,
+        title: item.title,
+        cover: item.pic.startsWith('http') ? item.pic : `https:${item.pic}`,
+        pubdate: item.created,
+        authorMid: item.mid || mid,
+        authorName: item.author
+      }));
 
-  const page = payload.data.page;
-  const hasMore = page.pn * page.ps < page.count;
+      const page = payload.data.page;
+      const hasMore = page.pn * page.ps < page.count;
 
-  return { videos, hasMore };
+      return { videos, hasMore };
+    } catch (error) {
+      if (error instanceof WbiExpiredError && attempt === 0) {
+        invalidateWbiKeys();
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error('WBI 签名重试失败');
 }
 
 export type { FavMediaItem };
