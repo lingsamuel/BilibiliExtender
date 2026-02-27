@@ -60,7 +60,10 @@
         </div>
 
         <div class="bbe-toolbar-right">
-          <span>{{ refreshText }}</span>
+          <span class="bbe-refresh-status" :class="{ updating: isUpdating }">
+            <span v-if="isUpdating" class="bbe-spinner" aria-hidden="true" />
+            <span>{{ refreshText }}</span>
+          </span>
           <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="manualRefresh">手动刷新</button>
           <button class="bbe-btn" @click="closeDrawer">关闭</button>
         </div>
@@ -68,7 +71,7 @@
 
       <section ref="listRef" class="bbe-list" @scroll="onListScroll">
         <div v-if="errorMsg" class="bbe-empty">{{ errorMsg }}</div>
-        <div v-else-if="generating" class="bbe-empty">正在生成缓存，请稍候...</div>
+        <div v-else-if="showGeneratingPlaceholder" class="bbe-empty">正在生成缓存，请稍候...</div>
         <div v-else-if="loading" class="bbe-empty">加载中...</div>
         <div v-else-if="!feed || (mode === 'mixed' && feed.mixedVideos.length === 0)" class="bbe-empty">
           当前分组暂无投稿
@@ -124,7 +127,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_GENERATING, POLL_MAX_REFRESHING } from '@/shared/constants';
+import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_REFRESHING } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
 import type { GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
 import { formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
@@ -221,9 +224,27 @@ const clickedMap = ref<Record<string, number>>({});
 const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
 const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
 
+/**
+ * 判断当前响应里是否已经有可展示的视频。
+ * 这里以“至少存在一个视频卡片”为准，避免作者占位为空时误判为可展示。
+ */
+function hasRenderableFeedData(data: GroupFeedResult | null | undefined): boolean {
+  if (!data) {
+    return false;
+  }
+  if (data.mixedVideos.length > 0) {
+    return true;
+  }
+  return data.videosByAuthor.some((author) => author.videos.length > 0);
+}
+
+const hasRenderableFeed = computed(() => hasRenderableFeedData(feed.value));
+const showGeneratingPlaceholder = computed(() => generating.value && !hasRenderableFeed.value);
+const isUpdating = computed(() => refreshing.value || (generating.value && hasRenderableFeed.value));
+
 const refreshText = computed(() => {
+  if (isUpdating.value) return '正在更新中';
   if (generating.value) return '正在生成缓存...';
-  if (refreshing.value) return '正在刷新...';
   return formatRelativeMinutes(feed.value?.lastRefreshAt);
 });
 
@@ -369,6 +390,14 @@ function startPoll(maxAttempts: number): void {
         await markCurrentGroupRead();
         await fetchClickedVideos();
         await loadSummary();
+        return;
+      }
+
+      // 刷新尚未完成时，若已出现部分可展示内容，则先展示增量结果并继续轮询。
+      if (hasRenderableFeedData(resp.data)) {
+        feed.value = resp.data;
+        readMarkTimestamps.value = resp.data.readMarkTimestamps;
+        graceReadMarkTs.value = resp.data.graceReadMarkTs;
       }
     } catch {
       // 轮询中的错误静默忽略
@@ -409,8 +438,14 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
     // 缓存尚未就绪，启动轮询等待
     if (resp.data.cacheStatus === 'generating') {
       generating.value = true;
-      feed.value = null;
-      startPoll(POLL_MAX_GENERATING);
+      if (hasRenderableFeedData(resp.data)) {
+        feed.value = resp.data;
+        readMarkTimestamps.value = resp.data.readMarkTimestamps;
+        graceReadMarkTs.value = resp.data.graceReadMarkTs;
+      } else {
+        feed.value = null;
+      }
+      startPoll(POLL_MAX_REFRESHING);
       return;
     }
 

@@ -28,6 +28,7 @@ import {
   toFeedResult
 } from '@/background/feed-service';
 import {
+  enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
   getStatus,
@@ -55,6 +56,30 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
     createdAt: group.createdAt ?? now,
     updatedAt: now
   };
+}
+
+/**
+ * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”。
+ * 只要 AuthorVideoCache 缺失或没有 lastFetchedAt，即视为缺失。
+ */
+function collectMissingAuthorTasks(
+  authorMids: number[],
+  authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>
+): Array<{ mid: number; name: string }> {
+  const tasks: Array<{ mid: number; name: string }> = [];
+
+  for (const mid of authorMids) {
+    const cache = authorCacheMap[mid];
+    if (cache?.lastFetchedAt) {
+      continue;
+    }
+    tasks.push({
+      mid,
+      name: cache?.name?.trim() || String(mid)
+    });
+  }
+
+  return tasks;
 }
 
 async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
@@ -190,7 +215,9 @@ async function handleGetGroupSummary(
 /**
  * 纯缓存读取 + 提交调度任务。
  * 无缓存时返回 cacheStatus: 'generating'，同时向调度器提交优先任务。
- * 有缓存时直接组装返回 cacheStatus: 'ready'。
+ * 有缓存但作者缓存不完整时：
+ * - 立即优先入列缺失作者任务；
+ * - 返回 cacheStatus: 'generating'，并携带当前可展示的缓存结果（不清空）。
  */
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
@@ -228,22 +255,6 @@ async function handleGetGroupFeed(
     };
   }
 
-  // 有缓存但作者视频数据为空（收藏夹已拉取但作者视频尚未刷新完成）
-  const hasAnyAuthorData = feedCache.authorMids.some((mid) => authorCacheMap[mid]?.videos?.length > 0);
-  if (!hasAnyAuthorData) {
-    return {
-      groupId: group.groupId,
-      mode: request.payload.mode,
-      mixedVideos: [],
-      videosByAuthor: [],
-      unreadCount: 0,
-      hasMoreForMixed: false,
-      readMarkTimestamps: [],
-      graceReadMarkTs: 0,
-      cacheStatus: 'generating'
-    };
-  }
-
   // 加载更多：仅增加目标数量，不发起 API 请求
   if (request.payload.loadMore) {
     increaseMixedTarget(group.groupId, settings, runtimeMap);
@@ -266,6 +277,13 @@ async function handleGetGroupFeed(
     selectedReadMarkTs,
     request.payload.byAuthorSortByLatest
   );
+
+  const missingAuthorTasks = collectMissingAuthorTasks(feedCache.authorMids, authorCacheMap);
+  if (missingAuthorTasks.length > 0) {
+    enqueuePriority(missingAuthorTasks);
+    await saveRuntimeStateMap(runtimeMap);
+    return { ...result, cacheStatus: 'generating' };
+  }
 
   await saveRuntimeStateMap(runtimeMap);
 

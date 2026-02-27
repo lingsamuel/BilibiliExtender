@@ -131,6 +131,10 @@ export async function buildAuthorListFromFav(
 ): Promise<Array<{ mid: number; name: string }>> {
   const favVideos = await getAllFavVideos(group.mediaId);
   const authors = buildAuthorList(favVideos);
+  if (authors.length === 0) {
+    // 收藏夹返回空列表时保持原缓存不变，避免把已有分组信息覆盖为空。
+    return [];
+  }
   const authorMids = authors.map((a) => a.mid);
 
   feedCacheMap[group.groupId] = {

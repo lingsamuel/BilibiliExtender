@@ -233,6 +233,11 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
   }
 
   const authors = await buildAuthorListFromFav(group, feedCacheMap);
+  if (authors.length === 0) {
+    // 收藏夹不存在/不可访问时 getAllFavVideos 可能返回空；此时保持旧分组信息不变。
+    console.warn('[BBE] 收藏夹作者列表为空，已跳过缓存覆盖 groupId:', group.groupId);
+    return;
+  }
 
   // 同步收藏夹标题：别名 alias 独立保存，不会受此更新影响。
   let groupChanged = false;
