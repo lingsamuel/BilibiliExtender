@@ -28,6 +28,7 @@ import {
   toFeedResult
 } from '@/background/feed-service';
 import {
+  enqueueBurst,
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
@@ -58,28 +59,42 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
   };
 }
 
+interface MissingAuthorTaskBuckets {
+  burst: Array<{ mid: number; name: string }>;
+  priority: Array<{ mid: number; name: string }>;
+}
+
 /**
- * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”。
- * 只要 AuthorVideoCache 缺失或没有 lastFetchedAt，即视为缺失。
+ * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”并按队列分流：
+ * - 无缓存：进入 Burst；
+ * - 有缓存但无 lastFetchedAt：进入常规优先队列。
  */
-function collectMissingAuthorTasks(
+function splitMissingAuthorTasks(
   authorMids: number[],
   authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>
-): Array<{ mid: number; name: string }> {
-  const tasks: Array<{ mid: number; name: string }> = [];
+): MissingAuthorTaskBuckets {
+  const burst: Array<{ mid: number; name: string }> = [];
+  const priority: Array<{ mid: number; name: string }> = [];
 
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
     if (cache?.lastFetchedAt) {
       continue;
     }
-    tasks.push({
+
+    const task = {
       mid,
       name: cache?.name?.trim() || String(mid)
-    });
+    };
+
+    if (!cache) {
+      burst.push(task);
+    } else {
+      priority.push(task);
+    }
   }
 
-  return tasks;
+  return { burst, priority };
 }
 
 async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
@@ -294,9 +309,10 @@ async function handleGetGroupFeed(
   const runtimeAfter = JSON.stringify(runtimeMap[group.groupId] ?? null);
   const runtimeChanged = runtimeBefore !== runtimeAfter;
 
-  const missingAuthorTasks = collectMissingAuthorTasks(feedCache.authorMids, authorCacheMap);
-  if (missingAuthorTasks.length > 0) {
-    enqueuePriority(missingAuthorTasks);
+  const missingAuthorTasks = splitMissingAuthorTasks(feedCache.authorMids, authorCacheMap);
+  if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
+    enqueueBurst(missingAuthorTasks.burst);
+    enqueuePriority(missingAuthorTasks.priority);
     if (runtimeChanged) {
       await saveRuntimeStateMap(runtimeMap);
     }

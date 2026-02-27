@@ -34,12 +34,15 @@ interface GroupFavTask {
 }
 
 const MAX_HISTORY = 50;
+const BURST_RETRY_DELAY_MS = 60_000;
 
 type AuthorTask = SchedulerTask;
+type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
 interface HistoryEntry {
   mid: number;
   name: string;
+  mode: 'regular' | 'burst';
   success: boolean;
   timestamp: number;
   error?: string;
@@ -55,6 +58,18 @@ interface ChannelState<TTask> {
   currentBatchDelay: number;
 }
 
+interface QueueState<TTask> {
+  queue: TTask[];
+  currentTask: TTask | null;
+}
+
+interface BurstState extends QueueState<AuthorTask> {
+  running: boolean;
+  lastRunAt?: number;
+  nextAllowedAt: number;
+  cooldownReason: BurstCooldownReason;
+}
+
 function createChannelState<TTask>(): ChannelState<TTask> {
   return {
     queue: [],
@@ -66,9 +81,23 @@ function createChannelState<TTask>(): ChannelState<TTask> {
   };
 }
 
+function createBurstState(): BurstState {
+  return {
+    queue: [],
+    currentTask: null,
+    running: false,
+    nextAllowedAt: 0,
+    cooldownReason: null
+  };
+}
+
 const authorState = createChannelState<AuthorTask>();
 const groupFavState = createChannelState<GroupFavTask>();
+const burstState = createBurstState();
 const history: HistoryEntry[] = [];
+
+let pendingAuthorRoutineAfterBurst = false;
+let pendingGroupFavRoutineAfterBurst = false;
 
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
@@ -115,7 +144,7 @@ function calcBatchDelay(totalTasks: number, intervalMinutes: number, batchSize: 
   return Math.max(BG_REFRESH_MIN_BATCH_DELAY_MS, Math.floor(intervalMs / batchCount));
 }
 
-function buildExistingTaskKeySet<TTask>(state: ChannelState<TTask>, keyOf: (task: TTask) => string): Set<string> {
+function buildExistingTaskKeySet<TTask>(state: QueueState<TTask>, keyOf: (task: TTask) => string): Set<string> {
   const existing = new Set<string>();
   if (state.currentTask) {
     existing.add(keyOf(state.currentTask));
@@ -127,7 +156,7 @@ function buildExistingTaskKeySet<TTask>(state: ChannelState<TTask>, keyOf: (task
 }
 
 function dedupeAndEnqueue<TTask>(
-  state: ChannelState<TTask>,
+  state: QueueState<TTask>,
   tasks: TTask[],
   keyOf: (task: TTask) => string,
   priority: boolean
@@ -160,7 +189,7 @@ function dedupeAndEnqueue<TTask>(
  * 仅补到 batchSize，不做全量入队，且按候选列表顺序（最旧优先）补齐。
  */
 function fillQueueToBatchSize<TTask>(
-  state: ChannelState<TTask>,
+  state: QueueState<TTask>,
   candidates: TTask[],
   keyOf: (task: TTask) => string,
   batchSize: number
@@ -190,6 +219,26 @@ function fillQueueToBatchSize<TTask>(
 
   state.queue.push(...picked);
   return picked.length;
+}
+
+function isBurstActive(): boolean {
+  return burstState.running || burstState.queue.length > 0;
+}
+
+function hasRunningRegularTask(): boolean {
+  return authorState.running || groupFavState.running;
+}
+
+function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
+  if (taskKeys.size === 0 || authorState.queue.length === 0) {
+    return;
+  }
+  authorState.queue = authorState.queue.filter((task) => !taskKeys.has(String(task.mid)));
+}
+
+function markRoutineCompensationPending(): void {
+  pendingAuthorRoutineAfterBurst = true;
+  pendingGroupFavRoutineAfterBurst = true;
 }
 
 async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<number | undefined> {
@@ -224,17 +273,46 @@ async function collectStaleAuthorTasks(settings: ExtensionSettings): Promise<Aut
   const stale: Array<{ mid: number; name: string; lastFetchedAt: number }> = [];
   for (const mid of mids) {
     const cache = authorCacheMap[mid];
+    if (!cache) {
+      continue;
+    }
     if (isAuthorCacheExpired(cache, settings)) {
       stale.push({
         mid,
-        name: cache?.name ?? String(mid),
-        lastFetchedAt: cache?.lastFetchedAt ?? 0
+        name: cache.name ?? String(mid),
+        lastFetchedAt: cache.lastFetchedAt ?? 0
       });
     }
   }
 
   stale.sort((a, b) => a.lastFetchedAt - b.lastFetchedAt);
   return stale.map(({ mid, name }) => ({ mid, name }));
+}
+
+async function collectNoCacheAuthorTasks(): Promise<AuthorTask[]> {
+  const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap(),
+    loadAuthorVideoCacheMap()
+  ]);
+
+  const enabledGroups = groups.filter((g) => g.enabled);
+  if (enabledGroups.length === 0) return [];
+
+  const mids = new Set<number>();
+  for (const group of enabledGroups) {
+    const cache = feedCacheMap[group.groupId];
+    if (!cache) continue;
+    for (const mid of cache.authorMids) {
+      if (!authorCacheMap[mid]) {
+        mids.add(mid);
+      }
+    }
+  }
+
+  return Array.from(mids)
+    .sort((a, b) => a - b)
+    .map((mid) => ({ mid, name: String(mid) }));
 }
 
 async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
@@ -259,10 +337,13 @@ async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
   const oldest: Array<{ mid: number; name: string; lastFetchedAt: number }> = [];
   for (const mid of mids) {
     const cache = authorCacheMap[mid];
+    if (!cache) {
+      continue;
+    }
     oldest.push({
       mid,
-      name: cache?.name ?? String(mid),
-      lastFetchedAt: cache?.lastFetchedAt ?? 0
+      name: cache.name ?? String(mid),
+      lastFetchedAt: cache.lastFetchedAt ?? 0
     });
   }
 
@@ -358,7 +439,18 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
     groupId: group.groupId
   }));
 
-  enqueuePriority(tasks);
+  const burstTasks: AuthorTask[] = [];
+  const priorityTasks: AuthorTask[] = [];
+  for (const task of tasks) {
+    if (!authorCacheMap[task.mid]) {
+      burstTasks.push(task);
+    } else {
+      priorityTasks.push(task);
+    }
+  }
+
+  enqueueBurst(burstTasks);
+  enqueuePriority(priorityTasks);
 }
 
 async function runAuthorLoop(): Promise<void> {
@@ -373,18 +465,23 @@ async function runAuthorLoop(): Promise<void> {
   liveAuthorCacheMap = authorCacheMap;
 
   while (authorState.queue.length > 0) {
+    if (isBurstActive()) {
+      break;
+    }
+
     const task = authorState.queue.shift()!;
     authorState.currentTask = task;
 
     try {
       await runAuthorTask(task, authorCacheMap);
       authorState.batchCompleted++;
-      pushHistory({ mid: task.mid, name: task.name, success: true, timestamp: Date.now() });
+      pushHistory({ mid: task.mid, name: task.name, mode: 'regular', success: true, timestamp: Date.now() });
     } catch (error) {
       authorState.batchFailed.push(task);
       pushHistory({
         mid: task.mid,
         name: task.name,
+        mode: 'regular',
         success: false,
         timestamp: Date.now(),
         error: error instanceof Error ? error.message : String(error)
@@ -393,6 +490,10 @@ async function runAuthorLoop(): Promise<void> {
     }
 
     authorState.currentTask = null;
+
+    if (isBurstActive()) {
+      continue;
+    }
 
     if (authorState.batchCompleted >= batchSize) {
       if (authorState.batchFailed.length > 0) {
@@ -421,6 +522,10 @@ async function runAuthorLoop(): Promise<void> {
 
   authorState.running = false;
   liveAuthorCacheMap = null;
+
+  if (isBurstActive()) {
+    startBurstLoopIfIdle();
+  }
 }
 
 async function runGroupFavLoop(): Promise<void> {
@@ -433,6 +538,10 @@ async function runGroupFavLoop(): Promise<void> {
   const batchSize = normalizeBatchSize(settings);
 
   while (groupFavState.queue.length > 0) {
+    if (isBurstActive()) {
+      break;
+    }
+
     const task = groupFavState.queue.shift()!;
     groupFavState.currentTask = task;
 
@@ -445,6 +554,10 @@ async function runGroupFavLoop(): Promise<void> {
     }
 
     groupFavState.currentTask = null;
+
+    if (isBurstActive()) {
+      continue;
+    }
 
     if (groupFavState.batchCompleted >= batchSize) {
       if (groupFavState.batchFailed.length > 0) {
@@ -468,33 +581,161 @@ async function runGroupFavLoop(): Promise<void> {
   groupFavState.batchCompleted = 0;
 
   groupFavState.running = false;
+
+  if (isBurstActive()) {
+    startBurstLoopIfIdle();
+  }
+}
+
+async function flushPendingRoutineAfterBurst(): Promise<void> {
+  if (!pendingAuthorRoutineAfterBurst && !pendingGroupFavRoutineAfterBurst) {
+    return;
+  }
+
+  const shouldRunAuthor = pendingAuthorRoutineAfterBurst;
+  const shouldRunGroupFav = pendingGroupFavRoutineAfterBurst;
+  pendingAuthorRoutineAfterBurst = false;
+  pendingGroupFavRoutineAfterBurst = false;
+
+  try {
+    const jobs: Array<Promise<unknown>> = [];
+    if (shouldRunAuthor) {
+      jobs.push(triggerAuthorRoutine({ resetAlarmSchedule: false }));
+    }
+    if (shouldRunGroupFav) {
+      jobs.push(triggerGroupFavRoutine({ resetAlarmSchedule: false }));
+    }
+    await Promise.all(jobs);
+  } catch (error) {
+    console.warn('[BBE] Burst 结束后补偿调度失败:', error);
+  }
+}
+
+async function runBurstLoop(): Promise<void> {
+  if (burstState.running) return;
+
+  burstState.running = true;
+  burstState.lastRunAt = Date.now();
+
+  const authorCacheMap = await loadAuthorVideoCacheMap();
+  liveAuthorCacheMap = authorCacheMap;
+
+  while (burstState.queue.length > 0) {
+    const waitMs = burstState.nextAllowedAt - Date.now();
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+
+    if (burstState.queue.length === 0) {
+      break;
+    }
+
+    const task = burstState.queue[0]!;
+    burstState.currentTask = task;
+
+    try {
+      await runAuthorTask(task, authorCacheMap);
+      burstState.queue.shift();
+      burstState.nextAllowedAt = Date.now() + BG_REFRESH_INTRA_DELAY_MS;
+      burstState.cooldownReason = 'intra-delay';
+      pushHistory({ mid: task.mid, name: task.name, mode: 'burst', success: true, timestamp: Date.now() });
+      await saveAuthorVideoCacheMap(authorCacheMap);
+    } catch (error) {
+      burstState.nextAllowedAt = Date.now() + BURST_RETRY_DELAY_MS;
+      burstState.cooldownReason = 'error';
+      pushHistory({
+        mid: task.mid,
+        name: task.name,
+        mode: 'burst',
+        success: false,
+        timestamp: Date.now(),
+        error: error instanceof Error ? error.message : String(error)
+      });
+      console.warn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
+    } finally {
+      burstState.currentTask = null;
+    }
+  }
+
+  await saveAuthorVideoCacheMap(authorCacheMap);
+
+  burstState.running = false;
+  liveAuthorCacheMap = null;
+
+  if (burstState.queue.length > 0) {
+    startBurstLoopIfIdle();
+    return;
+  }
+
+  await flushPendingRoutineAfterBurst();
+  if (!isBurstActive()) {
+    startAuthorLoopIfIdle();
+    startGroupFavLoopIfIdle();
+  }
+}
+
+function startBurstLoopIfIdle(): void {
+  if (!burstState.running && burstState.queue.length > 0) {
+    void runBurstLoop();
+  }
 }
 
 function startAuthorLoopIfIdle(): void {
+  if (isBurstActive()) {
+    startBurstLoopIfIdle();
+    return;
+  }
+
   if (!authorState.running && authorState.queue.length > 0) {
     void runAuthorLoop();
   }
 }
 
 function startGroupFavLoopIfIdle(): void {
+  if (isBurstActive()) {
+    return;
+  }
+
   if (!groupFavState.running && groupFavState.queue.length > 0) {
     void runGroupFavLoop();
   }
 }
 
-export function enqueuePriority(tasks: SchedulerTask[]): void {
-  const added = dedupeAndEnqueue(authorState, tasks, (task) => String(task.mid), true);
+export function enqueueBurst(tasks: SchedulerTask[]): number {
+  const taskKeys = new Set(tasks.map((task) => String(task.mid)));
+  const added = dedupeAndEnqueue(burstState, tasks, (task) => String(task.mid), false);
+  if (taskKeys.size > 0) {
+    // Burst 任务优先级高于常规作者队列，入列后清掉常规队列里的同目标，避免重复调用。
+    removeAuthorTasksFromRegularQueue(taskKeys);
+    markRoutineCompensationPending();
+  }
+  if (added > 0 && !hasRunningRegularTask()) {
+    startBurstLoopIfIdle();
+  }
+  return added;
+}
+
+export function enqueuePriority(tasks: SchedulerTask[]): number {
+  if (tasks.length === 0) {
+    return 0;
+  }
+
+  const burstKeys = buildExistingTaskKeySet(burstState, (task) => String(task.mid));
+  const filtered = tasks.filter((task) => !burstKeys.has(String(task.mid)));
+  const added = dedupeAndEnqueue(authorState, filtered, (task) => String(task.mid), true);
   if (added > 0) {
     startAuthorLoopIfIdle();
   }
+  return added;
 }
 
-export function enqueuePriorityGroup(groupIds: string[]): void {
+export function enqueuePriorityGroup(groupIds: string[]): number {
   const tasks: GroupFavTask[] = groupIds.map((groupId) => ({ groupId }));
   const added = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, true);
   if (added > 0) {
     startGroupFavLoopIfIdle();
   }
+  return added;
 }
 
 async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
@@ -506,9 +747,10 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
     nextAlarmAt = await resetAlarm(ALARM_NAMES.AUTHOR_VIDEO, interval);
   }
 
-  const tasks = await collectStaleAuthorTasks(settings);
-  authorState.currentBatchDelay = calcBatchDelay(tasks.length, interval, normalizeBatchSize(settings));
-  const queued = dedupeAndEnqueue(authorState, tasks, (task) => String(task.mid), false);
+  const [noCacheTasks, staleTasks] = await Promise.all([collectNoCacheAuthorTasks(), collectStaleAuthorTasks(settings)]);
+  const burstQueued = enqueueBurst(noCacheTasks);
+  authorState.currentBatchDelay = calcBatchDelay(staleTasks.length, interval, normalizeBatchSize(settings));
+  const normalQueued = dedupeAndEnqueue(authorState, staleTasks, (task) => String(task.mid), false);
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -516,7 +758,7 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
     nextAlarmAt = alarm?.scheduledTime;
   }
 
-  return { queued, nextAlarmAt };
+  return { queued: burstQueued + normalQueued, nextAlarmAt };
 }
 
 async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
@@ -529,10 +771,11 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
     nextAlarmAt = await resetAlarm(ALARM_NAMES.AUTHOR_VIDEO, interval);
   }
 
-  const candidates = await collectOldestAuthorTasks();
+  const [noCacheTasks, candidates] = await Promise.all([collectNoCacheAuthorTasks(), collectOldestAuthorTasks()]);
+  const burstQueued = enqueueBurst(noCacheTasks);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
   authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
-  const queued = fillQueueToBatchSize(authorState, candidates, (task) => String(task.mid), batchSize);
+  const normalQueued = fillQueueToBatchSize(authorState, candidates, (task) => String(task.mid), batchSize);
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -540,7 +783,7 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
     nextAlarmAt = alarm?.scheduledTime;
   }
 
-  return { queued, nextAlarmAt };
+  return { queued: burstQueued + normalQueued, nextAlarmAt };
 }
 
 async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
@@ -655,6 +898,14 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     }
   }
 
+  function getGroupNamesForTask(mid: number, groupId?: string): string[] {
+    const names = new Set<string>(authorGroupNamesMap.get(mid) ?? []);
+    if (groupId) {
+      names.add(groupTitleMap.get(groupId) ?? groupId);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }
+
   const authorCaches = Object.values(authorCacheMap)
     .map((item) => ({
       mid: item.mid,
@@ -675,16 +926,30 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
+  const authorCurrentTask = burstState.currentTask ?? authorState.currentTask;
+  const authorQueue = [
+    ...burstState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId })),
+    ...authorState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId }))
+  ];
+  const burstCurrentTask = burstState.currentTask
+    ? { mid: burstState.currentTask.mid, groupNames: getGroupNamesForTask(burstState.currentTask.mid, burstState.currentTask.groupId) }
+    : null;
+  const burstQueue = burstState.queue.map((item) => ({
+    mid: item.mid,
+    groupNames: getGroupNamesForTask(item.mid, item.groupId)
+  }));
+  const burstCooldownReason: BurstCooldownReason = burstState.nextAllowedAt > Date.now() ? burstState.cooldownReason : null;
+
   return {
     schedulerBatchSize: normalizeBatchSize(settings),
-    running: authorState.running,
-    queueLength: authorState.queue.length,
-    currentTask: authorState.currentTask ? { mid: authorState.currentTask.mid, name: authorState.currentTask.name } : null,
+    running: burstState.running || authorState.running,
+    queueLength: burstState.queue.length + authorState.queue.length,
+    currentTask: authorCurrentTask ? { mid: authorCurrentTask.mid, name: authorCurrentTask.name } : null,
     batchCompleted: authorState.batchCompleted,
     batchFailed: authorState.batchFailed.length,
-    lastRunAt: authorState.lastRunAt,
+    lastRunAt: burstState.lastRunAt ?? authorState.lastRunAt,
     nextAlarmAt: authorAlarm?.scheduledTime,
-    queue: authorState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId })),
+    queue: authorQueue,
     groupChannel: {
       running: groupFavState.running,
       queueLength: groupFavState.queue.length,
@@ -694,6 +959,15 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
       lastRunAt: groupFavState.lastRunAt,
       nextAlarmAt: groupFavAlarm?.scheduledTime,
       queue: groupFavState.queue.map((item) => ({ groupId: item.groupId }))
+    },
+    burst: {
+      running: burstState.running,
+      queueLength: burstState.queue.length,
+      currentTask: burstCurrentTask,
+      nextAllowedAt: burstState.nextAllowedAt,
+      cooldownReason: burstCooldownReason,
+      lastRunAt: burstState.lastRunAt,
+      queue: burstQueue
     },
     authorCaches,
     groupCaches,
@@ -711,6 +985,11 @@ export async function getAuthorCacheSnapshot(): Promise<AuthorCacheMap> {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAMES.AUTHOR_VIDEO) {
+    if (isBurstActive()) {
+      pendingAuthorRoutineAfterBurst = true;
+      return;
+    }
+
     triggerAuthorRoutine({ resetAlarmSchedule: false }).catch((error) => {
       console.warn('[BBE] 作者 alarm 处理失败:', error);
     });
@@ -718,6 +997,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 
   if (alarm.name === ALARM_NAMES.GROUP_FAV) {
+    if (isBurstActive()) {
+      pendingGroupFavRoutineAfterBurst = true;
+      return;
+    }
+
     triggerGroupFavRoutine({ resetAlarmSchedule: false }).catch((error) => {
       console.warn('[BBE] 收藏夹 alarm 处理失败:', error);
     });

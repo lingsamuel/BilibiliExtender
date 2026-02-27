@@ -61,6 +61,15 @@ export interface SchedulerStatusResponse {
     nextAlarmAt?: number;
     queue: Array<{ groupId: string }>;
   };
+  burst: {
+    running: boolean;
+    queueLength: number;
+    currentTask: { mid: number; groupNames: string[] } | null;
+    nextAllowedAt: number;
+    cooldownReason: 'intra-delay' | 'error' | null;
+    lastRunAt?: number;
+    queue: Array<{ mid: number; groupNames: string[] }>;
+  };
   // 已缓存的作者摘要
   authorCaches: Array<{
     mid: number;
@@ -84,6 +93,7 @@ export interface SchedulerStatusResponse {
     success: boolean;
     timestamp: number;
     error?: string;
+    mode: 'regular' | 'burst';
   }>;
 }
 

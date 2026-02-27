@@ -33,6 +33,31 @@
   </section>
 
   <section class="bbe-panel bbe-debug-panel">
+    <h2 class="bbe-panel-title">Burst 状态</h2>
+    <div class="bbe-debug-grid">
+      <span>状态</span>
+      <span>{{ status?.burst.running ? '运行中' : '空闲' }}</span>
+      <span>当前任务</span>
+      <span>{{ burstCurrentTaskText }}</span>
+      <span>队列长度</span>
+      <span>{{ status?.burst.queueLength ?? 0 }}</span>
+      <span>上次执行</span>
+      <span>{{ burstLastRunText }}</span>
+      <span>下一次可执行</span>
+      <span>{{ burstNextAllowedText }}</span>
+      <span>冷却状态</span>
+      <span>{{ burstCooldownText }}</span>
+    </div>
+
+    <h3 v-if="status && status.burst.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
+    <div v-if="status && status.burst.queue.length > 0" class="bbe-debug-queue">
+      <div v-for="(task, i) in status.burst.queue" :key="`${task.mid}-${i}`" class="bbe-debug-queue-item">
+        {{ i + 1 }}. MID {{ task.mid }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+      </div>
+    </div>
+  </section>
+
+  <section class="bbe-panel bbe-debug-panel">
     <h2 class="bbe-panel-title">收藏夹通道状态</h2>
     <div class="bbe-debug-grid">
       <span>状态</span>
@@ -110,11 +135,13 @@
     <div v-else class="bbe-debug-table">
       <div class="bbe-debug-table-header">
         <span>作者</span>
+        <span>模式</span>
         <span>时间</span>
         <span>结果</span>
       </div>
       <div v-for="(h, i) in status.history" :key="i" class="bbe-debug-table-row" :class="{ 'bbe-debug-fail': !h.success }">
         <span>{{ h.name }}</span>
+        <span>{{ h.mode === 'burst' ? 'Burst' : '常规' }}</span>
         <span>{{ formatTime(h.timestamp) }}</span>
         <span>{{ h.success ? '成功' : h.error || '失败' }}</span>
       </div>
@@ -151,6 +178,40 @@ const groupLastRunText = computed(() => {
 const groupNextAlarmText = computed(() => {
   if (!status.value?.groupChannel.nextAlarmAt) return '未注册';
   return formatAlarmText(status.value.groupChannel.nextAlarmAt);
+});
+
+const burstLastRunText = computed(() => {
+  if (!status.value?.burst.lastRunAt) return '从未';
+  return formatRelativeMinutes(status.value.burst.lastRunAt);
+});
+
+const burstCurrentTaskText = computed(() => {
+  const task = status.value?.burst.currentTask;
+  if (!task) return '无';
+  const groups = task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组';
+  return `MID ${task.mid}（${groups}）`;
+});
+
+const burstNextAllowedText = computed(() => {
+  const nextAllowedAt = status.value?.burst.nextAllowedAt ?? 0;
+  if (!nextAllowedAt) return '无';
+  return formatAlarmText(nextAllowedAt);
+});
+
+const burstCooldownText = computed(() => {
+  const burst = status.value?.burst;
+  if (!burst || !burst.cooldownReason) return '无';
+
+  const diff = burst.nextAllowedAt - Date.now();
+  if (diff <= 0) {
+    return burst.cooldownReason === 'error' ? '错误冷却结束' : '间隔冷却结束';
+  }
+
+  const secs = Math.ceil(diff / 1000);
+  if (burst.cooldownReason === 'error') {
+    return `错误冷却中（剩余 ${secs} 秒）`;
+  }
+  return `间隔冷却中（剩余 ${secs} 秒）`;
 });
 
 function formatTime(ms: number): string {
