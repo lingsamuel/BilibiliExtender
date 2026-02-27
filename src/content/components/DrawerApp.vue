@@ -257,12 +257,14 @@ const graceLabel = computed(() => {
 });
 
 const currentSettings = ref<{ defaultReadMarkDays: number } | null>(null);
+const globalUnreadCount = ref(0);
 
 function emitUnreadChanged(): void {
-  const hasUnread = summaries.value.some((item) => item.unreadCount > 0);
+  const unreadCount = globalUnreadCount.value;
+  const hasUnread = unreadCount > 0;
   window.dispatchEvent(
     new CustomEvent(EXTENSION_EVENT.UNREAD_CHANGED, {
-      detail: { hasUnread }
+      detail: { hasUnread, unreadCount }
     })
   );
 }
@@ -277,6 +279,7 @@ async function loadSummary(): Promise<void> {
   }
 
   summaries.value = resp.data.summaries;
+  globalUnreadCount.value = resp.data.unreadCount;
   currentSettings.value = { defaultReadMarkDays: resp.data.settings.defaultReadMarkDays };
   debugMode.value = resp.data.settings.debugMode ?? false;
   lastGroupIdFromSummary.value = resp.data.lastGroupId ?? '';
@@ -388,8 +391,8 @@ function startPoll(maxAttempts: number): void {
           }
         }
 
-        await markCurrentGroupRead();
         await fetchClickedVideos();
+        await loadSummary();
         return;
       }
 
@@ -445,6 +448,7 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
       } else {
         feed.value = null;
       }
+      await loadSummary();
       startPoll(POLL_MAX_REFRESHING);
       return;
     }
@@ -475,11 +479,10 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
       }
     }
 
-    if (!options?.loadMore) {
-      await markCurrentGroupRead();
-    }
-
     await fetchClickedVideos();
+    if (!options?.loadMore) {
+      await loadSummary();
+    }
   } finally {
     loading.value = false;
     loadingMore.value = false;
@@ -506,24 +509,11 @@ async function reloadFeedWithReadMark(): Promise<void> {
     feed.value = resp.data;
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
-    await markCurrentGroupRead();
     await fetchClickedVideos();
+    await loadSummary();
   } finally {
     loading.value = false;
   }
-}
-
-async function markCurrentGroupRead(): Promise<void> {
-  if (!activeGroupId.value) {
-    return;
-  }
-
-  await sendMessage({
-    type: 'MARK_GROUP_READ',
-    payload: { groupId: activeGroupId.value }
-  });
-
-  await loadSummary();
 }
 
 async function openDrawer(): Promise<void> {

@@ -3,7 +3,7 @@ import { getMyCreatedFolders } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import {
   appendReadMarks,
-  cleanExpiredClicks,
+  cleanOrphanClicks,
   loadAuthorReadMarks,
   loadClickedVideos,
   loadFeedCacheMap,
@@ -189,21 +189,34 @@ async function handleSaveSettings(
 async function handleGetGroupSummary(
   _request: Extract<MessageRequest, { type: 'GET_GROUP_SUMMARY' }>
 ): Promise<ResponseMap['GET_GROUP_SUMMARY']> {
-  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, lastGroupId] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, readMarks, lastGroupId] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
     getAuthorCacheSnapshot(),
+    loadAuthorReadMarks(),
     loadLastGroupId()
   ]);
+  const clickedVideos = await cleanOrphanClicks(authorCacheMap);
 
   // 纯缓存读取，不再触发 API 请求；刷新由调度器 alarm 驱动
-  const summaries = makeSummary(groups, settings, runtimeMap, feedCacheMap, authorCacheMap).filter((item) => item.enabled);
+  const { summaries: allSummaries, totalUnreadCount } = makeSummary(
+    groups,
+    settings,
+    runtimeMap,
+    feedCacheMap,
+    authorCacheMap,
+    readMarks,
+    clickedVideos
+  );
+  const summaries = allSummaries.filter((item) => item.enabled);
+  await saveRuntimeStateMap(runtimeMap);
 
   return {
     summaries,
-    hasUnread: summaries.some((item) => item.unreadCount > 0),
+    hasUnread: totalUnreadCount > 0,
+    unreadCount: totalUnreadCount,
     lastGroupId,
     settings
   };
@@ -219,12 +232,13 @@ async function handleGetGroupSummary(
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
 ): Promise<ResponseMap['GET_GROUP_FEED']> {
-  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, clickedVideos] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
-    getAuthorCacheSnapshot()
+    getAuthorCacheSnapshot(),
+    loadClickedVideos()
   ]);
 
   const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
@@ -272,6 +286,7 @@ async function handleGetGroupFeed(
     feedCacheMap,
     authorCacheMap,
     readMarks,
+    clickedVideos,
     selectedReadMarkTs,
     request.payload.byAuthorSortByLatest
   );
@@ -419,7 +434,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   const settings = await loadSettings();
   const merged = { ...DEFAULT_SETTINGS, ...settings };
   await saveSettings(merged);
-  await cleanExpiredClicks();
+  await cleanOrphanClicks();
   await setupAlarm(merged);
 });
 

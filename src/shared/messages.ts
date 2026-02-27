@@ -92,7 +92,13 @@ export interface ResponseMap {
   UPSERT_GROUP: { groups: GroupConfig[] };
   DELETE_GROUP: { groups: GroupConfig[] };
   SAVE_SETTINGS: { settings: ExtensionSettings };
-  GET_GROUP_SUMMARY: { summaries: GroupSummary[]; hasUnread: boolean; lastGroupId?: string; settings: ExtensionSettings };
+  GET_GROUP_SUMMARY: {
+    summaries: GroupSummary[];
+    hasUnread: boolean;
+    unreadCount: number;
+    lastGroupId?: string;
+    settings: ExtensionSettings;
+  };
   GET_GROUP_FEED: GroupFeedResult & { cacheStatus: 'ready' | 'generating' };
   MANUAL_REFRESH: { accepted: boolean };
   MARK_GROUP_READ: { groupId: string; unreadCount: number };

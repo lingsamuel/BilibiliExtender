@@ -5,7 +5,14 @@ import '@/styles/content.css';
 
 const ROOT_ID = 'bbe-root';
 const NAV_ENTRY_ID = 'bbe-nav-entry';
-let hasUnread = false;
+let unreadCount = 0;
+
+function formatUnreadText(count: number): string {
+  if (count <= 0) {
+    return '';
+  }
+  return count > 99 ? '99+' : String(count);
+}
 
 function createRoot(): HTMLElement {
   const existing = document.getElementById(ROOT_ID);
@@ -64,10 +71,7 @@ function ensureNavEntry(container: Element): HTMLLIElement {
   li.id = NAV_ENTRY_ID;
   li.className = 'right-entry-item';
   li.style.marginRight = '0';
-
-  const dot = document.createElement('div');
-  dot.className = 'bbe-nav-dot';
-  dot.style.display = hasUnread ? 'block' : 'none';
+  li.style.position = 'relative';
 
   const anchor = document.createElement('a');
   anchor.className = 'right-entry__outside';
@@ -79,7 +83,12 @@ function ensureNavEntry(container: Element): HTMLLIElement {
   text.textContent = '分组动态';
   anchor.appendChild(text);
 
-  li.appendChild(dot);
+  if (unreadCount > 0) {
+    const dot = document.createElement('div');
+    dot.className = 'red-num--message';
+    dot.textContent = formatUnreadText(unreadCount);
+    li.appendChild(dot);
+  }
   li.appendChild(anchor);
 
   li.addEventListener('click', (e) => {
@@ -178,12 +187,33 @@ function startInjectNavEntry(): void {
 
 function bindUnreadDot(): void {
   window.addEventListener(EXTENSION_EVENT.UNREAD_CHANGED, (event) => {
-    hasUnread = Boolean((event as CustomEvent<{ hasUnread: boolean }>).detail?.hasUnread);
-    const target = document.querySelector(`#${NAV_ENTRY_ID} .bbe-nav-dot`) as HTMLElement | null;
-    if (!target) {
+    const detail = (event as CustomEvent<{ hasUnread?: boolean; unreadCount?: number }>).detail;
+    if (typeof detail?.unreadCount === 'number') {
+      unreadCount = detail.unreadCount;
+    } else {
+      unreadCount = detail?.hasUnread ? 1 : 0;
+    }
+    const entry = document.getElementById(NAV_ENTRY_ID) as HTMLLIElement | null;
+    if (!entry) {
       return;
     }
-    target.style.display = hasUnread ? 'block' : 'none';
+    const text = formatUnreadText(unreadCount);
+    const target = entry.querySelector('.red-num--message') as HTMLElement | null;
+
+    if (!text) {
+      target?.remove();
+      return;
+    }
+
+    if (target) {
+      target.textContent = text;
+      return;
+    }
+
+    const dot = document.createElement('div');
+    dot.className = 'red-num--message';
+    dot.textContent = text;
+    entry.insertBefore(dot, entry.firstChild);
   });
 }
 

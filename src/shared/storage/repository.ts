@@ -1,4 +1,4 @@
-import { CLICKED_VIDEO_EXPIRE_DAYS, DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
+import { DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
 import type {
   AuthorReadMark,
   AuthorVideoCache,
@@ -262,16 +262,26 @@ export async function recordVideoClick(bvid: string): Promise<void> {
 }
 
 /**
- * 清理超过过期天数的点击记录。
+ * 清理“孤儿点击记录”：
+ * 仅当某个 bvid 已不在任意作者缓存中时，才删除对应点击记录。
+ * 这样可保证“视频仍在缓存中”时点击状态不会因时间流逝丢失。
  */
-export async function cleanExpiredClicks(): Promise<void> {
-  const map = await loadClickedVideos();
-  const expireMs = CLICKED_VIDEO_EXPIRE_DAYS * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  let changed = false;
+export async function cleanOrphanClicks(authorVideoCacheMap?: AuthorVideoCacheMap): Promise<ClickedVideoMap> {
+  const [map, cacheMap] = await Promise.all([
+    loadClickedVideos(),
+    authorVideoCacheMap ? Promise.resolve(authorVideoCacheMap) : loadAuthorVideoCacheMap()
+  ]);
+  const activeBvids = new Set<string>();
 
+  for (const cache of Object.values(cacheMap)) {
+    for (const video of cache.videos) {
+      activeBvids.add(video.bvid);
+    }
+  }
+
+  let changed = false;
   for (const bvid of Object.keys(map)) {
-    if (now - map[bvid] > expireMs) {
+    if (!activeBvids.has(bvid)) {
       delete map[bvid];
       changed = true;
     }
@@ -280,4 +290,14 @@ export async function cleanExpiredClicks(): Promise<void> {
   if (changed) {
     await saveClickedVideos(map);
   }
+
+  return map;
+}
+
+/**
+ * 兼容旧调用方的别名：
+ * 旧逻辑为“按时间过期”，现统一切换为“按缓存生命周期清理”。
+ */
+export async function cleanExpiredClicks(): Promise<void> {
+  await cleanOrphanClicks();
 }

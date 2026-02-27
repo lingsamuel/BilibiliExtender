@@ -374,19 +374,6 @@ body.bbe-page-scroll-lock {
   text-align: center;
 }
 
-/* 未读红点，复用 B 站 red-num--message 的视觉风格 */
-.bbe-nav-dot {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ff4d4f;
-  display: none;
-  z-index: 1;
-}
-
 /* 侧边栏布局：分组列表占满剩余空间，设置按钮固定底部 */
 .bbe-sidebar {
   border-right: 1px solid #eee;
