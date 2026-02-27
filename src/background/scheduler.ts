@@ -236,11 +236,6 @@ function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
   authorState.queue = authorState.queue.filter((task) => !taskKeys.has(String(task.mid)));
 }
 
-function markRoutineCompensationPending(): void {
-  pendingAuthorRoutineAfterBurst = true;
-  pendingGroupFavRoutineAfterBurst = true;
-}
-
 async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<number | undefined> {
   await chrome.alarms.clear(alarmName);
   chrome.alarms.create(alarmName, {
@@ -707,7 +702,6 @@ export function enqueueBurst(tasks: SchedulerTask[]): number {
   if (taskKeys.size > 0) {
     // Burst 任务优先级高于常规作者队列，入列后清掉常规队列里的同目标，避免重复调用。
     removeAuthorTasksFromRegularQueue(taskKeys);
-    markRoutineCompensationPending();
   }
   if (added > 0 && !hasRunningRegularTask()) {
     startBurstLoopIfIdle();
