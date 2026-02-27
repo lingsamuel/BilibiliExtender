@@ -75,25 +75,30 @@ interface AuthorVideoTask extends SchedulerTaskBase {
   key: `author:${number}:pn:${number}`;
   mid: number;
   name: string;
-  // 要拉取的页码：1=首页刷新，2=常规预取页，>=3=时间流按需补页
+  // 要拉取的页码：1=首页刷新，>=2=常规预取或时间流按需补页
   pn: number;
-  reason: 'first-page-refresh' | 'prefetch-second-page' | 'load-more-boundary';
+  reason: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
 }
 ```
 
 来源：
 - 定时（两阶段）：
   1. 收集所有启用分组中的作者 `mid`，筛选“首页过期”任务（`pn=1`）；
-  2. 对“所有已有缓存作者”执行低优先级第二页预取扫描：仅当首页未过期时，加入 `pn=2` 的常规任务。
+  2. 对“所有已有缓存作者”执行低优先级“下一页预取”扫描：
+     - 第二页预取仅是防御性加速，不保证已存在；
+     - 仅当 `1..K` 页都新鲜且第 `K` 页数据已**实际参与目标页组构造**时，才加入 `pn=K+1` 的常规任务；
+     - 若 `pn=K+1` 已缓存但未被使用，不继续预取 `pn=K+2`。
 - 优先：手动刷新、首次访问分组、新建分组初始化后触发。
 - Burst：
   - 任意入口发现“作者缓存不存在”时，进入 Burst 队列并优先拉取 `pn=1`；
-  - 时间流构造器命中作者缓存边界时，进入 Burst 队列并按需拉取 `pn>=2`（通常是 `nextPn`）。
+  - 时间流构造器命中作者缓存边界时，进入 Burst 队列并按需拉取 `pn>=2`（通常是 `nextPn`，包含缺失第二页场景）。
 
 执行：
 1. `pn=1`：刷新首页并更新 `firstPageFetchedAt`；保留历史 `pn>=2` 数据供后续 best-effort 使用。
-2. `pn=2`：常规预取/刷新第二页并更新 `secondPageFetchedAt`。
-3. `pn>=3`：按需补页并更新 `maxCachedPn/nextPn/hasMore`。
+2. `pn>=2`：预取或按需补页并更新 `maxCachedPn/nextPn/hasMore`。
+3. 同一 `bvid` 在跨页重复时，按如下规则合并：
+   - 优先选择 `video.meta.updatedAt` 更新的数据；
+   - 若 `meta.updatedAt` 相同，选择来源页 `fetchedAt` 更新的数据。
 
 #### 3.2.2 收藏夹缓存通道（`group-fav`）
 
@@ -148,10 +153,11 @@ interface GroupFavTask extends SchedulerTaskBase {
   4. 仅当本轮缺失作者都完成至少一轮缓存后，返回 `cacheStatus: 'ready'`。
 - 分组有缓存且作者缓存完整时：返回 `cacheStatus: 'ready'`。
 - 时间流目标片段构造（`1-50`、`51-70`、`71-90`...）时：
-  1. 先尝试使用现有缓存（默认首页 + 预取第二页）构造。
-  2. 若构造触及某作者“当前缓存最旧一条”且 `hasMore=true`，立即向 Burst 队列**队首**插入该作者下一页任务。
+  1. 先尝试使用现有可用缓存构造（只保证首页，第二页可能缺失）。
+  2. 若构造触及某作者“当前缓存最旧一条”且 `hasMore=true`，立即向 Burst 队列**队首**插入该作者下一页任务（包含缺失第二页）。
   3. 前台等待这批 Burst 任务完成后重构；单轮每作者只补 1 页。
   4. 若任务失败，返回错误信息并以现有缓存 best-effort 构造，不因错误中止返回。
+  5. 构造成功后，按作者回报“本次实际使用到的最大页码 K”（仅统计实际参与目标页组构造的数据页），供常规预取判定是否推进到 `K+1`。
 
 #### 3.4.2 MANUAL_REFRESH
 
@@ -241,7 +247,7 @@ persist();
 3. Burst 期间，用户触发任务仍可入常规队列，但执行时机延后到 Burst 队列清空之后。
 4. 若 Burst 激活时已有非 Burst 任务正在执行，允许该任务完成当前项后再切换到 Burst 循环。
 5. Burst 队列清空后，恢复常规调度；仅当 Burst 期间实际拦截过某通道 alarm 时，才补偿触发对应通道的一次常规任务收集（不重置 alarm）。
-6. “加载更多命中边界”触发的 Burst 任务必须插入队首（head），优先于已有 Burst 队列任务。
+6. “加载更多命中边界”触发的 Burst 任务必须插入队首（head），优先于已有 Burst 队列任务（包括补第二页）。
 
 #### 3.6.3 执行语义
 
@@ -297,6 +303,20 @@ interface RunSchedulerNowResponse {
 }
 ```
 
+新增页级使用回报消息（由构造器调用）：
+
+```ts
+| { type: 'REPORT_AUTHOR_PAGE_USAGE'; payload: {
+    groupId: string;
+    // 仅回报“实际参与本次目标页组构造”的最大页码，不包含仅命中边界但未取用的数据页
+    usedPages: Array<{ mid: number; usedMaxPn: number }>;
+  } }
+
+interface ReportAuthorPageUsageResponse {
+  accepted: true;
+}
+```
+
 `GET_SCHEDULER_STATUS` 扩展为按通道返回状态（调试用）：
 
 ```ts
@@ -328,7 +348,7 @@ interface SchedulerStatusResponse {
       name?: string;
       mid: number;
       pn: number;
-      reason: 'first-page-refresh' | 'prefetch-second-page' | 'load-more-boundary';
+      reason: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
       // 显示口径以分组名为主；作者名缺失时允许回退 MID。
       groupNames: string[];
     } | null;
@@ -341,7 +361,7 @@ interface SchedulerStatusResponse {
       name?: string;
       mid: number;
       pn: number;
-      reason: 'first-page-refresh' | 'prefetch-second-page' | 'load-more-boundary';
+      reason: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
       groupNames: string[];
     }>;
   };
