@@ -248,6 +248,7 @@ interface GroupFeedCache {
 2. `group-fav`：刷新收藏夹缓存（标题 + 作者列表），周期由 `groupFavRefreshIntervalMinutes` 控制。
 
 批次执行规则保持不变：每个通道都按 `schedulerBatchSize` 分批、批内串行 + 固定间隔、批间按周期均匀分散，并保留失败任务重试机制；详见 `docs/scheduler-spec.md` 3.5 节。
+当存在“作者无缓存”目标时触发 Burst 模式：Burst 优先于常规调度，常规任务会在 Burst 清空后恢复；详见 `docs/scheduler-spec.md` 3.6 节。
 
 #### 4.5.8 设置项汇总
 

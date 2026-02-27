@@ -26,6 +26,7 @@
 - **任务（Task）**：一次最小刷新单元。
 - **优先任务（Priority Task）**：由用户操作触发，立即入列到队首。
 - **常规任务（Routine Task）**：由定时 alarm 触发。
+- **Burst 任务（Burst Task）**：仅包含“作者缓存不存在（无任何缓存）”的作者任务，使用专用队列。
 
 ## 3. 设计方案
 
@@ -80,6 +81,7 @@ interface AuthorVideoTask extends SchedulerTaskBase {
 来源：
 - 定时：收集所有启用分组中的作者 `mid`，筛选过期缓存。
 - 优先：手动刷新、首次访问分组、新建分组初始化后触发。
+- Burst：任意入口发现“作者缓存不存在”时，进入 `author-video` 的 Burst 队列。
 
 执行：调用 `refreshAuthorCache(mid, name, authorCacheMap)`。
 
@@ -125,8 +127,10 @@ interface GroupFavTask extends SchedulerTaskBase {
 - 仅基于缓存组装返回。
 - 分组无缓存时：返回 `cacheStatus: 'generating'`，并优先入列 `group-fav` 任务。
 - 分组有缓存但作者缓存不完整时：
-  1. 识别缺失作者（`AuthorVideoCache[mid]` 不存在，或没有有效 `lastFetchedAt`）。
-  2. 优先入列缺失作者到 `author-video` 通道（去重，避免重复堆积）。
+  1. 识别缺失作者并分流：
+     - 若 `AuthorVideoCache[mid]` 不存在：入列 Burst 队列；
+     - 若缓存存在但已过期：入列 `author-video` 常规优先队列。
+  2. 去重后入列，避免重复堆积。
   3. 返回 `cacheStatus: 'generating'`，但同时返回当前可用的聚合结果（允许部分内容先展示）。
   4. 仅当本轮缺失作者都完成至少一轮缓存后，返回 `cacheStatus: 'ready'`。
 - 分组有缓存且作者缓存完整时：返回 `cacheStatus: 'ready'`。
@@ -155,9 +159,9 @@ interface GroupFavTask extends SchedulerTaskBase {
 5. 若通道空闲则立即启动执行循环；若已在运行则只合并任务队列，不创建并行循环。
 6. 触发后必须重置该通道 alarm 的下次触发时间：`nextAlarmAt = now + 对应通道 interval`。
 
-### 3.5 批次与限速规则（关键约束）
+### 3.5 常规模式批次与限速规则（关键约束）
 
-以下规则为调度器强约束，`author-video` 与 `group-fav` 两个通道都适用，且互相独立执行：
+以下规则在“非 Burst 执行窗口”内生效，`author-video` 与 `group-fav` 两个通道都适用，且互相独立执行：
 
 1. 任务串行：同一通道内一次只执行一个任务。
 2. 批次上限：每批最多 `schedulerBatchSize` 个任务（默认 `10`）。
@@ -197,6 +201,47 @@ while (queue not empty) {
 
 queue.push(...batchFailed); // 留给下一批或下次 alarm
 persist();
+```
+
+### 3.6 Burst 模式（作者无缓存快速填充）
+
+#### 3.6.1 触发条件
+
+1. 只要发现任意作者 `mid` 在 `AuthorVideoCache` 中不存在，即触发 Burst 入列（不设数量阈值）。
+2. Burst 队列只允许接收“无缓存作者”任务；已存在缓存（无论是否过期）不得进入 Burst 队列。
+3. Burst 去重键与作者任务一致（`mid`）。
+
+#### 3.6.2 优先级与阻塞规则
+
+1. Burst 优先级高于常规任务。
+2. Burst 队列非空时，不执行任意通道的常规 alarm 调度（`author-video` / `group-fav` 都暂停常规执行）。
+3. Burst 期间，用户触发任务仍可入常规队列，但执行时机延后到 Burst 队列清空之后。
+4. 若 Burst 激活时已有非 Burst 任务正在执行，允许该任务完成当前项后再切换到 Burst 循环。
+5. Burst 队列清空后，恢复常规调度；并立即补偿触发一次常规任务收集（不重置 alarm）。
+
+#### 3.6.3 执行语义
+
+1. Burst 仍然串行执行（一次一个作者）。
+2. 成功路径仍使用 `INTRA_DELAY_MS`（与常规任务一致），且为“无条件冷却”：每次任务成功后都要记录下一次可执行时间（`nextAllowedAt = now + INTRA_DELAY_MS`），即使此刻队列为空也不例外。
+3. Burst 不使用批次间延迟，不受 `batchDelay`/`intervalMinutes` 约束。
+4. 只要遇到任意错误，立即进入冷却：等待 `60s` 后再继续执行。
+5. Burst 每次取任务前都必须先检查 `now >= nextAllowedAt`，不满足则等待剩余时间，避免“上一条刚完成、下一条立刻入队”导致的无间隔请求。
+6. 失败任务留在队首，冷却结束后优先重试；直到 Burst 队列为空才退出 Burst 模式。
+
+执行循环约束如下：
+
+```ts
+while (burstQueue not empty) {
+  waitUntil(nextAllowedAt);
+  task = burstQueue.peek();
+  try {
+    runTask(task);
+    burstQueue.shift();
+    nextAllowedAt = now + INTRA_DELAY_MS;
+  } catch (error) {
+    wait(60_000);
+  }
+}
 ```
 
 ## 4. 消息协议
