@@ -19,6 +19,17 @@
     <div class="bbe-card-body">
       <div class="bbe-card-title" :title="video.title">{{ video.title }}</div>
       <div class="bbe-card-author">
+        <a
+          v-if="video.authorFace"
+          class="bbe-card-author-avatar-link"
+          :href="authorSpaceUrl"
+          target="_blank"
+          rel="noreferrer"
+          @click.stop
+          @auxclick.stop
+        >
+          <img class="bbe-avatar-sm" :src="video.authorFace" alt="" />
+        </a>
         <div class="bbe-card-author-info">
           <a
             class="bbe-card-author-link"
@@ -28,7 +39,6 @@
             @click.stop
             @auxclick.stop
           >
-            <img v-if="video.authorFace" class="bbe-avatar-sm" :src="video.authorFace" alt="" />
             <span class="bbe-card-author-name">{{ video.authorName }}</span>
           </a>
           <span class="bbe-card-author-date">{{ formatPubdate(video.pubdate) }}</span>
