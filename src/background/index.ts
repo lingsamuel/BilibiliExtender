@@ -2,9 +2,9 @@ import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { getMyCreatedFolders, getUserCard, modifyUserRelation } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import {
-  appendReadMarks,
+  appendGroupReadMark,
   cleanOrphanClicks,
-  loadAuthorReadMarks,
+  loadGroupReadMarks,
   loadClickedVideos,
   loadFeedCacheMap,
   loadGroups,
@@ -216,7 +216,7 @@ async function handleGetGroupSummary(
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
     getAuthorCacheSnapshot(),
-    loadAuthorReadMarks(),
+    loadGroupReadMarks(),
     loadLastGroupId()
   ]);
   const clickedVideos = await cleanOrphanClicks(authorCacheMap);
@@ -295,7 +295,7 @@ async function handleGetGroupFeed(
 
   await saveLastGroupId(group.groupId);
 
-  const readMarks = await loadAuthorReadMarks();
+  const readMarks = await loadGroupReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
 
   const runtimeBefore = JSON.stringify(runtimeMap[group.groupId] ?? null);
@@ -344,22 +344,22 @@ async function handleMarkGroupRead(
   };
 }
 
-async function handleMarkAuthorsRead(
-  request: Extract<MessageRequest, { type: 'MARK_AUTHORS_READ' }>
-): Promise<ResponseMap['MARK_AUTHORS_READ']> {
-  const marks = await appendReadMarks(request.payload.mids);
+async function handleMarkGroupReadMark(
+  request: Extract<MessageRequest, { type: 'MARK_GROUP_READ_MARK' }>
+): Promise<ResponseMap['MARK_GROUP_READ_MARK']> {
+  const marks = await appendGroupReadMark(request.payload.groupId, request.payload.readMarkTs);
   return { marks };
 }
 
-async function handleGetAuthorReadMarks(
-  request: Extract<MessageRequest, { type: 'GET_AUTHOR_READ_MARKS' }>
-): Promise<ResponseMap['GET_AUTHOR_READ_MARKS']> {
-  const allMarks = await loadAuthorReadMarks();
-  const filtered: Record<number, typeof allMarks[number]> = {};
+async function handleGetGroupReadMarks(
+  request: Extract<MessageRequest, { type: 'GET_GROUP_READ_MARKS' }>
+): Promise<ResponseMap['GET_GROUP_READ_MARKS']> {
+  const allMarks = await loadGroupReadMarks();
+  const filtered: Record<string, (typeof allMarks)[string]> = {};
 
-  for (const mid of request.payload.mids) {
-    if (allMarks[mid]) {
-      filtered[mid] = allMarks[mid];
+  for (const groupId of request.payload.groupIds) {
+    if (allMarks[groupId]) {
+      filtered[groupId] = allMarks[groupId];
     }
   }
 
@@ -495,12 +495,12 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleGetGroupFeed(request));
     case 'MARK_GROUP_READ':
       return ok(await handleMarkGroupRead(request));
-    case 'MARK_AUTHORS_READ':
-      return ok(await handleMarkAuthorsRead(request));
+    case 'MARK_GROUP_READ_MARK':
+      return ok(await handleMarkGroupReadMark(request));
     case 'FOLLOW_AUTHOR':
       return ok(await handleFollowAuthor(request));
-    case 'GET_AUTHOR_READ_MARKS':
-      return ok(await handleGetAuthorReadMarks(request));
+    case 'GET_GROUP_READ_MARKS':
+      return ok(await handleGetGroupReadMarks(request));
     case 'RECORD_VIDEO_CLICK':
       return ok(await handleRecordVideoClick(request));
     case 'GET_CLICKED_VIDEOS':

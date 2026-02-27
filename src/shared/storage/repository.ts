@@ -1,10 +1,10 @@
 import { DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
 import type {
-  AuthorReadMark,
   AuthorVideoCache,
   ExtensionSettings,
   GroupConfig,
   GroupFeedCache,
+  GroupReadMark,
   GroupRuntimeState
 } from '@/shared/types';
 
@@ -25,7 +25,7 @@ const memoryCache: {
   authorVideo?: AuthorVideoCacheMap;
   lastGroupId?: string;
   hasLastGroupId: boolean;
-  authorReadMarks?: Record<number, AuthorReadMark>;
+  groupReadMarks?: Record<string, GroupReadMark>;
   clickedVideos?: Record<string, number>;
 } = {
   hasLastGroupId: false
@@ -198,45 +198,53 @@ export async function saveLastGroupId(groupId: string): Promise<void> {
   await storageSet(chrome.storage.local, STORAGE_KEYS.LAST_GROUP_ID, groupId);
 }
 
-type ReadMarkMap = Record<number, AuthorReadMark>;
+type ReadMarkMap = Record<string, GroupReadMark>;
 type ClickedVideoMap = Record<string, number>;
 
-export async function loadAuthorReadMarks(): Promise<ReadMarkMap> {
-  if (memoryCache.authorReadMarks) {
-    return memoryCache.authorReadMarks;
+let legacyAuthorReadMarksDropped = false;
+
+async function dropLegacyAuthorReadMarksIfNeeded(): Promise<void> {
+  if (legacyAuthorReadMarksDropped) {
+    return;
+  }
+  legacyAuthorReadMarksDropped = true;
+  await chrome.storage.local.remove(STORAGE_KEYS.LEGACY_AUTHOR_READ_MARKS);
+}
+
+export async function loadGroupReadMarks(): Promise<ReadMarkMap> {
+  if (memoryCache.groupReadMarks) {
+    return memoryCache.groupReadMarks;
   }
 
-  const marks = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_READ_MARKS, {} as ReadMarkMap);
-  memoryCache.authorReadMarks = marks;
+  await dropLegacyAuthorReadMarksIfNeeded();
+
+  const marks = await storageGet(chrome.storage.local, STORAGE_KEYS.GROUP_READ_MARKS, {} as ReadMarkMap);
+  memoryCache.groupReadMarks = marks;
   return marks;
 }
 
-export async function saveAuthorReadMarks(marks: ReadMarkMap): Promise<void> {
-  memoryCache.authorReadMarks = marks;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_READ_MARKS, marks);
+export async function saveGroupReadMarks(marks: ReadMarkMap): Promise<void> {
+  memoryCache.groupReadMarks = marks;
+  await storageSet(chrome.storage.local, STORAGE_KEYS.GROUP_READ_MARKS, marks);
 }
 
 /**
- * 为指定作者列表追加已阅时间戳，每位作者最多保留 MAX_READ_MARK_COUNT 条。
+ * 为指定分组追加已阅时间戳，每个分组最多保留 MAX_READ_MARK_COUNT 条。
  * 返回更新后的完整 ReadMarkMap。
  */
-export async function appendReadMarks(mids: number[]): Promise<ReadMarkMap> {
-  const marks = await loadAuthorReadMarks();
-  const now = Math.floor(Date.now() / 1000);
+export async function appendGroupReadMark(groupId: string, readMarkTs?: number): Promise<ReadMarkMap> {
+  const marks = await loadGroupReadMarks();
+  const ts = Math.floor(readMarkTs ?? Date.now() / 1000);
 
-  for (const mid of mids) {
-    if (!marks[mid]) {
-      marks[mid] = { mid, timestamps: [] };
-    }
-
-    marks[mid].timestamps.unshift(now);
-
-    if (marks[mid].timestamps.length > MAX_READ_MARK_COUNT) {
-      marks[mid].timestamps = marks[mid].timestamps.slice(0, MAX_READ_MARK_COUNT);
-    }
+  if (!marks[groupId]) {
+    marks[groupId] = { groupId, timestamps: [] };
   }
 
-  await saveAuthorReadMarks(marks);
+  // 去重后将最新值插入头部，保证下拉列表与“最近一次已阅”语义一致。
+  const deduped = marks[groupId].timestamps.filter((item) => item !== ts);
+  marks[groupId].timestamps = [ts, ...deduped].slice(0, MAX_READ_MARK_COUNT);
+
+  await saveGroupReadMarks(marks);
   return marks;
 }
 

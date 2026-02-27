@@ -2,12 +2,12 @@ import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
   AuthorFeed,
-  AuthorReadMark,
   AuthorVideoCache,
   ExtensionSettings,
   GroupConfig,
   GroupFeedCache,
   GroupFeedResult,
+  GroupReadMark,
   GroupRuntimeState,
   VideoItem,
   ViewMode
@@ -16,7 +16,7 @@ import type {
 export type RuntimeMap = Record<string, GroupRuntimeState>;
 export type FeedCacheMap = Record<string, GroupFeedCache>;
 export type AuthorCacheMap = Record<number, AuthorVideoCache>;
-type ReadMarkMap = Record<number, AuthorReadMark>;
+type ReadMarkMap = Record<string, GroupReadMark>;
 type ClickedVideoMap = Record<string, number>;
 const DEFAULT_BY_AUTHOR_SORT_BY_LATEST = true;
 
@@ -211,7 +211,9 @@ function resolveGroupReadMarkTs(savedReadMarkTs: number | undefined, readMarkTim
   }
 
   if (typeof savedReadMarkTs === 'number' && savedReadMarkTs > 0) {
-    return savedReadMarkTs;
+    if (readMarkTimestamps.includes(savedReadMarkTs)) {
+      return savedReadMarkTs;
+    }
   }
 
   if (readMarkTimestamps.length > 0) {
@@ -222,28 +224,17 @@ function resolveGroupReadMarkTs(savedReadMarkTs: number | undefined, readMarkTim
 }
 
 /**
- * 计算某作者在指定“分组已阅时间点”下的未读基线。
+ * 计算“当前分组”在指定已阅选项下的统一基线时间戳。
  * 返回值为秒级时间戳：仅统计 pubdate > baseline 的视频。
  */
-function resolveAuthorUnreadBaselineTs(
-  authorMid: number,
-  selectedReadMarkTs: number,
-  readMarks: ReadMarkMap,
-  graceReadMarkTs: number
-): number {
+function resolveGroupUnreadBaselineTs(selectedReadMarkTs: number, graceReadMarkTs: number): number {
   if (selectedReadMarkTs === -1) {
     return graceReadMarkTs;
   }
-
-  const mark = readMarks[authorMid];
-  if (selectedReadMarkTs > 0 && mark?.timestamps.length) {
-    const authorTs = mark.timestamps.find((ts) => ts <= selectedReadMarkTs);
-    if (authorTs !== undefined) {
-      return authorTs;
-    }
+  if (selectedReadMarkTs > 0) {
+    return selectedReadMarkTs;
   }
-
-  return graceReadMarkTs;
+  return 0;
 }
 
 function isVideoViewed(video: VideoItem, clickedVideos: ClickedVideoMap): boolean {
@@ -259,7 +250,6 @@ function calcGroupUnreadCount(
   authorMids: number[],
   authorCacheMap: AuthorCacheMap,
   selectedReadMarkTs: number,
-  readMarks: ReadMarkMap,
   graceReadMarkTs: number,
   clickedVideos: ClickedVideoMap
 ): number {
@@ -267,10 +257,7 @@ function calcGroupUnreadCount(
     return 0;
   }
 
-  const baselineMap = new Map<number, number>();
-  for (const mid of authorMids) {
-    baselineMap.set(mid, resolveAuthorUnreadBaselineTs(mid, selectedReadMarkTs, readMarks, graceReadMarkTs));
-  }
+  const baseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
 
   const seenBvids = new Set<string>();
   let unreadCount = 0;
@@ -282,7 +269,6 @@ function calcGroupUnreadCount(
         continue;
       }
       seenBvids.add(video.bvid);
-      const baseline = baselineMap.get(video.authorMid) ?? graceReadMarkTs;
       if (video.pubdate > baseline && !isVideoViewed(video, clickedVideos)) {
         unreadCount++;
       }
@@ -346,19 +332,9 @@ function injectAuthorMetaIntoVideo(
 
 // ─── 视图组装 ───
 
-function collectReadMarkTimestamps(authorMids: number[], readMarks: ReadMarkMap): number[] {
-  const tsSet = new Set<number>();
-
-  for (const mid of authorMids) {
-    const mark = readMarks[mid];
-    if (mark) {
-      for (const ts of mark.timestamps) {
-        tsSet.add(ts);
-      }
-    }
-  }
-
-  return Array.from(tsSet).sort((a, b) => b - a);
+function collectReadMarkTimestamps(groupId: string, readMarks: ReadMarkMap): number[] {
+  const timestamps = readMarks[groupId]?.timestamps ?? [];
+  return [...timestamps].sort((a, b) => b - a);
 }
 
 /**
@@ -390,7 +366,7 @@ function calcGlobalUnreadCount(
     }
 
     const runtime = runtimeMap[group.groupId];
-    const readMarkTimestamps = collectReadMarkTimestamps(feedCache.authorMids, readMarks);
+    const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
     const selectedTs = resolveGroupReadMarkTs(runtime?.savedReadMarkTs, readMarkTimestamps);
 
     // “全部”分组只影响自身红点，不参与全局作者基线聚合。
@@ -400,7 +376,7 @@ function calcGlobalUnreadCount(
 
     for (const mid of feedCache.authorMids) {
       authorInNonAllGroups.add(mid);
-      const baseline = resolveAuthorUnreadBaselineTs(mid, selectedTs, readMarks, graceReadMarkTs);
+      const baseline = resolveGroupUnreadBaselineTs(selectedTs, graceReadMarkTs);
       const prev = authorBaselineMap.get(mid);
       if (prev === undefined || baseline > prev) {
         authorBaselineMap.set(mid, baseline);
@@ -432,9 +408,7 @@ function calcGlobalUnreadCount(
  */
 function filterVideosByReadMark(
   videos: VideoItem[],
-  authorMid: number,
   selectedTs: number,
-  readMarks: ReadMarkMap,
   extraCount: number,
   graceTs: number
 ): VideoItem[] {
@@ -442,7 +416,7 @@ function filterVideosByReadMark(
     return videos;
   }
 
-  const baseline = resolveAuthorUnreadBaselineTs(authorMid, selectedTs, readMarks, graceTs);
+  const baseline = resolveGroupUnreadBaselineTs(selectedTs, graceTs);
   if (baseline <= 0) {
     return videos;
   }
@@ -525,23 +499,21 @@ export function toFeedResult(
       following: cache?.following
     });
   }
-  const readMarkTimestamps = collectReadMarkTimestamps(authorMids, readMarks);
+  const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
   const graceReadMarkTs = getGraceReadMarkTs(settings);
 
-  const effectiveTs = selectedReadMarkTs === -1 ? graceReadMarkTs : selectedReadMarkTs;
+  const effectiveTs = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
 
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
     const allVideos = authorCacheMap[mid]?.videos ?? [];
     const videos = filterVideosByReadMark(
       allVideos,
-      mid,
       selectedReadMarkTs,
-      readMarks,
       settings.extraOlderVideoCount,
       graceReadMarkTs
     );
-    const baseline = resolveAuthorUnreadBaselineTs(mid, selectedReadMarkTs, readMarks, graceReadMarkTs);
+    const baseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
     const meta = authorMetaMap.get(mid);
 
     // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
@@ -589,7 +561,6 @@ export function toFeedResult(
     authorMids,
     authorCacheMap,
     selectedReadMarkTs,
-    readMarks,
     graceReadMarkTs,
     clickedVideos
   );
@@ -655,13 +626,12 @@ export function makeSummary(
     let unreadCount = 0;
 
     if (feedCache) {
-      const readMarkTimestamps = collectReadMarkTimestamps(feedCache.authorMids, readMarks);
+      const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
       const selectedTs = resolveGroupReadMarkTs(runtime.savedReadMarkTs, readMarkTimestamps);
       unreadCount = calcGroupUnreadCount(
         feedCache.authorMids,
         authorCacheMap,
         selectedTs,
-        readMarks,
         graceReadMarkTs,
         clickedVideos
       );

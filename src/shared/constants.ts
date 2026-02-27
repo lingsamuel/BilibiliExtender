@@ -8,7 +8,8 @@ export const STORAGE_KEYS = {
   FEED_CACHE: 'bbe:feed:cache',
   AUTHOR_VIDEO_CACHE: 'bbe:author-video-cache',
   LAST_GROUP_ID: 'bbe:last:group',
-  AUTHOR_READ_MARKS: 'bbe:author-read-marks',
+  GROUP_READ_MARKS: 'bbe:group-read-marks',
+  LEGACY_AUTHOR_READ_MARKS: 'bbe:author-read-marks',
   CLICKED_VIDEOS: 'bbe:clicked-videos'
 } as const;
 

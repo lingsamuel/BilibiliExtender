@@ -1,8 +1,8 @@
 import type {
-  AuthorReadMark,
   ExtensionSettings,
   GroupConfig,
   GroupFeedResult,
+  GroupReadMark,
   GroupOptionsData,
   GroupSummary,
   ViewMode
@@ -27,9 +27,9 @@ export type MessageRequest =
     }
   | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
-  | { type: 'MARK_AUTHORS_READ'; payload: { mids: number[] } }
+  | { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
   | { type: 'FOLLOW_AUTHOR'; payload: { mid: number; follow: boolean; csrf: string } }
-  | { type: 'GET_AUTHOR_READ_MARKS'; payload: { mids: number[] } }
+  | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
   | { type: 'GET_SCHEDULER_STATUS' }
@@ -113,7 +113,7 @@ export interface ResponseMap {
   GET_GROUP_FEED: GroupFeedResult & { cacheStatus: 'ready' | 'generating' };
   MANUAL_REFRESH: { accepted: boolean };
   MARK_GROUP_READ: { groupId: string; unreadCount: number };
-  MARK_AUTHORS_READ: { marks: Record<number, AuthorReadMark> };
+  MARK_GROUP_READ_MARK: { marks: Record<string, GroupReadMark> };
   FOLLOW_AUTHOR: {
     mid: number;
     following: boolean;
@@ -121,7 +121,7 @@ export interface ResponseMap {
     name?: string;
     face?: string;
   };
-  GET_AUTHOR_READ_MARKS: { marks: Record<number, AuthorReadMark> };
+  GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;

@@ -29,12 +29,37 @@ function buildDateFromDayKey(dayKey: string): Date | null {
   return new Date(year, month, day);
 }
 
+function toStartOfDaySeconds(date: Date): number {
+  return Math.floor(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1000);
+}
+
 /**
  * 按用户本地时区把秒级时间戳转换为自然日键（YYYY-MM-DD）。
  * 时间流的按天分段、可视窗口压缩都基于该键，保证同一时区下分组稳定。
  */
 export function getDayKeyFromSeconds(seconds: number): string {
   return toDayKey(new Date(seconds * 1000));
+}
+
+/**
+ * 将 dayKey 映射为“该日次日 00:00:00”的秒级时间戳（本地时区）。
+ * 用于表达“日与日之间”的已阅边界。
+ */
+export function getNextDayStartSecondsFromDayKey(dayKey: string): number | null {
+  const date = buildDateFromDayKey(dayKey);
+  if (!date) {
+    return null;
+  }
+  date.setDate(date.getDate() + 1);
+  return toStartOfDaySeconds(date);
+}
+
+/**
+ * 判断某秒级时间戳是否恰好落在本地时区自然日零点。
+ */
+export function isLocalDayStartSeconds(seconds: number): boolean {
+  const date = new Date(seconds * 1000);
+  return date.getHours() === 0 && date.getMinutes() === 0 && date.getSeconds() === 0;
 }
 
 export function formatTimelineDayLabel(dayKey: string, nowMs = Date.now()): string {

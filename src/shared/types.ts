@@ -69,7 +69,7 @@ export interface GroupFeedResult {
   lastReadAt?: number;
   unreadCount: number;
   hasMoreForMixed: boolean;
-  // 当前分组内所有作者的已阅时间点并集（去重、倒序）
+  // 当前分组的已阅时间点（倒序）
   readMarkTimestamps: number[];
   // 无真实已阅记录时的 grace 默认时间点（秒级时间戳），0 表示不适用
   graceReadMarkTs: number;
@@ -118,9 +118,9 @@ export interface GroupFeedCache {
   updatedAt: number;
 }
 
-// 每位作者的已阅记录，按作者 mid 索引，跨分组共享
-export interface AuthorReadMark {
-  mid: number;
+// 每个分组的已阅记录，按 groupId 索引，不跨分组共享
+export interface GroupReadMark {
+  groupId: string;
   // 最多保留 10 条，按时间倒序排列（最新在前）
   // 每条记录为 Unix 时间戳（秒），表示该时间点及之前的视频已阅
   timestamps: number[];
