@@ -46,7 +46,9 @@ body.bbe-page-scroll-lock {
 .bbe-main {
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .bbe-toolbar {
@@ -144,6 +146,7 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-list {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 12px 14px 20px;
@@ -264,6 +267,7 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-by-author-sections {
+  min-height: 0;
   min-width: 0;
 }
 
@@ -460,11 +464,19 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-title {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   font-size: 14px;
   font-weight: 600;
   margin: 0 0 8px;
+}
+
+.bbe-author-title-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .bbe-author-title-note {
@@ -477,12 +489,46 @@ body.bbe-page-scroll-lock {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   color: #1f2329;
   text-decoration: none;
 }
 
 .bbe-author-link:hover {
   color: #00a1d6;
+}
+
+.bbe-author-follow-btn {
+  border: 1px solid #fb7299;
+  border-radius: 999px;
+  background: #fff1f5;
+  color: #fb7299;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bbe-author-follow-btn:hover {
+  background: #ffe5ee;
+}
+
+.bbe-author-follow-btn.followed {
+  border-color: #c8d1dd;
+  background: #fff;
+  color: #7a8599;
+}
+
+.bbe-author-follow-btn.followed:hover {
+  border-color: #b2bccb;
+  color: #5f6a7b;
+}
+
+.bbe-author-follow-btn.loading {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 .bbe-avatar {

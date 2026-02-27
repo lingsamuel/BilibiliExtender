@@ -1,5 +1,5 @@
 import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
-import { getUploaderVideos, getUserFace, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
+import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
   AuthorFeed,
   AuthorReadMark,
@@ -51,25 +51,29 @@ function isNumericName(value: string | undefined): boolean {
   return !!value && /^\d+$/.test(value.trim());
 }
 
+function hasCardSnapshot(cache: AuthorVideoCache | undefined): boolean {
+  if (!cache) {
+    return false;
+  }
+  return Boolean(cache.name?.trim()) && cache.follower !== undefined && cache.following !== undefined;
+}
+
 // ─── 作者级缓存操作 ───
 
 function isAuthorCacheExpired(cache: AuthorVideoCache | undefined, settings: ExtensionSettings): boolean {
   if (!cache?.lastFetchedAt) {
     return true;
   }
+  // 缓存里还没有完整 Card 信息时，视为过期并优先补齐。
+  if (!hasCardSnapshot(cache)) {
+    return true;
+  }
   return Date.now() - cache.lastFetchedAt > settings.refreshIntervalMinutes * 60 * 1000;
 }
 
-const FACE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-function isFaceExpired(cache: AuthorVideoCache | undefined): boolean {
-  if (!cache?.face || !cache.faceFetchedAt) return true;
-  return Date.now() - cache.faceFetchedAt > FACE_CACHE_TTL_MS;
-}
-
 /**
- * 刷新单个作者的视频缓存：重置分页游标，拉取首页并与已有数据合并。
- * 同时在头像缓存过期时拉取头像。
+ * 刷新单个作者的视频缓存：重置分页游标，拉取首页并与已有数据合并；
+ * 并在同一轮请求中同步刷新 Card 信息（作者名、头像、粉丝数、关注状态）。
  * 仅由调度器调用，不应被前台路径直接使用。
  */
 export async function refreshAuthorCache(
@@ -82,35 +86,48 @@ export async function refreshAuthorCache(
 
   const merged = existing ? mergeVideos(existing.videos, videos) : videos;
 
-  let face = existing?.face;
-  let faceFetchedAt = existing?.faceFetchedAt;
+  const existingHasCardSnapshot = hasCardSnapshot(existing);
+  let cardName: string | undefined;
+  let cardFace: string | undefined;
+  let cardFollower: number | undefined;
+  let cardFollowing: boolean | undefined;
 
-  if (isFaceExpired(existing)) {
-    try {
-      face = await getUserFace(mid);
-      faceFetchedAt = Date.now();
-    } catch {
-      // 头像拉取失败不影响主流程
-    }
+  try {
+    const card = await getUserCard(mid);
+    cardName = card.name?.trim() || undefined;
+    cardFace = card.face;
+    cardFollower = card.follower;
+    cardFollowing = card.following;
+  } catch {
+    // Card 请求失败时按降级策略处理：
+    // - 若已有 Card 缓存，继续沿用缓存；
+    // - 若无 Card 缓存，允许回退视频接口作者名兜底展示。
   }
 
-  // 作者名优先使用接口返回的真实名称；若拿不到再回退缓存/任务入参。
+  // 作者名优先来源于 Card；仅在无 Card 缓存且本轮 Card 失败时回退视频作者名/任务名。
   const apiName = videos.find((item) => item.authorName?.trim())?.authorName?.trim();
   const existingName = existing?.name?.trim();
   const taskName = name?.trim();
   const resolvedName =
+    cardName ||
+    (existingHasCardSnapshot ? existingName : undefined) ||
     apiName ||
     (existingName && !isNumericName(existingName) ? existingName : undefined) ||
     (taskName && !isNumericName(taskName) ? taskName : undefined) ||
     existingName ||
     taskName ||
     String(mid);
+  const resolvedFace = cardFace || existing?.face;
+  const resolvedFollower = cardFollower ?? (existingHasCardSnapshot ? existing?.follower : undefined);
+  const resolvedFollowing = cardFollowing ?? (existingHasCardSnapshot ? existing?.following : undefined);
 
   const cache: AuthorVideoCache = {
     mid,
     name: resolvedName,
-    face,
-    faceFetchedAt,
+    face: resolvedFace,
+    follower: resolvedFollower,
+    following: resolvedFollowing,
+    faceFetchedAt: resolvedFace ? Date.now() : existing?.faceFetchedAt,
     videos: merged,
     nextPn: 2,
     hasMore,
@@ -298,6 +315,7 @@ function getAuthorNames(authorMids: number[], authorCacheMap: AuthorCacheMap): M
       const cacheName = cache.name?.trim();
       const videoName = cache.videos.find((video) => video.authorName?.trim())?.authorName?.trim();
       const resolvedName =
+        (hasCardSnapshot(cache) ? cacheName : undefined) ||
         (cacheName && !isNumericName(cacheName) ? cacheName : undefined) ||
         videoName ||
         cacheName ||
@@ -306,6 +324,24 @@ function getAuthorNames(authorMids: number[], authorCacheMap: AuthorCacheMap): M
     }
   }
   return names;
+}
+
+function injectAuthorMetaIntoVideo(
+  video: VideoItem,
+  meta: { name: string; face?: string } | undefined
+): VideoItem {
+  if (!meta) {
+    return video;
+  }
+
+  let next = video;
+  if (meta.name && meta.name !== next.authorName) {
+    next = { ...next, authorName: meta.name };
+  }
+  if (meta.face && meta.face !== next.authorFace) {
+    next = { ...next, authorFace: meta.face };
+  }
+  return next;
 }
 
 // ─── 视图组装 ───
@@ -479,6 +515,16 @@ export function toFeedResult(
 
   const authorMids = feedCache.authorMids;
   const authorNames = getAuthorNames(authorMids, authorCacheMap);
+  const authorMetaMap = new Map<number, { name: string; face?: string; follower?: number; following?: boolean }>();
+  for (const mid of authorMids) {
+    const cache = authorCacheMap[mid];
+    authorMetaMap.set(mid, {
+      name: authorNames.get(mid) ?? String(mid),
+      face: cache?.face,
+      follower: cache?.follower,
+      following: cache?.following
+    });
+  }
   const readMarkTimestamps = collectReadMarkTimestamps(authorMids, readMarks);
   const graceReadMarkTs = getGraceReadMarkTs(settings);
 
@@ -496,13 +542,16 @@ export function toFeedResult(
       graceReadMarkTs
     );
     const baseline = resolveAuthorUnreadBaselineTs(mid, selectedReadMarkTs, readMarks, graceReadMarkTs);
+    const meta = authorMetaMap.get(mid);
 
     // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
     return {
       authorMid: mid,
-      authorName: authorNames.get(mid) ?? String(mid),
-      authorFace: authorCacheMap[mid]?.face,
-      videos,
+      authorName: meta?.name ?? String(mid),
+      authorFace: meta?.face,
+      follower: meta?.follower,
+      following: meta?.following,
+      videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),
       hasOnlyExtraOlderVideos:
         selectedReadMarkTs !== 0 &&
         baseline > 0 &&
@@ -516,25 +565,19 @@ export function toFeedResult(
     videosByAuthor = sortAuthorsByLatestPubdate(videosByAuthor);
   }
 
-  // 为混合视频注入作者头像
-  const faceMap = new Map<number, string>();
-  for (const mid of authorMids) {
-    const face = authorCacheMap[mid]?.face;
-    if (face) faceMap.set(mid, face);
-  }
-  const injectFace = (videos: VideoItem[]): VideoItem[] =>
-    videos.map((v) => (faceMap.has(v.authorMid) ? { ...v, authorFace: faceMap.get(v.authorMid) } : v));
+  const injectAuthorMeta = (videos: VideoItem[]): VideoItem[] =>
+    videos.map((video) => injectAuthorMetaIntoVideo(video, authorMetaMap.get(video.authorMid)));
 
   let mixedVideos: VideoItem[];
   if (effectiveTs === 0) {
-    mixedVideos = injectFace(aggregateMixedVideos(authorMids, authorCacheMap));
+    mixedVideos = injectAuthorMeta(aggregateMixedVideos(authorMids, authorCacheMap));
   } else {
     const allFiltered = videosByAuthor.flatMap((a) => a.videos);
     const deduped = new Map<string, VideoItem>();
     for (const v of allFiltered) {
       deduped.set(v.bvid, v);
     }
-    mixedVideos = injectFace(Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate));
+    mixedVideos = injectAuthorMeta(Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate));
   }
 
   // 时间流读取遵循 runtime 目标数量，避免一次返回过多数据导致渲染与消息传输变慢。

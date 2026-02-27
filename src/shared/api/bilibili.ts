@@ -68,6 +68,15 @@ interface ArcSearchData {
   };
 }
 
+interface WebCardData {
+  card?: {
+    name?: string;
+    face?: string;
+  };
+  follower?: number;
+  following?: boolean;
+}
+
 async function fetchApi<T>(
   path: string,
   params?: Record<string, string | number>
@@ -98,6 +107,44 @@ async function fetchApi<T>(
   }
 
   return payload;
+}
+
+async function postApi<T>(
+  path: string,
+  body: Record<string, string | number>
+): Promise<ApiResponse<T>> {
+  const url = new URL(path, API_BASE);
+  const form = new URLSearchParams();
+
+  Object.entries(body).forEach(([key, value]) => {
+    form.set(key, String(value));
+  });
+
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded'
+    },
+    body: form.toString()
+  });
+
+  if (!response.ok) {
+    throw new Error(`请求失败: HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as ApiResponse<T>;
+  if (payload.code !== 0) {
+    throw new Error(`接口错误: ${payload.code} ${payload.message}`);
+  }
+  return payload;
+}
+
+function normalizeBiliUrl(url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  return url.startsWith('http') ? url : `https:${url}`;
 }
 
 let cachedWbiKey: { imgKey: string; subKey: string; expiredAt: number } | null = null;
@@ -226,11 +273,11 @@ export async function getUploaderVideos(
         bvid: item.bvid,
         aid: item.aid,
         title: item.title,
-        cover: item.pic.startsWith('http') ? item.pic : `https:${item.pic}`,
+        cover: normalizeBiliUrl(item.pic) ?? '',
         pubdate: item.created,
         authorMid: item.mid || mid,
         authorName: item.author,
-        playbackPosiiton: item.playback_position,
+        playbackPosiiton: item.playback_position
       }));
 
       const page = payload.data.page;
@@ -250,6 +297,46 @@ export async function getUploaderVideos(
 }
 
 export type { FavMediaItem };
+
+export interface UserCardProfile {
+  mid: number;
+  name?: string;
+  face?: string;
+  follower?: number;
+  following?: boolean;
+}
+
+/**
+ * 获取作者卡片信息（头像、名称、粉丝数、关注状态）。
+ */
+export async function getUserCard(mid: number): Promise<UserCardProfile> {
+  const payload = await fetchApi<WebCardData>('/x/web-interface/card', { mid });
+  return {
+    mid,
+    name: payload.data.card?.name?.trim() || undefined,
+    face: normalizeBiliUrl(payload.data.card?.face),
+    follower: payload.data.follower,
+    following: payload.data.following
+  };
+}
+
+/**
+ * 关注/取消关注指定用户。
+ * act: 1=关注, 2=取关
+ */
+export async function modifyUserRelation(
+  fid: number,
+  follow: boolean,
+  csrf: string
+): Promise<void> {
+  const act = follow ? 1 : 2;
+  await postApi<Record<string, never>>('/x/relation/modify', {
+    fid,
+    act,
+    re_src: 11,
+    csrf
+  });
+}
 
 interface AccInfoData {
   face: string;

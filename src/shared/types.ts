@@ -51,6 +51,8 @@ export interface AuthorFeed {
   authorMid: number;
   authorName: string;
   authorFace?: string;
+  follower?: number;
+  following?: boolean;
   videos: VideoItem[];
   // 当前筛选结果是否“仅由已阅前额外视频构成”（没有已阅基线之后的新视频）
   hasOnlyExtraOlderVideos?: boolean;
@@ -100,6 +102,8 @@ export interface AuthorVideoCache {
   mid: number;
   name: string;
   face?: string;
+  follower?: number;
+  following?: boolean;
   faceFetchedAt?: number;
   videos: VideoItem[];
   nextPn: number;

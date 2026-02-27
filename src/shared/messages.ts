@@ -28,6 +28,7 @@ export type MessageRequest =
   | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_AUTHORS_READ'; payload: { mids: number[] } }
+  | { type: 'FOLLOW_AUTHOR'; payload: { mid: number; follow: boolean; csrf: string } }
   | { type: 'GET_AUTHOR_READ_MARKS'; payload: { mids: number[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
@@ -103,6 +104,13 @@ export interface ResponseMap {
   MANUAL_REFRESH: { accepted: boolean };
   MARK_GROUP_READ: { groupId: string; unreadCount: number };
   MARK_AUTHORS_READ: { marks: Record<number, AuthorReadMark> };
+  FOLLOW_AUTHOR: {
+    mid: number;
+    following: boolean;
+    follower?: number;
+    name?: string;
+    face?: string;
+  };
   GET_AUTHOR_READ_MARKS: { marks: Record<number, AuthorReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };

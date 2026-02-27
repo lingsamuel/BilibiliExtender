@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS } from '@/shared/constants';
-import { getMyCreatedFolders } from '@/shared/api/bilibili';
+import { getMyCreatedFolders, getUserCard, modifyUserRelation } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import {
   appendReadMarks,
@@ -12,6 +12,7 @@ import {
   loadRuntimeStateMap,
   loadSettings,
   recordVideoClick,
+  saveAuthorVideoCacheMap,
   saveFeedCacheMap,
   saveGroups,
   saveLastGroupId,
@@ -344,6 +345,68 @@ async function handleGetAuthorReadMarks(
   return { marks: filtered };
 }
 
+/**
+ * 关注/取消关注作者，并尽量同步回写 AuthorVideoCache 中的 Card 信息。
+ */
+async function handleFollowAuthor(
+  request: Extract<MessageRequest, { type: 'FOLLOW_AUTHOR' }>
+): Promise<ResponseMap['FOLLOW_AUTHOR']> {
+  const mid = request.payload.mid;
+  const follow = request.payload.follow;
+  const csrf = request.payload.csrf?.trim();
+
+  if (!mid || !csrf) {
+    throw new Error('关注参数不完整');
+  }
+
+  await modifyUserRelation(mid, follow, csrf);
+
+  const authorCacheMap = await getAuthorCacheSnapshot();
+  const existing = authorCacheMap[mid];
+  const patch: ResponseMap['FOLLOW_AUTHOR'] = {
+    mid,
+    following: follow
+  };
+
+  try {
+    const card = await getUserCard(mid);
+    patch.following = card.following ?? follow;
+    patch.follower = card.follower;
+    patch.name = card.name;
+    patch.face = card.face;
+
+    if (existing) {
+      authorCacheMap[mid] = {
+        ...existing,
+        name: card.name || existing.name,
+        face: card.face || existing.face,
+        follower: card.follower ?? existing.follower,
+        following: card.following ?? follow
+      };
+      await saveAuthorVideoCacheMap(authorCacheMap);
+    }
+  } catch {
+    // Card 同步失败不影响关注主流程，前台可继续使用乐观状态。
+    if (existing) {
+      const currentFollower = existing.follower;
+      authorCacheMap[mid] = {
+        ...existing,
+        following: follow,
+        follower:
+          typeof currentFollower === 'number'
+            ? Math.max(0, currentFollower + (follow ? 1 : -1))
+            : currentFollower
+      };
+      await saveAuthorVideoCacheMap(authorCacheMap);
+      patch.follower = authorCacheMap[mid].follower;
+      patch.name = authorCacheMap[mid].name;
+      patch.face = authorCacheMap[mid].face;
+    }
+  }
+
+  return patch;
+}
+
 async function handleRecordVideoClick(
   request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
 ): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
@@ -413,6 +476,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleMarkGroupRead(request));
     case 'MARK_AUTHORS_READ':
       return ok(await handleMarkAuthorsRead(request));
+    case 'FOLLOW_AUTHOR':
+      return ok(await handleFollowAuthor(request));
     case 'GET_AUTHOR_READ_MARKS':
       return ok(await handleGetAuthorReadMarks(request));
     case 'RECORD_VIDEO_CLICK':

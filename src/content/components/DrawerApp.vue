@@ -158,15 +158,26 @@
                 class="bbe-author-section"
               >
                 <h3 class="bbe-author-title">
-                  <a
-                    class="bbe-author-link"
-                    :href="`https://space.bilibili.com/${author.authorMid}`"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
-                    <span>{{ author.authorName }}</span>
-                  </a>
+                  <div class="bbe-author-title-main">
+                    <a
+                      class="bbe-author-link"
+                      :href="`https://space.bilibili.com/${author.authorMid}`"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
+                      <span>{{ author.authorName }}</span>
+                    </a>
+                    <button
+                      type="button"
+                      class="bbe-author-follow-btn"
+                      :class="{ followed: author.following, loading: isFollowPending(author.authorMid) }"
+                      :disabled="isFollowPending(author.authorMid)"
+                      @click="toggleAuthorFollow(author)"
+                    >
+                      {{ getFollowButtonText(author) }}
+                    </button>
+                  </div>
                   <span
                     v-if="author.hasOnlyExtraOlderVideos && author.latestPubdate"
                     class="bbe-author-title-note"
@@ -296,6 +307,7 @@ const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
+const followPendingMap = ref<Record<number, boolean>>({});
 const mixedDaySectionElements = new Map<string, HTMLElement>();
 const mixedSectionsRef = ref<HTMLElement | null>(null);
 const mixedDayInViewMap = ref<Record<string, boolean>>({});
@@ -428,6 +440,158 @@ const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
     authorFace: author.authorFace
   }));
 });
+
+function isFollowPending(mid: number): boolean {
+  return followPendingMap.value[mid] === true;
+}
+
+function formatFollowerWan(follower: number | undefined): string {
+  if (typeof follower !== 'number' || Number.isNaN(follower) || follower < 0) {
+    return '--';
+  }
+
+  const wan = follower / 10000;
+  if (wan >= 100) {
+    return `${Math.round(wan)}万`;
+  }
+
+  const fixed = wan.toFixed(1).replace(/\.0$/, '');
+  return `${fixed}万`;
+}
+
+function getFollowButtonText(author: AuthorFeed): string {
+  const followerText = formatFollowerWan(author.follower);
+  if (author.following) {
+    return `已关注 ${followerText}`;
+  }
+  return `+ 关注 ${followerText}`;
+}
+
+function getCsrfFromCookie(): string | null {
+  const match = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/);
+  if (!match || !match[1]) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+/**
+ * 将关注操作结果回写到当前 feed，保持“按作者标题 + 视频卡片作者信息”一致。
+ */
+function patchAuthorInFeed(
+  mid: number,
+  patch: {
+    following?: boolean;
+    follower?: number;
+    name?: string;
+    face?: string;
+  }
+): void {
+  if (!feed.value) {
+    return;
+  }
+
+  for (const author of feed.value.videosByAuthor) {
+    if (author.authorMid !== mid) {
+      continue;
+    }
+    if (patch.following !== undefined) {
+      author.following = patch.following;
+    }
+    if (patch.follower !== undefined) {
+      author.follower = patch.follower;
+    }
+    if (patch.name) {
+      author.authorName = patch.name;
+    }
+    if (patch.face) {
+      author.authorFace = patch.face;
+    }
+    for (const video of author.videos) {
+      if (patch.name) {
+        video.authorName = patch.name;
+      }
+      if (patch.face) {
+        video.authorFace = patch.face;
+      }
+    }
+  }
+
+  for (const video of feed.value.mixedVideos) {
+    if (video.authorMid !== mid) {
+      continue;
+    }
+    if (patch.name) {
+      video.authorName = patch.name;
+    }
+    if (patch.face) {
+      video.authorFace = patch.face;
+    }
+  }
+}
+
+async function toggleAuthorFollow(author: AuthorFeed): Promise<void> {
+  const mid = author.authorMid;
+  if (!mid || isFollowPending(mid)) {
+    return;
+  }
+
+  const csrf = getCsrfFromCookie();
+  if (!csrf) {
+    errorMsg.value = '未获取到 CSRF，请确认当前页面登录态有效';
+    return;
+  }
+
+  const nextFollowing = !Boolean(author.following);
+  const prevFollowing = author.following;
+  const prevFollower = author.follower;
+  const optimisticFollower =
+    typeof prevFollower === 'number'
+      ? Math.max(0, prevFollower + (nextFollowing ? 1 : -1))
+      : prevFollower;
+
+  followPendingMap.value = { ...followPendingMap.value, [mid]: true };
+  patchAuthorInFeed(mid, {
+    following: nextFollowing,
+    follower: optimisticFollower
+  });
+
+  try {
+    const resp = await sendMessage({
+      type: 'FOLLOW_AUTHOR',
+      payload: {
+        mid,
+        follow: nextFollowing,
+        csrf
+      }
+    });
+
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? (nextFollowing ? '关注失败' : '取消关注失败'));
+    }
+
+    patchAuthorInFeed(mid, {
+      following: resp.data.following,
+      follower: resp.data.follower,
+      name: resp.data.name,
+      face: resp.data.face
+    });
+  } catch (error) {
+    patchAuthorInFeed(mid, {
+      following: prevFollowing,
+      follower: prevFollower
+    });
+    errorMsg.value = error instanceof Error ? error.message : (nextFollowing ? '关注失败' : '取消关注失败');
+  } finally {
+    const nextMap = { ...followPendingMap.value };
+    delete nextMap[mid];
+    followPendingMap.value = nextMap;
+  }
+}
 
 /**
  * 判断当前响应里是否已经有可展示的视频。
@@ -1008,6 +1172,7 @@ async function reloadFeedWithReadMark(): Promise<void> {
 async function openDrawer(): Promise<void> {
   visible.value = true;
   clickedMap.value = {};
+  followPendingMap.value = {};
   userExplicitlyChoseAll = false;
 
   try {
@@ -1057,6 +1222,7 @@ async function openDrawer(): Promise<void> {
 
 function closeDrawer(): void {
   visible.value = false;
+  followPendingMap.value = {};
 }
 
 /**
@@ -1115,6 +1281,7 @@ async function selectEntry(entryId: string): Promise<void> {
   }
 
   activeGroupId.value = entryId;
+  followPendingMap.value = {};
   userExplicitlyChoseAll = false;
 
   // 从 summary 恢复记忆的 mode、已阅时间点和作者排序方式
