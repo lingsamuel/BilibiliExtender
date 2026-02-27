@@ -1,6 +1,6 @@
 {
   "name": "bilibili-extender",
-  "version": "0.2.25",
+  "version": "0.2.29",
   "private": true,
   "type": "module",
   "scripts": {

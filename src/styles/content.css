@@ -186,6 +186,88 @@ body.bbe-page-scroll-lock {
   gap: 10px;
 }
 
+.bbe-mixed-layout {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.bbe-mixed-sections {
+  min-width: 0;
+}
+
+.bbe-mixed-day-section {
+  margin-bottom: 28px;
+}
+
+.bbe-mixed-day-section:last-child {
+  margin-bottom: 0;
+}
+
+.bbe-timeline {
+  position: sticky;
+  top: 6px;
+  align-self: start;
+  padding-right: 6px;
+  min-height: 120px;
+}
+
+.bbe-timeline-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 8px;
+  width: 2px;
+  background: #d4d9e1;
+}
+
+.bbe-timeline-item {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: 1fr 18px;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  transform: translateY(-50%);
+  transition: top 0.2s ease;
+}
+
+.bbe-timeline-label {
+  justify-self: end;
+  font-size: 12px;
+  color: #6e788a;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.bbe-timeline-node {
+  justify-self: center;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #222;
+  border: 0;
+  opacity: 0.95;
+  transition:
+    width 0.2s ease,
+    height 0.2s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    opacity 0.2s ease;
+  z-index: 1;
+}
+
+.bbe-timeline-item.is-in-view .bbe-timeline-node {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #8d97a8;
+  background: #fff;
+  opacity: 1;
+}
+
 .bbe-card {
   border: 1px solid #edf1f5;
   border-radius: 10px;
@@ -525,6 +607,19 @@ body.bbe-page-scroll-lock {
   .bbe-drawer {
     width: 100vw;
     grid-template-columns: 6px 180px 1fr;
+  }
+
+  .bbe-mixed-layout {
+    grid-template-columns: 62px 1fr;
+    gap: 10px;
+  }
+
+  .bbe-mixed-day-section {
+    margin-bottom: 22px;
+  }
+
+  .bbe-timeline-label {
+    font-size: 11px;
   }
 
   .bbe-settings-grid {

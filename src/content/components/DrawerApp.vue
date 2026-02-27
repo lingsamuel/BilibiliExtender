@@ -78,14 +78,44 @@
         </div>
 
         <template v-else-if="mode === 'mixed'">
-          <div class="bbe-grid">
-            <VideoCard
-              v-for="video in feed.mixedVideos"
-              :key="video.bvid"
-              :video="video"
-              :clicked="clickedMap[video.bvid] !== undefined"
-              @click="onVideoClick"
-            />
+          <div class="bbe-mixed-layout">
+            <aside
+              v-if="mixedTimelineItems.length > 0"
+              class="bbe-timeline"
+              :style="mixedTimelineStyle"
+              aria-label="时间轴"
+            >
+              <div class="bbe-timeline-line" />
+              <div
+                v-for="item in mixedTimelineItems"
+                :key="item.dayKey"
+                class="bbe-timeline-item"
+                :class="{ 'is-in-view': item.isInView }"
+                :style="{ top: `${item.topPx}px` }"
+              >
+                <span class="bbe-timeline-label">{{ item.label }}</span>
+                <span class="bbe-timeline-node" />
+              </div>
+            </aside>
+
+            <div class="bbe-mixed-sections">
+              <section
+                v-for="day in mixedDayGroups"
+                :key="day.dayKey"
+                :ref="(el) => bindMixedDaySection(day.dayKey, el)"
+                class="bbe-mixed-day-section"
+              >
+                <div class="bbe-grid">
+                  <VideoCard
+                    v-for="video in day.videos"
+                    :key="video.bvid"
+                    :video="video"
+                    :clicked="clickedMap[video.bvid] !== undefined"
+                    @click="onVideoClick"
+                  />
+                </div>
+              </section>
+            </div>
           </div>
           <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
           <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
@@ -133,13 +163,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_REFRESHING } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
 import type { GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
+import { buildMixedDayGroups, buildTimelineWindow } from '@/content/utils/timeline';
 import SettingsPanel from '@/shared/components/SettingsPanel.vue';
 
 const DRAWER_WIDTH_KEY = 'bbe-drawer-width';
@@ -147,6 +178,9 @@ const MIN_DRAWER_WIDTH = 500;
 const MAX_DRAWER_WIDTH_RATIO = 0.95;
 const DEFAULT_DRAWER_WIDTH = 900;
 const PAGE_SCROLL_LOCK_CLASS = 'bbe-page-scroll-lock';
+const MIXED_TIMELINE_WINDOW_RADIUS = 2;
+const MIXED_TIMELINE_EDGE_PADDING = 12;
+const MIXED_TIMELINE_OUTSIDE_GAP = 18;
 const ENTRY_ID = {
   SETTINGS: '__bbe_settings__',
   DEBUG: '__bbe_debug__'
@@ -228,8 +262,70 @@ const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
+const mixedDaySectionElements = new Map<string, HTMLElement>();
+const mixedDayInViewMap = ref<Record<string, boolean>>({});
+const mixedTimelineNodeTopMap = ref<Record<string, number>>({});
+const mixedTimelineHeight = ref(0);
+const mixedTimelineWindow = ref<{ start: number; end: number }>({ start: 0, end: -1 });
+const mixedTimelineFocusIndex = ref(0);
 const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
 const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
+
+interface MixedTimelineItem {
+  dayKey: string;
+  label: string;
+  isInView: boolean;
+  topPx: number;
+}
+
+const mixedDayGroups = computed(() => {
+  if (!feed.value) {
+    return [];
+  }
+  return buildMixedDayGroups(feed.value.mixedVideos);
+});
+
+const mixedTimelineItems = computed<MixedTimelineItem[]>(() => {
+  const groups = mixedDayGroups.value;
+  if (groups.length === 0) {
+    return [];
+  }
+  if (mixedTimelineHeight.value <= 0) {
+    return [];
+  }
+
+  let { start, end } = mixedTimelineWindow.value;
+  if (end < start) {
+    ({ start, end } = buildTimelineWindow(groups.length, mixedTimelineFocusIndex.value, MIXED_TIMELINE_WINDOW_RADIUS));
+  }
+  if (end < start) {
+    return [];
+  }
+
+  const range = Math.max(1, end - start);
+  const availableHeight = Math.max(0, mixedTimelineHeight.value - MIXED_TIMELINE_EDGE_PADDING * 2);
+
+  return groups.slice(start, end + 1).map((group, offset) => {
+    const index = start + offset;
+    const ratio = (index - start) / range;
+    const fallbackTop = MIXED_TIMELINE_EDGE_PADDING + availableHeight * ratio;
+    return {
+      dayKey: group.dayKey,
+      label: group.label,
+      isInView: mixedDayInViewMap.value[group.dayKey] === true,
+      topPx: mixedTimelineNodeTopMap.value[group.dayKey] ?? fallbackTop
+    };
+  });
+});
+
+const mixedTimelineStyle = computed(() => {
+  if (mixedTimelineHeight.value <= 0) {
+    return {};
+  }
+  return {
+    height: `${mixedTimelineHeight.value}px`
+  };
+});
 
 /**
  * 判断当前响应里是否已经有可展示的视频。
@@ -346,6 +442,151 @@ function stopPoll(): void {
     window.clearInterval(pollTimer);
     pollTimer = null;
   }
+}
+
+/**
+ * 记录每个日期分段对应的 DOM 节点，供滚动时判断“是否在可视区”以及“当前焦点日期”。
+ */
+function bindMixedDaySection(dayKey: string, el: Element | ComponentPublicInstance | null): void {
+  if (el instanceof HTMLElement) {
+    mixedDaySectionElements.set(dayKey, el);
+    return;
+  }
+  mixedDaySectionElements.delete(dayKey);
+}
+
+function resetMixedTimelineState(): void {
+  mixedDayInViewMap.value = {};
+  mixedTimelineNodeTopMap.value = {};
+  mixedTimelineHeight.value = 0;
+  mixedTimelineWindow.value = { start: 0, end: -1 };
+  mixedTimelineFocusIndex.value = 0;
+}
+
+/**
+ * 计算时间轴状态：
+ * 1) 每个日期分段是否在当前可视区域内（决定空心圆/小黑点）；
+ * 2) 时间轴窗口只渲染“可视区全部日期 + 上下各两天（有投稿日期）”。
+ */
+function updateMixedTimelineState(): void {
+  if (!visible.value || mode.value !== 'mixed') {
+    resetMixedTimelineState();
+    return;
+  }
+
+  const container = listRef.value;
+  const groups = mixedDayGroups.value;
+  if (!container || groups.length === 0) {
+    resetMixedTimelineState();
+    return;
+  }
+
+  const scrollTop = container.scrollTop;
+  const timelineHeight = Math.max(container.clientHeight, MIXED_TIMELINE_EDGE_PADDING * 2 + 1);
+  const viewBottom = scrollTop + timelineHeight;
+  const nextInViewMap: Record<string, boolean> = {};
+  const nextNodeTopMap: Record<string, number> = {};
+  const inViewIndexes: number[] = [];
+  const inViewTopMap = new Map<number, number>();
+  let focusIndex = -1;
+
+  for (let index = 0; index < groups.length; index++) {
+    const group = groups[index];
+    const sectionEl = mixedDaySectionElements.get(group.dayKey);
+    if (!sectionEl) {
+      continue;
+    }
+
+    const sectionTop = sectionEl.offsetTop;
+    const sectionBottom = sectionTop + sectionEl.offsetHeight;
+    const inView = sectionBottom > scrollTop && sectionTop < viewBottom;
+    nextInViewMap[group.dayKey] = inView;
+    if (inView) {
+      inViewIndexes.push(index);
+      inViewTopMap.set(index, sectionTop - scrollTop + 8);
+    }
+
+    // 以“可视区域顶部遇到的第一个日期段”为主日期，驱动时间轴压缩窗口。
+    if (focusIndex < 0 && sectionBottom > scrollTop + 1) {
+      focusIndex = index;
+    }
+  }
+
+  if (focusIndex < 0) {
+    focusIndex = groups.length - 1;
+  }
+
+  const firstVisibleIndex = inViewIndexes.length > 0 ? inViewIndexes[0] : focusIndex;
+  const lastVisibleIndex = inViewIndexes.length > 0 ? inViewIndexes[inViewIndexes.length - 1] : focusIndex;
+  const start = Math.max(0, firstVisibleIndex - MIXED_TIMELINE_WINDOW_RADIUS);
+  const end = Math.min(groups.length - 1, lastVisibleIndex + MIXED_TIMELINE_WINDOW_RADIUS);
+
+  if (inViewIndexes.length > 0) {
+    const topCompressedCount = Math.max(0, firstVisibleIndex - start);
+    const bottomCompressedCount = Math.max(0, end - lastVisibleIndex);
+
+    const topDockStart = MIXED_TIMELINE_EDGE_PADDING;
+    const topDockEnd =
+      topCompressedCount > 0
+        ? topDockStart + (topCompressedCount - 1) * MIXED_TIMELINE_OUTSIDE_GAP
+        : topDockStart;
+    const bottomDockStart =
+      bottomCompressedCount > 0
+        ? timelineHeight - MIXED_TIMELINE_EDGE_PADDING - (bottomCompressedCount - 1) * MIXED_TIMELINE_OUTSIDE_GAP
+        : timelineHeight - MIXED_TIMELINE_EDGE_PADDING;
+
+    const topInViewBound = topCompressedCount > 0 ? topDockEnd + MIXED_TIMELINE_OUTSIDE_GAP : MIXED_TIMELINE_EDGE_PADDING;
+    const bottomInViewBound =
+      bottomCompressedCount > 0
+        ? bottomDockStart - MIXED_TIMELINE_OUTSIDE_GAP
+        : timelineHeight - MIXED_TIMELINE_EDGE_PADDING;
+    let minInViewTop = topInViewBound;
+    let maxInViewTop = bottomInViewBound;
+    if (minInViewTop > maxInViewTop) {
+      const mid = (minInViewTop + maxInViewTop) / 2;
+      minInViewTop = mid;
+      maxInViewTop = mid;
+    }
+
+    for (let index = start; index < firstVisibleIndex; index++) {
+      const offset = index - start;
+      nextNodeTopMap[groups[index].dayKey] = topDockStart + offset * MIXED_TIMELINE_OUTSIDE_GAP;
+    }
+
+    for (const index of inViewIndexes) {
+      if (index < start || index > end) {
+        continue;
+      }
+      const rawTop = inViewTopMap.get(index);
+      if (rawTop !== undefined) {
+        nextNodeTopMap[groups[index].dayKey] = Math.max(minInViewTop, Math.min(maxInViewTop, rawTop));
+      }
+    }
+
+    for (let index = lastVisibleIndex + 1; index <= end; index++) {
+      const offset = index - (lastVisibleIndex + 1);
+      nextNodeTopMap[groups[index].dayKey] = bottomDockStart + offset * MIXED_TIMELINE_OUTSIDE_GAP;
+    }
+  } else {
+    // 尚未测量到可视节点时，按焦点日期做均匀占位，避免时间轴空白跳动。
+    const { start: fallbackStart, end: fallbackEnd } = buildTimelineWindow(
+      groups.length,
+      focusIndex,
+      MIXED_TIMELINE_WINDOW_RADIUS
+    );
+    const range = Math.max(1, fallbackEnd - fallbackStart);
+    for (let index = fallbackStart; index <= fallbackEnd; index++) {
+      const ratio = (index - fallbackStart) / range;
+      nextNodeTopMap[groups[index].dayKey] =
+        MIXED_TIMELINE_EDGE_PADDING + ratio * (timelineHeight - MIXED_TIMELINE_EDGE_PADDING * 2);
+    }
+  }
+
+  mixedDayInViewMap.value = nextInViewMap;
+  mixedTimelineNodeTopMap.value = nextNodeTopMap;
+  mixedTimelineHeight.value = timelineHeight;
+  mixedTimelineWindow.value = { start, end };
+  mixedTimelineFocusIndex.value = focusIndex;
 }
 
 /**
@@ -718,6 +959,10 @@ async function onVideoClick(bvid: string): Promise<void> {
 }
 
 async function onListScroll(event: Event): Promise<void> {
+  if (mode.value === 'mixed') {
+    updateMixedTimelineState();
+  }
+
   if (mode.value !== 'mixed' || loadingMore.value || loading.value || !feed.value?.hasMoreForMixed) {
     return;
   }
@@ -734,6 +979,10 @@ async function onListScroll(event: Event): Promise<void> {
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '加载更多失败';
   }
+}
+
+function onWindowResize(): void {
+  updateMixedTimelineState();
 }
 
 // 分组列表变更（创建/删除）后重新加载概要，当前条目合法性由 loadSummary 内部统一修正。
@@ -771,12 +1020,28 @@ watch(visible, (nextVisible) => {
   if (!nextVisible && listRef.value) {
     listRef.value.scrollTop = 0;
   }
+  if (!nextVisible) {
+    resetMixedTimelineState();
+  }
 });
+
+watch(
+  [mixedDayGroups, mode, visible],
+  async () => {
+    if (!visible.value || mode.value !== 'mixed') {
+      return;
+    }
+    await nextTick();
+    updateMixedTimelineState();
+  },
+  { flush: 'post' }
+);
 
 onMounted(() => {
   loadDrawerWidth();
   window.addEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.addEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
+  window.addEventListener('resize', onWindowResize);
 
   void loadSummary().catch((error) => {
     console.warn('[BBE] preload summary failed:', error);
@@ -793,6 +1058,7 @@ onUnmounted(() => {
   setPageScrollLock(false);
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
+  window.removeEventListener('resize', onWindowResize);
 
   if (summaryTimer) {
     window.clearInterval(summaryTimer);
