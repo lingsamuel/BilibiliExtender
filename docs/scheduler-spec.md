@@ -26,7 +26,7 @@
 - **任务（Task）**：一次最小刷新单元。
 - **优先任务（Priority Task）**：由用户操作触发，立即入列到队首。
 - **常规任务（Routine Task）**：由定时 alarm 触发。
-- **Burst 任务（Burst Task）**：仅包含“作者缓存不存在（无任何缓存）”的作者任务，使用专用队列。
+- **Burst 任务（Burst Task）**：作者级高优先任务，包含“无缓存作者首刷”与“时间流命中边界补页”两类任务，使用专用队列。
 
 ## 3. 设计方案
 
@@ -72,18 +72,28 @@ interface SchedulerChannel<TTask extends SchedulerTaskBase> {
 
 ```ts
 interface AuthorVideoTask extends SchedulerTaskBase {
-  key: `author:${number}`;
+  key: `author:${number}:pn:${number}`;
   mid: number;
   name: string;
+  // 要拉取的页码：1=首页刷新，2=常规预取页，>=3=时间流按需补页
+  pn: number;
+  reason: 'first-page-refresh' | 'prefetch-second-page' | 'load-more-boundary';
 }
 ```
 
 来源：
-- 定时：收集所有启用分组中的作者 `mid`，筛选过期缓存。
+- 定时（两阶段）：
+  1. 收集所有启用分组中的作者 `mid`，筛选“首页过期”任务（`pn=1`）；
+  2. 对“所有已有缓存作者”执行低优先级第二页预取扫描：仅当首页未过期时，加入 `pn=2` 的常规任务。
 - 优先：手动刷新、首次访问分组、新建分组初始化后触发。
-- Burst：任意入口发现“作者缓存不存在”时，进入 `author-video` 的 Burst 队列。
+- Burst：
+  - 任意入口发现“作者缓存不存在”时，进入 Burst 队列并优先拉取 `pn=1`；
+  - 时间流构造器命中作者缓存边界时，进入 Burst 队列并按需拉取 `pn>=2`（通常是 `nextPn`）。
 
-执行：调用 `refreshAuthorCache(mid, name, authorCacheMap)`。
+执行：
+1. `pn=1`：刷新首页并更新 `firstPageFetchedAt`；保留历史 `pn>=2` 数据供后续 best-effort 使用。
+2. `pn=2`：常规预取/刷新第二页并更新 `secondPageFetchedAt`。
+3. `pn>=3`：按需补页并更新 `maxCachedPn/nextPn/hasMore`。
 
 #### 3.2.2 收藏夹缓存通道（`group-fav`）
 
@@ -127,7 +137,7 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 #### 3.4.1 GET_GROUP_FEED
 
-- 仅基于缓存组装返回。
+- 以缓存组装为主，但允许在“命中分页边界”时同步等待 Burst 补页完成后再返回。
 - 分组无缓存时：返回 `cacheStatus: 'generating'`，并优先入列 `group-fav` 任务。
 - 分组有缓存但作者缓存不完整时：
   1. 识别缺失作者并分流：
@@ -137,6 +147,11 @@ interface GroupFavTask extends SchedulerTaskBase {
   3. 返回 `cacheStatus: 'generating'`，但同时返回当前可用的聚合结果（允许部分内容先展示）。
   4. 仅当本轮缺失作者都完成至少一轮缓存后，返回 `cacheStatus: 'ready'`。
 - 分组有缓存且作者缓存完整时：返回 `cacheStatus: 'ready'`。
+- 时间流目标片段构造（`1-50`、`51-70`、`71-90`...）时：
+  1. 先尝试使用现有缓存（默认首页 + 预取第二页）构造。
+  2. 若构造触及某作者“当前缓存最旧一条”且 `hasMore=true`，立即向 Burst 队列**队首**插入该作者下一页任务。
+  3. 前台等待这批 Burst 任务完成后重构；单轮每作者只补 1 页。
+  4. 若任务失败，返回错误信息并以现有缓存 best-effort 构造，不因错误中止返回。
 
 #### 3.4.2 MANUAL_REFRESH
 
@@ -211,13 +226,13 @@ queue.push(...batchFailed); // 留给下一批或下次 alarm
 persist();
 ```
 
-### 3.6 Burst 模式（作者无缓存快速填充）
+### 3.6 Burst 模式（作者优先补页）
 
 #### 3.6.1 触发条件
 
-1. 只要发现任意作者 `mid` 在 `AuthorVideoCache` 中不存在，即触发 Burst 入列（不设数量阈值）。
-2. Burst 队列只允许接收“无缓存作者”任务；已存在缓存（无论是否过期）不得进入 Burst 队列。
-3. Burst 去重键与作者任务一致（`mid`）。
+1. 任意作者 `mid` 在 `AuthorVideoCache` 中不存在时，触发 Burst 入列（优先 `pn=1`）。
+2. 时间流构造命中分页边界时，触发 Burst 入列（按 `nextPn` 补页）。
+3. Burst 去重键使用 `(mid, pn)`；同一作者同一页避免重复堆积。
 
 #### 3.6.2 优先级与阻塞规则
 
@@ -226,6 +241,7 @@ persist();
 3. Burst 期间，用户触发任务仍可入常规队列，但执行时机延后到 Burst 队列清空之后。
 4. 若 Burst 激活时已有非 Burst 任务正在执行，允许该任务完成当前项后再切换到 Burst 循环。
 5. Burst 队列清空后，恢复常规调度；仅当 Burst 期间实际拦截过某通道 alarm 时，才补偿触发对应通道的一次常规任务收集（不重置 alarm）。
+6. “加载更多命中边界”触发的 Burst 任务必须插入队首（head），优先于已有 Burst 队列任务。
 
 #### 3.6.3 执行语义
 
@@ -235,6 +251,7 @@ persist();
 4. 只要遇到任意错误，立即进入冷却：等待 `60s` 后再继续执行，并记录冷却原因为 `error`（供调试面板展示）。
 5. Burst 每次取任务前都必须先检查 `now >= nextAllowedAt`，不满足则等待剩余时间，避免“上一条刚完成、下一条立刻入队”导致的无间隔请求。
 6. 失败任务留在队首，冷却结束后优先重试；直到 Burst 队列为空才退出 Burst 模式。
+7. 对前台同步等待的 Burst 请求：若任务失败，需把失败状态回传给构造器，构造器以 best-effort 返回当前缓存结果。
 
 执行循环约束如下：
 
@@ -310,6 +327,8 @@ interface SchedulerStatusResponse {
       // 可选：若任务来源可提供作者名则展示
       name?: string;
       mid: number;
+      pn: number;
+      reason: 'first-page-refresh' | 'prefetch-second-page' | 'load-more-boundary';
       // 显示口径以分组名为主；作者名缺失时允许回退 MID。
       groupNames: string[];
     } | null;
@@ -321,6 +340,8 @@ interface SchedulerStatusResponse {
     queue: Array<{
       name?: string;
       mid: number;
+      pn: number;
+      reason: 'first-page-refresh' | 'prefetch-second-page' | 'load-more-boundary';
       groupNames: string[];
     }>;
   };
