@@ -129,39 +129,64 @@
         </template>
 
         <template v-else>
-          <section
-            v-for="author in feed.videosByAuthor"
-            :key="author.authorMid"
-            class="bbe-author-section"
-          >
-            <h3 class="bbe-author-title">
-              <a
-                class="bbe-author-link"
-                :href="`https://space.bilibili.com/${author.authorMid}`"
-                target="_blank"
-                rel="noreferrer"
+          <div class="bbe-by-author-layout">
+            <aside
+              v-if="byAuthorNavItems.length > 0"
+              class="bbe-by-author-nav"
+              aria-label="作者导航"
+            >
+              <button
+                v-for="item in byAuthorNavItems"
+                :key="item.authorMid"
+                :ref="(el) => bindByAuthorNavItem(item.authorMid, el)"
+                type="button"
+                class="bbe-by-author-nav-item"
+                :class="{ active: item.authorMid === byAuthorActiveMid }"
+                :title="`跳转到${item.authorName}`"
+                @click.stop="scrollToAuthor(item.authorMid)"
               >
-                <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
-                <span>{{ author.authorName }}</span>
-              </a>
-              <span
-                v-if="author.hasOnlyExtraOlderVideos && author.latestPubdate"
-                class="bbe-author-title-note"
+                <img v-if="item.authorFace" class="bbe-avatar-sm" :src="item.authorFace" alt="" />
+                <span class="bbe-by-author-nav-name">{{ item.authorName }}</span>
+              </button>
+            </aside>
+
+            <div ref="byAuthorSectionsRef" class="bbe-by-author-sections">
+              <section
+                v-for="author in byAuthorFeeds"
+                :key="author.authorMid"
+                :ref="(el) => bindByAuthorSection(author.authorMid, el)"
+                class="bbe-author-section"
               >
-                最近更新：{{ formatDaysAgo(author.latestPubdate) }}
-              </span>
-            </h3>
-            <div class="bbe-grid">
-              <VideoCard
-                v-for="video in author.videos"
-                :key="video.bvid"
-                :video="video"
-                :clicked="clickedMap[video.bvid] !== undefined"
-                hide-author-name
-                @click="onVideoClick"
-              />
+                <h3 class="bbe-author-title">
+                  <a
+                    class="bbe-author-link"
+                    :href="`https://space.bilibili.com/${author.authorMid}`"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
+                    <span>{{ author.authorName }}</span>
+                  </a>
+                  <span
+                    v-if="author.hasOnlyExtraOlderVideos && author.latestPubdate"
+                    class="bbe-author-title-note"
+                  >
+                    最近更新：{{ formatDaysAgo(author.latestPubdate) }}
+                  </span>
+                </h3>
+                <div class="bbe-grid">
+                  <VideoCard
+                    v-for="video in author.videos"
+                    :key="video.bvid"
+                    :video="video"
+                    :clicked="clickedMap[video.bvid] !== undefined"
+                    hide-author-name
+                    @click="onVideoClick"
+                  />
+                </div>
+              </section>
             </div>
-          </section>
+          </div>
         </template>
       </section>
       </template>
@@ -173,7 +198,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_REFRESHING } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
-import type { GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
+import type { AuthorFeed, GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
@@ -189,6 +214,7 @@ const MIXED_TIMELINE_WINDOW_RADIUS = 2;
 const MIXED_TIMELINE_EDGE_PADDING = 12;
 const MIXED_TIMELINE_OUTSIDE_GAP = 18;
 const MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD = 0.2;
+const BY_AUTHOR_VISIBLE_RATIO_THRESHOLD = 0.2;
 const ENTRY_ID = {
   SETTINGS: '__bbe_settings__',
   DEBUG: '__bbe_debug__'
@@ -278,6 +304,10 @@ const mixedTimelineHeight = ref(0);
 const mixedTimelineWindow = ref<{ start: number; end: number }>({ start: 0, end: -1 });
 const mixedTimelineFocusIndex = ref(0);
 let mixedTimelineResizeObserver: ResizeObserver | null = null;
+const byAuthorSectionElements = new Map<number, HTMLElement>();
+const byAuthorNavItemElements = new Map<number, HTMLElement>();
+const byAuthorSectionsRef = ref<HTMLElement | null>(null);
+const byAuthorActiveMid = ref<number | null>(null);
 const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
 const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
 
@@ -286,6 +316,12 @@ interface MixedTimelineItem {
   label: string;
   isInView: boolean;
   topPx: number;
+}
+
+interface ByAuthorNavItem {
+  authorMid: number;
+  authorName: string;
+  authorFace?: string;
 }
 
 const mixedDayGroups = computed(() => {
@@ -333,6 +369,64 @@ const mixedTimelineStyle = computed(() => {
   return {
     height: `${mixedTimelineHeight.value}px`
   };
+});
+
+/**
+ * 统一提取作者“最近更新时间”用于前端排序。
+ * 优先使用后端给出的 latestPubdate（全量缓存维度），
+ * 缺失时回退到当前展示视频里的最大 pubdate，确保排序稳定。
+ */
+function resolveAuthorLatestPubdate(author: AuthorFeed): number | null {
+  if (typeof author.latestPubdate === 'number' && author.latestPubdate > 0) {
+    return author.latestPubdate;
+  }
+  if (author.videos.length === 0) {
+    return null;
+  }
+  return author.videos.reduce((latest, video) => (video.pubdate > latest ? video.pubdate : latest), author.videos[0].pubdate);
+}
+
+const byAuthorFeeds = computed<AuthorFeed[]>(() => {
+  if (!feed.value) {
+    return [];
+  }
+  const rawAuthors = feed.value.videosByAuthor;
+  if (!byAuthorSortByLatest.value) {
+    return rawAuthors;
+  }
+  return rawAuthors
+    .map((author, index) => ({
+      author,
+      index,
+      latestPubdate: resolveAuthorLatestPubdate(author)
+    }))
+    .sort((a, b) => {
+      if (a.latestPubdate === null && b.latestPubdate === null) {
+        return a.index - b.index;
+      }
+      if (a.latestPubdate === null) {
+        return 1;
+      }
+      if (b.latestPubdate === null) {
+        return -1;
+      }
+      if (a.latestPubdate !== b.latestPubdate) {
+        return b.latestPubdate - a.latestPubdate;
+      }
+      return a.index - b.index;
+    })
+    .map((item) => item.author);
+});
+
+const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
+  if (mode.value !== 'byAuthor') {
+    return [];
+  }
+  return byAuthorFeeds.value.map((author) => ({
+    authorMid: author.authorMid,
+    authorName: author.authorName,
+    authorFace: author.authorFace
+  }));
 });
 
 /**
@@ -463,12 +557,32 @@ function bindMixedDaySection(dayKey: string, el: Element | ComponentPublicInstan
   mixedDaySectionElements.delete(dayKey);
 }
 
+function bindByAuthorSection(authorMid: number, el: Element | ComponentPublicInstance | null): void {
+  if (el instanceof HTMLElement) {
+    byAuthorSectionElements.set(authorMid, el);
+    return;
+  }
+  byAuthorSectionElements.delete(authorMid);
+}
+
+function bindByAuthorNavItem(authorMid: number, el: Element | ComponentPublicInstance | null): void {
+  if (el instanceof HTMLElement) {
+    byAuthorNavItemElements.set(authorMid, el);
+    return;
+  }
+  byAuthorNavItemElements.delete(authorMid);
+}
+
 function resetMixedTimelineState(): void {
   mixedDayInViewMap.value = {};
   mixedTimelineNodeTopMap.value = {};
   mixedTimelineHeight.value = 0;
   mixedTimelineWindow.value = { start: 0, end: -1 };
   mixedTimelineFocusIndex.value = 0;
+}
+
+function resetByAuthorNavState(): void {
+  byAuthorActiveMid.value = null;
 }
 
 function disconnectMixedTimelineResizeObserver(): void {
@@ -659,6 +773,61 @@ function updateMixedTimelineState(): void {
   mixedTimelineHeight.value = timelineHeight;
   mixedTimelineWindow.value = { start, end };
   mixedTimelineFocusIndex.value = focusIndex;
+}
+
+/**
+ * 计算“按作者”子侧栏高亮状态：
+ * - 以作者分段在可视区域内的可见比例判定；
+ * - 高亮可视区域内最靠上的作者；
+ * - 无可视作者时回退到当前滚动位置下的首个作者。
+ */
+function updateByAuthorNavState(): void {
+  if (!visible.value || mode.value !== 'byAuthor') {
+    resetByAuthorNavState();
+    return;
+  }
+
+  const container = listRef.value;
+  const sections = byAuthorNavItems.value;
+  if (!container || sections.length === 0) {
+    resetByAuthorNavState();
+    return;
+  }
+
+  const scrollTop = container.scrollTop;
+  const viewBottom = scrollTop + container.clientHeight;
+  const sectionsOffsetTop = byAuthorSectionsRef.value?.offsetTop ?? 0;
+
+  let activeMid: number | null = null;
+  let fallbackMid: number | null = null;
+
+  for (const author of sections) {
+    const sectionEl = byAuthorSectionElements.get(author.authorMid);
+    if (!sectionEl) {
+      continue;
+    }
+
+    const sectionTop = sectionsOffsetTop + sectionEl.offsetTop;
+    const sectionBottom = sectionTop + sectionEl.offsetHeight;
+    const visibleTop = Math.max(sectionTop, scrollTop);
+    const visibleBottom = Math.min(sectionBottom, viewBottom);
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    const sectionHeight = Math.max(1, sectionEl.offsetHeight);
+    const visibleRatio = visibleHeight / sectionHeight;
+
+    if (activeMid === null && visibleRatio > BY_AUTHOR_VISIBLE_RATIO_THRESHOLD) {
+      activeMid = author.authorMid;
+    }
+
+    if (fallbackMid === null && sectionBottom > scrollTop + 1) {
+      fallbackMid = author.authorMid;
+    }
+  }
+
+  if (activeMid === null) {
+    activeMid = fallbackMid ?? sections[sections.length - 1]?.authorMid ?? null;
+  }
+  byAuthorActiveMid.value = activeMid;
 }
 
 /**
@@ -1046,9 +1215,24 @@ function scrollToMixedDay(dayKey: string): void {
   });
 }
 
+function scrollToAuthor(authorMid: number): void {
+  const container = listRef.value;
+  const sectionEl = byAuthorSectionElements.get(authorMid);
+  if (!container || !sectionEl) {
+    return;
+  }
+
+  const sectionsOffsetTop = byAuthorSectionsRef.value?.offsetTop ?? 0;
+  const targetTop = Math.max(0, sectionsOffsetTop + sectionEl.offsetTop - 8);
+  container.scrollTo({ top: targetTop, behavior: 'smooth' });
+  byAuthorActiveMid.value = authorMid;
+}
+
 async function onListScroll(event: Event): Promise<void> {
   if (mode.value === 'mixed') {
     updateMixedTimelineState();
+  } else if (mode.value === 'byAuthor') {
+    updateByAuthorNavState();
   }
 
   if (mode.value !== 'mixed' || loadingMore.value || loading.value || !feed.value?.hasMoreForMixed) {
@@ -1071,6 +1255,7 @@ async function onListScroll(event: Event): Promise<void> {
 
 function onWindowResize(): void {
   updateMixedTimelineState();
+  updateByAuthorNavState();
 }
 
 // 分组列表变更（创建/删除）后重新加载概要，当前条目合法性由 loadSummary 内部统一修正。
@@ -1110,26 +1295,53 @@ watch(visible, (nextVisible) => {
   }
   if (!nextVisible) {
     resetMixedTimelineState();
+    resetByAuthorNavState();
     disconnectMixedTimelineResizeObserver();
   }
 });
 
 watch(
-  [mixedDayGroups, mode, visible],
+  [mixedDayGroups, byAuthorNavItems, mode, visible, byAuthorSortByLatest],
   async () => {
-    if (!visible.value || mode.value !== 'mixed') {
+    if (!visible.value) {
       disconnectMixedTimelineResizeObserver();
       return;
     }
+
+    if (mode.value !== 'mixed') {
+      disconnectMixedTimelineResizeObserver();
+    }
+
     await nextTick();
-    ensureMixedTimelineResizeObserver();
-    updateMixedTimelineState();
-    requestAnimationFrame(() => {
+    if (mode.value === 'mixed') {
+      ensureMixedTimelineResizeObserver();
       updateMixedTimelineState();
+    }
+    if (mode.value === 'byAuthor') {
+      updateByAuthorNavState();
+    }
+    requestAnimationFrame(() => {
+      if (mode.value === 'mixed') {
+        updateMixedTimelineState();
+      }
+      if (mode.value === 'byAuthor') {
+        updateByAuthorNavState();
+      }
     });
   },
   { flush: 'post' }
 );
+
+watch(byAuthorActiveMid, (mid) => {
+  if (mid === null || mode.value !== 'byAuthor') {
+    return;
+  }
+  const navItemEl = byAuthorNavItemElements.get(mid);
+  if (!navItemEl) {
+    return;
+  }
+  navItemEl.scrollIntoView({ block: 'nearest' });
+});
 
 onMounted(() => {
   loadDrawerWidth();

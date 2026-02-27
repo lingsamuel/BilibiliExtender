@@ -4,6 +4,7 @@
   z-index: 999999;
   pointer-events: none;
   font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --bbe-by-author-nav-offset: 88px;
 }
 
 html.bbe-page-scroll-lock,
@@ -196,6 +197,73 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-mixed-sections {
+  min-width: 0;
+}
+
+.bbe-by-author-layout {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 12px;
+  align-items: start;
+  min-height: 0;
+}
+
+.bbe-by-author-nav {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: calc(100vh - var(--bbe-by-author-nav-offset));
+  height: calc(100dvh - var(--bbe-by-author-nav-offset));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #e4ebf3;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.bbe-by-author-nav-item {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #edf2f7;
+  background: transparent;
+  padding: 7px 10px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: #4e5a6d;
+  text-align: left;
+}
+
+.bbe-by-author-nav-item:last-child {
+  border-bottom: 0;
+}
+
+.bbe-by-author-nav-item:hover {
+  color: #00a1d6;
+  background: #f4fafe;
+}
+
+.bbe-by-author-nav-item.active {
+  color: #00a1d6;
+  background: #ecf9ff;
+}
+
+.bbe-by-author-nav-item:focus-visible {
+  outline: 2px solid #8d97a8;
+  outline-offset: -2px;
+}
+
+.bbe-by-author-nav-name {
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bbe-by-author-sections {
   min-width: 0;
 }
 
@@ -623,6 +691,11 @@ body.bbe-page-scroll-lock {
 
   .bbe-mixed-layout {
     grid-template-columns: 62px 1fr;
+    gap: 10px;
+  }
+
+  .bbe-by-author-layout {
+    grid-template-columns: 160px 1fr;
     gap: 10px;
   }
 
