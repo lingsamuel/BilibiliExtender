@@ -16,7 +16,16 @@ export type MessageRequest =
   | { type: 'DELETE_GROUP'; payload: { groupId: string } }
   | { type: 'SAVE_SETTINGS'; payload: { settings: ExtensionSettings } }
   | { type: 'GET_GROUP_SUMMARY' }
-  | { type: 'GET_GROUP_FEED'; payload: { groupId: string; mode: ViewMode; loadMore?: boolean; selectedReadMarkTs?: number } }
+  | {
+      type: 'GET_GROUP_FEED';
+      payload: {
+        groupId: string;
+        mode: ViewMode;
+        loadMore?: boolean;
+        selectedReadMarkTs?: number;
+        byAuthorSortByLatest?: boolean;
+      };
+    }
   | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_AUTHORS_READ'; payload: { mids: number[] } }

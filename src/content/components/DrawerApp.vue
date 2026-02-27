@@ -46,6 +46,10 @@
         <div class="bbe-toolbar-left">
           <button class="bbe-btn" :class="{ active: mode === 'mixed' }" @click="switchMode('mixed')">时间流</button>
           <button class="bbe-btn" :class="{ active: mode === 'byAuthor' }" @click="switchMode('byAuthor')">按作者</button>
+          <label v-if="mode === 'byAuthor'" class="bbe-toolbar-check">
+            <input v-model="byAuthorSortByLatest" type="checkbox" @change="onByAuthorSortByLatestChange" />
+            <span>按更新时间倒序</span>
+          </label>
           <span class="bbe-toolbar-sep" />
           <select v-model.number="selectedReadMarkTs" class="bbe-select-sm" @change="onReadMarkTsChange">
             <option :value="0">全部</option>
@@ -204,6 +208,7 @@ let pollTimer: number | null = null;
 let userExplicitlyChoseAll = false;
 
 const selectedReadMarkTs = ref(0);
+const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
@@ -320,7 +325,8 @@ function startPoll(maxAttempts: number): void {
         payload: {
           groupId: activeGroupId.value,
           mode: mode.value,
-          selectedReadMarkTs: selectedReadMarkTs.value
+          selectedReadMarkTs: selectedReadMarkTs.value,
+          byAuthorSortByLatest: byAuthorSortByLatest.value
         }
       });
 
@@ -378,7 +384,8 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
         groupId: activeGroupId.value,
         mode: mode.value,
         loadMore: options?.loadMore,
-        selectedReadMarkTs: selectedReadMarkTs.value
+        selectedReadMarkTs: selectedReadMarkTs.value,
+        byAuthorSortByLatest: byAuthorSortByLatest.value
       }
     });
 
@@ -439,7 +446,8 @@ async function reloadFeedWithReadMark(): Promise<void> {
       payload: {
         groupId: activeGroupId.value,
         mode: mode.value,
-        selectedReadMarkTs: selectedReadMarkTs.value
+        selectedReadMarkTs: selectedReadMarkTs.value,
+        byAuthorSortByLatest: byAuthorSortByLatest.value
       }
     });
 
@@ -490,7 +498,7 @@ async function openDrawer(): Promise<void> {
       return;
     }
 
-    // 恢复记忆的 mode 和 selectedReadMarkTs
+    // 恢复记忆的 mode、已阅时间点和作者排序方式
     const summary = summaries.value.find((s) => s.groupId === activeGroupId.value);
     if (summary?.savedMode) {
       mode.value = summary.savedMode;
@@ -500,6 +508,11 @@ async function openDrawer(): Promise<void> {
       userExplicitlyChoseAll = summary.savedReadMarkTs === 0;
     } else {
       selectedReadMarkTs.value = 0;
+    }
+    if (summary?.savedByAuthorSortByLatest !== undefined) {
+      byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
+    } else {
+      byAuthorSortByLatest.value = true;
     }
 
     await loadFeed();
@@ -566,7 +579,7 @@ async function selectGroup(groupId: string): Promise<void> {
   activeGroupId.value = groupId;
   userExplicitlyChoseAll = false;
 
-  // 从 summary 恢复记忆的 mode 和 selectedReadMarkTs
+  // 从 summary 恢复记忆的 mode、已阅时间点和作者排序方式
   const summary = summaries.value.find((s) => s.groupId === groupId);
   if (summary?.savedMode) {
     mode.value = summary.savedMode;
@@ -576,6 +589,11 @@ async function selectGroup(groupId: string): Promise<void> {
     userExplicitlyChoseAll = summary.savedReadMarkTs === 0;
   } else {
     selectedReadMarkTs.value = 0;
+  }
+  if (summary?.savedByAuthorSortByLatest !== undefined) {
+    byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
+  } else {
+    byAuthorSortByLatest.value = true;
   }
 
   try {
@@ -606,6 +624,14 @@ async function onReadMarkTsChange(): Promise<void> {
     await reloadFeedWithReadMark();
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '切换已阅时间点失败';
+  }
+}
+
+async function onByAuthorSortByLatestChange(): Promise<void> {
+  try {
+    await loadFeed();
+  } catch (error) {
+    errorMsg.value = error instanceof Error ? error.message : '切换作者排序失败';
   }
 }
 

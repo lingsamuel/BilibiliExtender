@@ -17,6 +17,7 @@ export type RuntimeMap = Record<string, GroupRuntimeState>;
 export type FeedCacheMap = Record<string, GroupFeedCache>;
 export type AuthorCacheMap = Record<number, AuthorVideoCache>;
 type ReadMarkMap = Record<number, AuthorReadMark>;
+const DEFAULT_BY_AUTHOR_SORT_BY_LATEST = true;
 
 function getGroupTitle(group: GroupConfig): string {
   return group.alias?.trim() || group.mediaTitle;
@@ -160,6 +161,10 @@ function ensureRuntimeState(
     runtimeMap[groupId].mixedTargetCount = settings.timelineMixedMaxCount;
   }
 
+  if (runtimeMap[groupId].savedByAuthorSortByLatest === undefined) {
+    runtimeMap[groupId].savedByAuthorSortByLatest = DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
+  }
+
   return runtimeMap[groupId];
 }
 
@@ -259,6 +264,44 @@ function filterVideosByReadMark(
   return videos;
 }
 
+function getLatestPubdate(videos: VideoItem[]): number | null {
+  if (videos.length === 0) {
+    return null;
+  }
+  return videos.reduce((latest, video) => (video.pubdate > latest ? video.pubdate : latest), videos[0].pubdate);
+}
+
+/**
+ * “按作者”模式可选排序：
+ * - 有视频的作者按最新视频时间倒序。
+ * - 当前筛选后无视频的作者统一放末尾。
+ * - 时间相同按收藏夹原始顺序稳定排序。
+ */
+function sortAuthorsByLatestPubdate(videosByAuthor: AuthorFeed[]): AuthorFeed[] {
+  return videosByAuthor
+    .map((author, index) => ({
+      author,
+      index,
+      latestPubdate: getLatestPubdate(author.videos)
+    }))
+    .sort((a, b) => {
+      if (a.latestPubdate === null && b.latestPubdate === null) {
+        return a.index - b.index;
+      }
+      if (a.latestPubdate === null) {
+        return 1;
+      }
+      if (b.latestPubdate === null) {
+        return -1;
+      }
+      if (a.latestPubdate !== b.latestPubdate) {
+        return b.latestPubdate - a.latestPubdate;
+      }
+      return a.index - b.index;
+    })
+    .map((item) => item.author);
+}
+
 /**
  * 纯缓存组装：从已有缓存数据构建前台展示所需的 GroupFeedResult。
  * 不发起任何 API 请求。
@@ -271,7 +314,8 @@ export function toFeedResult(
   feedCacheMap: FeedCacheMap,
   authorCacheMap: AuthorCacheMap,
   readMarks: ReadMarkMap,
-  selectedReadMarkTs: number
+  selectedReadMarkTs: number,
+  byAuthorSortByLatest?: boolean
 ): GroupFeedResult {
   const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
   const feedCache = feedCacheMap[group.groupId];
@@ -291,7 +335,8 @@ export function toFeedResult(
 
   const effectiveTs = selectedReadMarkTs === -1 ? graceReadMarkTs : selectedReadMarkTs;
 
-  const videosByAuthor: AuthorFeed[] = authorMids.map((mid) => ({
+  const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
+  let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => ({
     authorMid: mid,
     authorName: authorNames.get(mid) ?? String(mid),
     authorFace: authorCacheMap[mid]?.face,
@@ -304,6 +349,10 @@ export function toFeedResult(
       graceReadMarkTs
     )
   }));
+
+  if (mode === 'byAuthor' && byAuthorSortEnabled) {
+    videosByAuthor = sortAuthorsByLatestPubdate(videosByAuthor);
+  }
 
   // 为混合视频注入作者头像
   const faceMap = new Map<number, string>();
@@ -331,6 +380,7 @@ export function toFeedResult(
 
   runtime.savedMode = mode;
   runtime.savedReadMarkTs = selectedReadMarkTs;
+  runtime.savedByAuthorSortByLatest = byAuthorSortEnabled;
 
   const hasMoreForMixed = authorMids.some((mid) => authorCacheMap[mid]?.hasMore);
 
@@ -365,7 +415,16 @@ export function makeSummary(
   runtimeMap: RuntimeMap,
   feedCacheMap: FeedCacheMap,
   authorCacheMap: AuthorCacheMap
-): Array<{ groupId: string; title: string; unreadCount: number; lastRefreshAt?: number; enabled: boolean; savedMode?: ViewMode; savedReadMarkTs?: number }> {
+): Array<{
+  groupId: string;
+  title: string;
+  unreadCount: number;
+  lastRefreshAt?: number;
+  enabled: boolean;
+  savedMode?: ViewMode;
+  savedReadMarkTs?: number;
+  savedByAuthorSortByLatest?: boolean;
+}> {
   return groups.map((group) => {
     const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
     const feedCache = feedCacheMap[group.groupId];
@@ -382,7 +441,8 @@ export function makeSummary(
       lastRefreshAt: runtime.lastRefreshAt,
       enabled: group.enabled,
       savedMode: runtime.savedMode,
-      savedReadMarkTs: runtime.savedReadMarkTs
+      savedReadMarkTs: runtime.savedReadMarkTs,
+      savedByAuthorSortByLatest: runtime.savedByAuthorSortByLatest
     };
   });
 }

@@ -31,6 +31,8 @@ export interface GroupRuntimeState {
   // 记忆用户上次选择的视图模式和已阅时间点
   savedMode?: ViewMode;
   savedReadMarkTs?: number;
+  // 记忆“按作者”模式下是否按最新更新时间倒序
+  savedByAuthorSortByLatest?: boolean;
 }
 
 export interface VideoItem {
@@ -75,6 +77,7 @@ export interface GroupSummary {
   enabled: boolean;
   savedMode?: ViewMode;
   savedReadMarkTs?: number;
+  savedByAuthorSortByLatest?: boolean;
 }
 
 export interface FavoriteFolder {

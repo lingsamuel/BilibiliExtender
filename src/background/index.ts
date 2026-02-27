@@ -255,7 +255,17 @@ async function handleGetGroupFeed(
   const readMarks = await loadAuthorReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
 
-  const result = toFeedResult(group, request.payload.mode, settings, runtimeMap, feedCacheMap, authorCacheMap, readMarks, selectedReadMarkTs);
+  const result = toFeedResult(
+    group,
+    request.payload.mode,
+    settings,
+    runtimeMap,
+    feedCacheMap,
+    authorCacheMap,
+    readMarks,
+    selectedReadMarkTs,
+    request.payload.byAuthorSortByLatest
+  );
 
   await saveRuntimeStateMap(runtimeMap);
 

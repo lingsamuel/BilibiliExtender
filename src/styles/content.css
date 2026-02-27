@@ -70,6 +70,19 @@ body.bbe-page-scroll-lock {
   background: #d9e1ea;
 }
 
+.bbe-toolbar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #4a5568;
+  user-select: none;
+}
+
+.bbe-toolbar-check input {
+  margin: 0;
+}
+
 .bbe-select-sm {
   border: 1px solid #d9e1ea;
   border-radius: 8px;
