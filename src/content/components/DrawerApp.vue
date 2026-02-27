@@ -226,6 +226,7 @@ const MIXED_TIMELINE_EDGE_PADDING = 12;
 const MIXED_TIMELINE_OUTSIDE_GAP = 18;
 const MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_VISIBLE_RATIO_THRESHOLD = 0.2;
+const BY_AUTHOR_FALLBACK_VISIBLE_RATIO_THRESHOLD = 0.1;
 const ENTRY_ID = {
   SETTINGS: '__bbe_settings__',
   DEBUG: '__bbe_debug__'
@@ -448,6 +449,10 @@ function isFollowPending(mid: number): boolean {
 function formatFollowerWan(follower: number | undefined): string {
   if (typeof follower !== 'number' || Number.isNaN(follower) || follower < 0) {
     return '--';
+  }
+
+  if (follower < 10000) {
+    return String(Math.floor(follower));
   }
 
   const wan = follower / 10000;
@@ -958,12 +963,16 @@ function updateByAuthorNavState(): void {
     return;
   }
 
-  const scrollTop = container.scrollTop;
-  const viewBottom = scrollTop + container.clientHeight;
-  const sectionsOffsetTop = byAuthorSectionsRef.value?.offsetTop ?? 0;
+  const listRect = container.getBoundingClientRect();
+  const mainEl = container.closest('.bbe-main');
+  const toolbarEl = mainEl?.querySelector('.bbe-toolbar');
+  const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
+  const viewTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
+  const viewBottomPx = listRect.bottom;
 
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
+  let nextMid: number | null = null;
 
   for (const author of sections) {
     const sectionEl = byAuthorSectionElements.get(author.authorMid);
@@ -971,25 +980,34 @@ function updateByAuthorNavState(): void {
       continue;
     }
 
-    const sectionTop = sectionsOffsetTop + sectionEl.offsetTop;
-    const sectionBottom = sectionTop + sectionEl.offsetHeight;
-    const visibleTop = Math.max(sectionTop, scrollTop);
-    const visibleBottom = Math.min(sectionBottom, viewBottom);
-    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
-    const sectionHeight = Math.max(1, sectionEl.offsetHeight);
+    const sectionRect = sectionEl.getBoundingClientRect();
+    const sectionTopPx = sectionRect.top;
+    const sectionBottomPx = sectionRect.bottom;
+    const visibleTopPx = Math.max(sectionTopPx, viewTopPx);
+    const visibleBottomPx = Math.min(sectionBottomPx, viewBottomPx);
+    const visibleHeight = Math.max(0, visibleBottomPx - visibleTopPx);
+    const sectionHeight = Math.max(1, sectionRect.height);
     const visibleRatio = visibleHeight / sectionHeight;
 
     if (activeMid === null && visibleRatio > BY_AUTHOR_VISIBLE_RATIO_THRESHOLD) {
       activeMid = author.authorMid;
     }
 
-    if (fallbackMid === null && sectionBottom > scrollTop + 1) {
+    // 只剩下 10% 可见时不再继续占据 active，优先切换到后续作者。
+    if (
+      fallbackMid === null &&
+      sectionBottomPx > viewTopPx + 1 &&
+      visibleRatio > BY_AUTHOR_FALLBACK_VISIBLE_RATIO_THRESHOLD
+    ) {
       fallbackMid = author.authorMid;
+    }
+    if (nextMid === null && sectionTopPx >= viewTopPx + 1) {
+      nextMid = author.authorMid;
     }
   }
 
   if (activeMid === null) {
-    activeMid = fallbackMid ?? sections[sections.length - 1]?.authorMid ?? null;
+    activeMid = fallbackMid ?? nextMid ?? sections[sections.length - 1]?.authorMid ?? null;
   }
   byAuthorActiveMid.value = activeMid;
 }
