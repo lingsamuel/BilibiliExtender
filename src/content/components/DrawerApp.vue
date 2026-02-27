@@ -92,8 +92,15 @@
             class="bbe-author-section"
           >
             <h3 class="bbe-author-title">
-              <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
-              <span>{{ author.authorName }}</span>
+              <a
+                class="bbe-author-link"
+                :href="`https://space.bilibili.com/${author.authorMid}`"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
+                <span>{{ author.authorName }}</span>
+              </a>
             </h3>
             <div class="bbe-grid">
               <VideoCard
