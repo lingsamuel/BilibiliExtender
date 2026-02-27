@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS } from '@/shared/constants';
-import { getMyCreatedFolders, getWatchHistory } from '@/shared/api/bilibili';
+import { getMyCreatedFolders } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import {
   appendReadMarks,
@@ -329,21 +329,6 @@ async function handleGetClickedVideos(
   return { clicked };
 }
 
-let watchHistoryCache: { data: ResponseMap['GET_WATCH_HISTORY']; expiredAt: number } | null = null;
-
-async function handleGetWatchHistory(): Promise<ResponseMap['GET_WATCH_HISTORY']> {
-  if (watchHistoryCache && watchHistoryCache.expiredAt > Date.now()) {
-    return watchHistoryCache.data;
-  }
-
-  const settings = await loadSettings();
-  const cacheTtlMs = settings.refreshIntervalMinutes * 60 * 1000;
-  const history = await getWatchHistory();
-  const result = { history };
-  watchHistoryCache = { data: result, expiredAt: Date.now() + cacheTtlMs };
-  return result;
-}
-
 /**
  * 手动刷新：优先提交“收藏夹刷新任务”。
  * 收藏夹任务完成后会自动衔接作者任务，前台通过轮询 GET_GROUP_FEED 等待缓存就绪。
@@ -397,8 +382,6 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleRecordVideoClick(request));
     case 'GET_CLICKED_VIDEOS':
       return ok(await handleGetClickedVideos(request));
-    case 'GET_WATCH_HISTORY':
-      return ok(await handleGetWatchHistory());
     case 'MANUAL_REFRESH':
       return ok(await handleManualRefresh(request));
     case 'GET_SCHEDULER_STATUS':

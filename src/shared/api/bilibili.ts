@@ -1,4 +1,4 @@
-import type { CurrentUser, FavoriteFolder, VideoItem, WatchedVideo } from '@/shared/types';
+import type { CurrentUser, FavoriteFolder, VideoItem } from '@/shared/types';
 import { extractWbiKey, signWbiParams, WbiExpiredError } from '@/shared/utils/wbi';
 
 const API_BASE = 'https://api.bilibili.com';
@@ -276,72 +276,4 @@ export async function getUserFace(mid: number): Promise<string> {
     }
   }
   throw new Error('获取用户头像失败');
-}
-
-interface HistoryCursorData {
-  cursor: {
-    max: number;
-    view_at: number;
-    business: string;
-    ps: number;
-  };
-  list: Array<{
-    title: string;
-    history: {
-      bvid: string;
-      business: string;
-    };
-    progress: number;
-    duration: number;
-    view_at: number;
-  }>;
-}
-
-/**
- * 批量拉取 Bilibili 观看历史（游标分页），返回最近 7 天内最多 maxItems 条记录。
- * 仅在 background service worker 中调用（需要登录态 Cookie）。
- */
-export async function getWatchHistory(maxItems = 500): Promise<WatchedVideo[]> {
-  const result: WatchedVideo[] = [];
-  const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
-  let viewAt = 0;
-  let maxId = 0;
-
-  while (result.length < maxItems) {
-    const params: Record<string, string | number> = {
-      ps: 20,
-      type: 'archive',
-      view_at: viewAt,
-      max: maxId
-    };
-
-    const payload = await fetchApi<HistoryCursorData>('/x/web-interface/history/cursor', params);
-
-    if (!payload.data.list || payload.data.list.length === 0) {
-      break;
-    }
-
-    for (const item of payload.data.list) {
-      if (item.view_at < sevenDaysAgo) {
-        return result;
-      }
-
-      if (item.history.business === 'archive' && item.history.bvid) {
-        result.push({
-          bvid: item.history.bvid,
-          progress: item.progress,
-          duration: item.duration
-        });
-      }
-    }
-
-    viewAt = payload.data.cursor.view_at;
-    maxId = payload.data.cursor.max;
-
-    if (payload.data.list.length < 20) {
-      break;
-    }
-  }
-
-  return result;
 }

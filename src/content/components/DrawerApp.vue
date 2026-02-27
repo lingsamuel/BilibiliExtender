@@ -81,7 +81,6 @@
               :key="video.bvid"
               :video="video"
               :clicked="clickedMap[video.bvid] !== undefined"
-              :watched="watchedMap[video.bvid]"
               @click="onVideoClick"
             />
           </div>
@@ -112,7 +111,6 @@
                 :key="video.bvid"
                 :video="video"
                 :clicked="clickedMap[video.bvid] !== undefined"
-                :watched="watchedMap[video.bvid]"
                 @click="onVideoClick"
               />
             </div>
@@ -128,7 +126,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_GENERATING, POLL_MAX_REFRESHING } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
-import type { GroupFeedResult, GroupSummary, ViewMode, WatchedVideo } from '@/shared/types';
+import type { GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
 import { formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
@@ -212,7 +210,6 @@ const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
-const watchedMap = ref<Record<string, WatchedVideo>>({});
 
 const refreshText = computed(() => {
   if (generating.value) return '正在生成缓存...';
@@ -272,27 +269,16 @@ function collectAllBvids(): string[] {
   return Array.from(bvids);
 }
 
-async function fetchClickedAndWatched(): Promise<void> {
+async function fetchClickedVideos(): Promise<void> {
   const bvids = collectAllBvids();
   if (bvids.length === 0) {
     return;
   }
 
-  const [clickedResp, watchResp] = await Promise.all([
-    sendMessage({ type: 'GET_CLICKED_VIDEOS', payload: { bvids } }),
-    sendMessage({ type: 'GET_WATCH_HISTORY' })
-  ]);
+  const clickedResp = await sendMessage({ type: 'GET_CLICKED_VIDEOS', payload: { bvids } });
 
   if (clickedResp.ok && clickedResp.data) {
     clickedMap.value = clickedResp.data.clicked;
-  }
-
-  if (watchResp.ok && watchResp.data) {
-    const map: Record<string, WatchedVideo> = {};
-    for (const item of watchResp.data.history) {
-      map[item.bvid] = item;
-    }
-    watchedMap.value = map;
   }
 }
 
@@ -354,7 +340,7 @@ function startPoll(maxAttempts: number): void {
         }
 
         await markCurrentGroupRead();
-        await fetchClickedAndWatched();
+        await fetchClickedVideos();
         await loadSummary();
       }
     } catch {
@@ -431,7 +417,7 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
       await markCurrentGroupRead();
     }
 
-    await fetchClickedAndWatched();
+    await fetchClickedVideos();
   } finally {
     loading.value = false;
     loadingMore.value = false;
@@ -459,7 +445,7 @@ async function reloadFeedWithReadMark(): Promise<void> {
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
     await markCurrentGroupRead();
-    await fetchClickedAndWatched();
+    await fetchClickedVideos();
   } finally {
     loading.value = false;
   }
@@ -481,7 +467,6 @@ async function markCurrentGroupRead(): Promise<void> {
 async function openDrawer(): Promise<void> {
   visible.value = true;
   clickedMap.value = {};
-  watchedMap.value = {};
   userExplicitlyChoseAll = false;
 
   try {

@@ -5,8 +5,7 @@ import type {
   GroupFeedResult,
   GroupOptionsData,
   GroupSummary,
-  ViewMode,
-  WatchedVideo
+  ViewMode
 } from '@/shared/types';
 
 export type MessageRequest =
@@ -32,7 +31,6 @@ export type MessageRequest =
   | { type: 'GET_AUTHOR_READ_MARKS'; payload: { mids: number[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
-  | { type: 'GET_WATCH_HISTORY' }
   | { type: 'GET_SCHEDULER_STATUS' }
   | { type: 'RUN_SCHEDULER_NOW' };
 
@@ -102,7 +100,6 @@ export interface ResponseMap {
   GET_AUTHOR_READ_MARKS: { marks: Record<number, AuthorReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
-  GET_WATCH_HISTORY: { history: WatchedVideo[] };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;
   RUN_SCHEDULER_NOW: {
     accepted: true;

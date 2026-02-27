@@ -118,14 +118,6 @@ export interface AuthorReadMark {
   timestamps: number[];
 }
 
-export interface WatchedVideo {
-  bvid: string;
-  // 观看进度（秒），-1 表示已看完
-  progress: number;
-  // 视频总时长（秒）
-  duration: number;
-}
-
 export interface GroupOptionsData {
   groups: GroupConfig[];
   settings: ExtensionSettings;
