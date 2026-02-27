@@ -127,6 +127,7 @@ const DRAWER_WIDTH_KEY = 'bbe-drawer-width';
 const MIN_DRAWER_WIDTH = 500;
 const MAX_DRAWER_WIDTH_RATIO = 0.95;
 const DEFAULT_DRAWER_WIDTH = 900;
+const PAGE_SCROLL_LOCK_CLASS = 'bbe-page-scroll-lock';
 
 const drawerWidth = ref(DEFAULT_DRAWER_WIDTH);
 const drawerStyle = computed(() => ({
@@ -504,6 +505,25 @@ function closeDrawer(): void {
   visible.value = false;
 }
 
+/**
+ * 抽屉打开期间锁定页面滚动：
+ * - 同时作用于 html 与 body，兼容站点把滚动容器挂在不同节点上的情况。
+ * - 通过 class 切换，避免直接改写内联样式导致状态难以恢复。
+ */
+function setPageScrollLock(locked: boolean): void {
+  const html = document.documentElement;
+  const body = document.body;
+
+  if (locked) {
+    html.classList.add(PAGE_SCROLL_LOCK_CLASS);
+    body.classList.add(PAGE_SCROLL_LOCK_CLASS);
+    return;
+  }
+
+  html.classList.remove(PAGE_SCROLL_LOCK_CLASS);
+  body.classList.remove(PAGE_SCROLL_LOCK_CLASS);
+}
+
 async function manualRefresh(): Promise<void> {
   if (!activeGroupId.value) return;
 
@@ -669,6 +689,7 @@ function onOpenDrawer(): void {
 }
 
 watch(visible, (nextVisible) => {
+  setPageScrollLock(nextVisible);
   if (!nextVisible && listRef.value) {
     listRef.value.scrollTop = 0;
   }
@@ -691,6 +712,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  setPageScrollLock(false);
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
 
