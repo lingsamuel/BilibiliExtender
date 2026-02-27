@@ -1,23 +1,33 @@
 <template>
-  <article
-    class="bbe-card"
-    role="link"
-    tabindex="0"
-    @click="onCardClick"
-    @auxclick="onCardAuxClick"
-    @keydown.enter.prevent="openVideoLink"
-    @keydown.space.prevent="openVideoLink"
-  >
-    <div class="bbe-card-cover">
-      <img :src="video.cover" :alt="video.title" />
-      <span v-if="showViewedTag" class="bbe-tag-clicked">已查看</span>
-      <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
-      <div v-if="playbackPercent > 0" class="bbe-progress-bar">
-        <div class="bbe-progress-fill" :style="{ width: playbackPercent + '%' }" />
+  <article class="bbe-card">
+    <a
+      class="bbe-card-cover-link"
+      :href="videoUrl"
+      target="_blank"
+      rel="noreferrer"
+      @click="onVideoLinkClick"
+      @auxclick="onVideoLinkAuxClick"
+    >
+      <div class="bbe-card-cover">
+        <img :src="video.cover" :alt="video.title" />
+        <span v-if="showViewedTag" class="bbe-tag-clicked">已查看</span>
+        <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
+        <div v-if="playbackPercent > 0" class="bbe-progress-bar">
+          <div class="bbe-progress-fill" :style="{ width: playbackPercent + '%' }" />
+        </div>
       </div>
-    </div>
+    </a>
     <div class="bbe-card-body">
-      <div class="bbe-card-title" :title="video.title">{{ video.title }}</div>
+      <a
+        class="bbe-card-title-link"
+        :href="videoUrl"
+        target="_blank"
+        rel="noreferrer"
+        @click="onVideoLinkClick"
+        @auxclick="onVideoLinkAuxClick"
+      >
+        <div class="bbe-card-title" :title="video.title">{{ video.title }}</div>
+      </a>
       <div class="bbe-card-author">
         <a
           v-if="video.authorFace"
@@ -25,19 +35,16 @@
           :href="authorSpaceUrl"
           target="_blank"
           rel="noreferrer"
-          @click.stop
-          @auxclick.stop
         >
           <img class="bbe-avatar-sm" :src="video.authorFace" alt="" />
         </a>
         <div class="bbe-card-author-info">
           <a
+            v-if="!props.hideAuthorName"
             class="bbe-card-author-link"
             :href="authorSpaceUrl"
             target="_blank"
             rel="noreferrer"
-            @click.stop
-            @auxclick.stop
           >
             <span class="bbe-card-author-name">{{ video.authorName }}</span>
           </a>
@@ -56,6 +63,7 @@ import { formatPubdate } from '@/shared/utils/format';
 const props = defineProps<{
   video: VideoItem;
   clicked?: boolean;
+  hideAuthorName?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -77,27 +85,17 @@ const showViewedTag = computed(
 const videoUrl = computed(() => `https://www.bilibili.com/video/${props.video.bvid}`);
 const authorSpaceUrl = computed(() => `https://space.bilibili.com/${props.video.authorMid}`);
 
-/**
- * 统一由脚本打开视频链接，保证卡片与键盘交互保持一致，
- * 并且不会影响卡片内作者链接的独立跳转行为。
- */
-function openVideoLink(): void {
-  window.open(videoUrl.value, '_blank', 'noopener,noreferrer');
-  emit('click', props.video.bvid);
-}
-
-function onCardClick(event: MouseEvent): void {
+function onVideoLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented || event.button !== 0) {
     return;
   }
-  openVideoLink();
+  emit('click', props.video.bvid);
 }
 
-function onCardAuxClick(event: MouseEvent): void {
+function onVideoLinkAuxClick(event: MouseEvent): void {
   if (event.defaultPrevented || event.button !== 1) {
     return;
   }
-  event.preventDefault();
-  openVideoLink();
+  emit('click', props.video.bvid);
 }
 </script>

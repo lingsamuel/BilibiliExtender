@@ -114,6 +114,7 @@
                 :key="video.bvid"
                 :video="video"
                 :clicked="clickedMap[video.bvid] !== undefined"
+                hide-author-name
                 @click="onVideoClick"
               />
             </div>
