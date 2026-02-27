@@ -1389,8 +1389,23 @@ function scrollToAuthor(authorMid: number): void {
     return;
   }
 
-  const sectionsOffsetTop = byAuthorSectionsRef.value?.offsetTop ?? 0;
-  const targetTop = Math.max(0, sectionsOffsetTop + sectionEl.offsetTop - 8);
+  const titleEl = sectionEl.querySelector('.bbe-author-title');
+  const anchorEl = titleEl instanceof HTMLElement ? titleEl : sectionEl;
+  const listRect = container.getBoundingClientRect();
+  const mainEl = container.closest('.bbe-main');
+  const toolbarEl = mainEl?.querySelector('.bbe-toolbar');
+  /**
+   * 修正“按作者跳转”被工具栏遮挡的问题：
+   * - 不依赖 offsetTop 链路，直接使用实时几何坐标计算目标滚动量；
+   * - 可见区顶部取 max(list 顶部, toolbar 底部)，自动兼容“重叠/不重叠”两种布局；
+   * - 以作者标题为锚点，保证跳转后标题落在真实可见区。
+   */
+  const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
+  const anchorRect = anchorEl.getBoundingClientRect();
+  const visibleTop = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top) + 8;
+  const delta = anchorRect.top - visibleTop;
+  const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+  const targetTop = Math.max(0, Math.min(maxScrollTop, container.scrollTop + delta));
   container.scrollTo({ top: targetTop, behavior: 'smooth' });
   byAuthorActiveMid.value = authorMid;
 }
