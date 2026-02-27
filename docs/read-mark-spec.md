@@ -6,7 +6,7 @@
 
 ## 2. 术语
 
-- **已阅时间点（ReadMark）**：用户手动标记的时间戳，表示"此时间点之前的视频我已经看过了"。按作者（`mid`）独立记录，跨分组共享。
+- **已阅时间点（ReadMark）**：用户手动标记的时间戳，表示"此时间点之前的视频我已经看过了"。按分组（`groupId`）独立记录，不跨分组共享。
 - **已阅边界（ReadBoundary）**：用于区分“未读/已阅”的时间分界线。时间流按日设置时，边界固定为“目标日期次日 00:00:00（本地时区）”。
 - **点击记录（Clicked）**：用户在本扩展中点击过某视频链接。
 - **播放进度（PlaybackPosition）**：投稿接口字段 `playback_position`，范围 `0-100`，表示观看进度百分比。
@@ -20,45 +20,50 @@
 #### 3.1.1 数据模型
 
 ```ts
-// 每位作者的已阅记录，按作者 mid 索引，跨分组共享
-interface AuthorReadMark {
-  mid: number;
+// 每个分组的已阅记录，按 groupId 索引，不跨分组共享
+interface GroupReadMark {
+  groupId: string;
   // 最多保留 10 条，按时间倒序排列（最新在前）
   // 每条记录为 Unix 时间戳（秒），表示该时间点及之前的视频已阅
   timestamps: number[];
 }
 
-// 存储键：bbe:author-read-marks
-// 存储格式：Record<number, AuthorReadMark>（mid -> AuthorReadMark）
+// 存储键：bbe:group-read-marks
+// 存储格式：Record<string, GroupReadMark>（groupId -> GroupReadMark）
 ```
 
 #### 3.1.2 "标记已阅"按钮
 
 - 位置：工具栏区域，与"手动刷新"、"关闭"并列。
-- 行为：点击后，对当前分组内所有作者，将“当前时间戳（秒）”追加到各自的 `timestamps` 数组中。
-- 每位作者最多保留 10 条记录，超出时丢弃最旧的。
+- 行为：点击后，仅向当前分组的 `timestamps` 追加“当前时间戳（秒）”。
+- 每个分组最多保留 10 条记录，超出时丢弃最旧的。
 - 按钮文案："标记已阅"。
 
 #### 3.1.3 已阅时间点切换
 
 - 位置：工具栏区域，"标记已阅"按钮旁边。
 - 形式：下拉菜单（`<select>`）。
-- 选项：
+- 选项顺序固定：
   - "全部"——不过滤，显示所有视频（等同于当前行为）；该分组红点固定为 `0`。
-  - 各已阅时间点——取当前分组内所有作者的 `timestamps` 的并集，去重后按时间倒序排列，格式化为可读日期时间。
-- 默认选中：最新的已阅时间点（即上次标记已阅的时间）。
-- 注意：不同作者的已阅时间点可能不同（因为跨分组共享），下拉菜单展示的是当前分组内所有作者的时间点并集。
+  - "`N天内`"——默认已阅区间（由 `defaultReadMarkDays` 推导；原“`N天前`”文案统一改为“`N天内`”）。
+  - 各已阅时间点——来自当前分组自己的 `timestamps`，按时间倒序排列，格式化为可读日期时间。
+- 默认选中：当前分组最新的已阅时间点；若当前分组无历史记录，则默认选中 "`N天内`"。
 
 #### 3.1.4 视频过滤逻辑
 
-选中某个已阅时间点 `T` 后：
+选中某个分组已阅时间点 `T` 后：
 
-**按作者模式**：对每位作者，查找该作者自己的 `timestamps` 中 <= `T` 的最大值作为该作者的实际已阅时间 `Ta`。然后：
-- 显示 `pubdate >= Ta` 的所有视频（含 `Ta` 当天的）
-- 额外显示 `pubdate < Ta` 的最新 N 个视频（作为上下文参考），N 由设置项 `extraOlderVideoCount` 控制，默认 1
-- 如果该作者没有任何已阅记录，则回退到“默认已阅天数”对应的时间点（`graceTs`）
+- 有效边界 `Tb` 定义：
+  - `T = 0`（全部）：不过滤；
+  - `T = -1`（`N天内`）：`Tb = graceTs`；
+  - `T > 0`：`Tb = T`。
 
-**时间流模式**：同样的逻辑，但混合所有作者后按时间排序。默认只加载已阅时间点之后的视频，用户滚动触底后可继续加载更早的视频（复用现有的 loadMore 机制）。
+**按作者模式**（`T !== 0`）：
+- 对当前分组的每位作者统一使用同一个 `Tb`；
+- 显示 `pubdate >= Tb` 的所有视频；
+- 额外显示 `pubdate < Tb` 的最新 N 个视频（作为上下文参考），N 由设置项 `extraOlderVideoCount` 控制，默认 1。
+
+**时间流模式**（`T !== 0`）：同样使用统一边界 `Tb`，混合所有作者后按时间排序。默认只加载已阅时间点之后的视频，用户滚动触底后可继续加载更早的视频（复用现有的 loadMore 机制）。
 - 时间流 UI 按“有投稿日期”分段，并显示左侧时间轴。
 - 时间轴文案：`今天` / `昨天` 保持相对文案；距离今天 2–7 天（含）显示 `N 天前`；更早日期显示 `MM-DD`。
 - 时间轴压缩窗口：可视区域内日期节点全部显示；可视区域外仅保留上下各 2 个“有投稿日期”节点，离屏节点退化为小黑点并停靠在顶部/底部区域。
@@ -68,7 +73,7 @@ interface AuthorReadMark {
 - 仅在“时间流模式”提供该交互；按作者模式不提供按日设置入口。
 - 时间轴“日期圆圈”可交互：
   - hover 圆圈显示半透明粉色对勾；
-  - 点击圆圈后，写入新的已阅记录，并立刻将当前分组 `selectedReadMarkTs` 切换到这条新记录；
+  - 点击圆圈后，仅向当前分组写入新的已阅记录，并立刻将当前分组 `selectedReadMarkTs` 切换到这条新记录；
   - 激活态为“对勾不透明 + 圆圈边框为粉色（不填充）”。
 - 圆圈对应的按日边界时间戳定义：
   - 选中日期 `D` 时，写入 `D+1` 日 `00:00:00`（本地时区）作为 ReadBoundary；
@@ -158,22 +163,22 @@ if (playback_position >= 90) {
 
 - 分组红点与“该分组当前已阅时间点”绑定，不再因“打开分组/加载内容”自动清除。
 - 若分组 `savedReadMarkTs === 0`（全部），该分组未读数固定为 `0`。
-- 若分组 `savedReadMarkTs > 0`，按该时间点计算；对每位作者取其 `timestamps` 中 `<= savedReadMarkTs` 的最大值作为该作者基线。
-- 若分组 `savedReadMarkTs === -1`，或该作者在上述步骤中取不到基线，则回退到 `graceTs`（由 `defaultReadMarkDays` 推导）。
+- 若分组 `savedReadMarkTs > 0`，分组基线为 `savedReadMarkTs`。
+- 若分组 `savedReadMarkTs === -1`，分组基线回退到 `graceTs`（由 `defaultReadMarkDays` 推导）。
 - 分组未读数 = 分组内去重后视频中同时满足：
-  - `pubdate > authorBaselineTs`
+  - `pubdate > groupBaselineTs`
   - 且未命中“已查看（点击记录命中或 playback_position >= 10）”
 
 #### 3.5.2 顶部入口 unread count（全局）
 
 - 顶部入口 unread count 不等于“各分组未读数简单求和”，而是按作者聚合，避免跨分组重复与时间点冲突。
 - 对每位作者：
-  - 收集该作者所在的所有“非全部分组”（`savedReadMarkTs !== 0`）；
-  - 在每个分组内按 3.5.1 的规则计算该作者分组基线；
-  - 取这些分组基线的最大值作为该作者全局基线（最新已阅时间）；
-  - 若该作者只出现在“全部分组”中（没有任何非全部分组基线），则该作者全局未读数固定为 `0`（视作全部已阅）。
+  - 收集该作者所在的所有“非全部分组”（`savedReadMarkTs !== 0`）。
+  - 对每个分组按 3.5.1 计算分组基线。
+  - 取这些分组基线中的最大值作为该作者全局基线（“最新已阅时间点”）。
+  - 若该作者只出现在“全部分组”中（没有任何非全部分组基线），则该作者全局未读数固定为 `0`。
 - 全局 unread count 为所有作者未读视频数之和（按 `bvid` 去重），并同样扣除“已查看（点击记录命中或 playback_position >= 10）”的视频。
-- “全部分组”仅影响自身分组红点，不参与拉低或抬高其他分组/作者的全局基线。
+- “全部分组”规则：仅自身分组 unread 为 0，且不参与其他分组/作者的全局基线计算。
 
 ## 4. 存储
 
@@ -185,19 +190,23 @@ if (playback_position >= 90) {
 
 | 键 | 内容 | 说明 |
 |---|---|---|
-| `bbe:author-read-marks` | `Record<number, AuthorReadMark>` | 按作者的已阅时间点 |
+| `bbe:group-read-marks` | `Record<string, GroupReadMark>` | 按分组的已阅时间点 |
 | `bbe:clicked-videos` | `Record<string, number>` | 点击过的视频 bvid -> 时间戳 |
 
 ### 4.3 清理策略
 
 - `bbe:clicked-videos`：与作者视频缓存联动清理。仅当某 `bvid` 已不在任意作者缓存中时才删除点击记录。
 
+### 4.4 旧数据处理
+
+- 从“按作者已阅”切换到“按分组已阅”时，旧键 `bbe:author-read-marks` 直接丢弃，不做迁移。
+
 ## 5. 消息协议扩展
 
 ```ts
 // 新增消息类型
-| { type: 'MARK_AUTHORS_READ'; payload: { mids: number[]; readMarkTs?: number } }
-| { type: 'GET_AUTHOR_READ_MARKS'; payload: { mids: number[] } }
+| { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
+| { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
 | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
 | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
 ```
@@ -254,8 +263,8 @@ if (playback_position >= 90) {
 
 ## 7. 实现要点
 
-- 已阅时间点按作者 `mid` 存储，跨分组共享。分组 A 和 B 有同一作者时，标记已阅会同时影响两个分组。
-- `MARK_AUTHORS_READ` 支持可选 `readMarkTs`：
+- 已阅时间点按分组 `groupId` 存储，不跨分组共享。
+- `MARK_GROUP_READ_MARK` 支持可选 `readMarkTs`：
   - 不传时沿用“当前时间”语义；
   - 传入时使用指定秒级时间戳（用于时间流按日设置边界）。
 - 过滤逻辑在 background 的 `toFeedResult` 中执行，content script 只负责展示。
