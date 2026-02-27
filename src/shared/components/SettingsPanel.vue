@@ -51,6 +51,13 @@
         </label>
       </div>
       <div>
+        <button
+          class="bbe-btn"
+          :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
+          @click="refreshGroupNow(group.groupId)"
+        >
+          {{ isGroupRefreshing(group.groupId) ? '刷新中...' : '立即刷新' }}
+        </button>
         <button class="bbe-btn danger" @click="removeGroup(group.groupId)">删除</button>
       </div>
     </div>
@@ -71,6 +78,20 @@
         <div class="bbe-setting-hint">后台自动刷新作者投稿缓存的周期，请求会均匀分散在周期内</div>
       </div>
       <input v-model.number="settings.backgroundRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
+    </div>
+    <div class="bbe-setting-row">
+      <div>
+        收藏夹缓存刷新间隔（分钟）
+        <div class="bbe-setting-hint">后台自动刷新收藏夹标题与作者列表的周期</div>
+      </div>
+      <input v-model.number="settings.groupFavRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
+    </div>
+    <div class="bbe-setting-row">
+      <div>
+        调度批大小（BATCH_SIZE）
+        <div class="bbe-setting-hint">所有调度通道共享的每批最大任务数</div>
+      </div>
+      <input v-model.number="settings.schedulerBatchSize" class="bbe-input" type="number" min="1" max="50" />
     </div>
     <div class="bbe-setting-row">
       <div>
@@ -136,7 +157,9 @@ const groups = ref<GroupConfig[]>([]);
 const groupSnapshots = ref<Record<string, { alias?: string; enabled: boolean }>>({})
 const settings = ref<ExtensionSettings>({
   refreshIntervalMinutes: 30,
-  backgroundRefreshIntervalMinutes: 15,
+  backgroundRefreshIntervalMinutes: 10,
+  groupFavRefreshIntervalMinutes: 10,
+  schedulerBatchSize: 10,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
@@ -150,6 +173,7 @@ const message = ref('');
 const errorMsg = ref('');
 const groupAuthorCounts = ref<Record<string, number>>({});
 const totalTrackedAuthors = ref(0);
+const refreshingGroups = ref<Set<string>>(new Set());
 
 const availableFolders = computed(() => {
   const usedIds = new Set(groups.value.map((item) => item.mediaId));
@@ -258,6 +282,34 @@ async function saveGroup(group: GroupConfig): Promise<void> {
   }
 }
 
+function isGroupRefreshing(groupId: string): boolean {
+  return refreshingGroups.value.has(groupId);
+}
+
+/**
+ * 设置页中的“立即刷新”与抽屉手动刷新保持同语义：
+ * 始终提交 MANUAL_REFRESH，由后台先刷新收藏夹缓存再刷新作者缓存。
+ */
+async function refreshGroupNow(groupId: string): Promise<void> {
+  if (refreshingGroups.value.has(groupId)) return;
+
+  refreshingGroups.value.add(groupId);
+  try {
+    const resp = await sendMessage({
+      type: 'MANUAL_REFRESH',
+      payload: { groupId }
+    });
+    if (!resp.ok || !resp.data?.accepted) {
+      throw new Error(resp.error ?? '提交刷新失败');
+    }
+    setNotice('已提交刷新任务，请稍后查看结果');
+  } catch (error) {
+    setError(error instanceof Error ? error.message : '提交刷新失败');
+  } finally {
+    refreshingGroups.value.delete(groupId);
+  }
+}
+
 async function removeGroup(groupId: string): Promise<void> {
   try {
     const resp = await sendMessage({
@@ -280,7 +332,9 @@ async function saveSettingsOnly(): Promise<void> {
   const normalized = {
     ...settings.value,
     refreshIntervalMinutes: Math.min(120, Math.max(1, Number(settings.value.refreshIntervalMinutes) || 30)),
-    backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(settings.value.backgroundRefreshIntervalMinutes) || 15)),
+    backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(settings.value.backgroundRefreshIntervalMinutes) || 10)),
+    groupFavRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(settings.value.groupFavRefreshIntervalMinutes) || 10)),
+    schedulerBatchSize: Math.min(50, Math.max(1, Number(settings.value.schedulerBatchSize) || 10)),
     timelineMixedMaxCount: Math.min(500, Math.max(10, Number(settings.value.timelineMixedMaxCount) || 50)),
     extraOlderVideoCount: Math.min(20, Math.max(0, Number(settings.value.extraOlderVideoCount) || 1)),
     defaultReadMarkDays: Math.min(90, Math.max(0, Number(settings.value.defaultReadMarkDays) || 7))

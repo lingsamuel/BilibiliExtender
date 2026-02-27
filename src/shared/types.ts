@@ -13,6 +13,8 @@ export interface GroupConfig {
 export interface ExtensionSettings {
   refreshIntervalMinutes: number;
   backgroundRefreshIntervalMinutes: number;
+  groupFavRefreshIntervalMinutes: number;
+  schedulerBatchSize: number;
   timelineMixedMaxCount: number;
   extraOlderVideoCount: number;
   defaultReadMarkDays: number;

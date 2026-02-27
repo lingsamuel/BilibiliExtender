@@ -1,6 +1,12 @@
 <template>
   <section class="bbe-panel bbe-debug-panel">
     <h2 class="bbe-panel-title">调度器状态</h2>
+    <div class="bbe-row" style="margin-bottom: 10px">
+      <button class="bbe-btn primary" :disabled="runNowLoading" @click="runNow">
+        {{ runNowLoading ? '触发中...' : '立刻发起调度' }}
+      </button>
+      <span v-if="runNowMsg" class="bbe-setting-hint">{{ runNowMsg }}</span>
+    </div>
     <div class="bbe-debug-grid">
       <span>状态</span>
       <span>{{ status?.running ? '运行中' : '空闲' }}</span>
@@ -9,7 +15,7 @@
       <span>队列长度</span>
       <span>{{ status?.queueLength ?? 0 }}</span>
       <span>批次进度</span>
-      <span>{{ status?.batchCompleted ?? 0 }} / {{ BATCH_SIZE }}</span>
+      <span>{{ status?.batchCompleted ?? 0 }} / {{ status?.schedulerBatchSize ?? 10 }}</span>
       <span>失败任务</span>
       <span>{{ status?.batchFailed ?? 0 }}</span>
       <span>上次调度</span>
@@ -22,6 +28,33 @@
     <div v-if="status && status.queue.length > 0" class="bbe-debug-queue">
       <div v-for="(task, i) in status.queue" :key="task.mid" class="bbe-debug-queue-item">
         {{ i + 1 }}. {{ task.name }} ({{ task.mid }})
+      </div>
+    </div>
+  </section>
+
+  <section class="bbe-panel bbe-debug-panel">
+    <h2 class="bbe-panel-title">收藏夹通道状态</h2>
+    <div class="bbe-debug-grid">
+      <span>状态</span>
+      <span>{{ status?.groupChannel.running ? '运行中' : '空闲' }}</span>
+      <span>当前任务</span>
+      <span>{{ status?.groupChannel.currentTask ? status.groupChannel.currentTask.groupId : '无' }}</span>
+      <span>队列长度</span>
+      <span>{{ status?.groupChannel.queueLength ?? 0 }}</span>
+      <span>批次进度</span>
+      <span>{{ status?.groupChannel.batchCompleted ?? 0 }} / {{ status?.schedulerBatchSize ?? 10 }}</span>
+      <span>失败任务</span>
+      <span>{{ status?.groupChannel.batchFailed ?? 0 }}</span>
+      <span>上次调度</span>
+      <span>{{ groupLastRunText }}</span>
+      <span>下次刷新</span>
+      <span>{{ groupNextAlarmText }}</span>
+    </div>
+
+    <h3 v-if="status && status.groupChannel.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
+    <div v-if="status && status.groupChannel.queue.length > 0" class="bbe-debug-queue">
+      <div v-for="(task, i) in status.groupChannel.queue" :key="`${task.groupId}-${i}`" class="bbe-debug-queue-item">
+        {{ i + 1 }}. {{ task.groupId }}
       </div>
     </div>
   </section>
@@ -93,10 +126,11 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { sendMessage } from '@/shared/messages';
 import type { SchedulerStatusResponse } from '@/shared/messages';
-import { BG_REFRESH_BATCH_SIZE as BATCH_SIZE } from '@/shared/constants';
 import { formatRelativeMinutes } from '@/shared/utils/format';
 
 const status = ref<SchedulerStatusResponse | null>(null);
+const runNowLoading = ref(false);
+const runNowMsg = ref('');
 let timer: number | null = null;
 
 const lastRunText = computed(() => {
@@ -106,10 +140,17 @@ const lastRunText = computed(() => {
 
 const nextAlarmText = computed(() => {
   if (!status.value?.nextAlarmAt) return '未注册';
-  const diff = status.value.nextAlarmAt - Date.now();
-  if (diff <= 0) return '即将触发';
-  const mins = Math.ceil(diff / 60_000);
-  return `${formatTime(status.value.nextAlarmAt)}（${mins} 分钟后）`;
+  return formatAlarmText(status.value.nextAlarmAt);
+});
+
+const groupLastRunText = computed(() => {
+  if (!status.value?.groupChannel.lastRunAt) return '从未';
+  return formatRelativeMinutes(status.value.groupChannel.lastRunAt);
+});
+
+const groupNextAlarmText = computed(() => {
+  if (!status.value?.groupChannel.nextAlarmAt) return '未注册';
+  return formatAlarmText(status.value.groupChannel.nextAlarmAt);
 });
 
 function formatTime(ms: number): string {
@@ -120,6 +161,13 @@ function formatTime(ms: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+function formatAlarmText(targetMs: number): string {
+  const diff = targetMs - Date.now();
+  if (diff <= 0) return '即将触发';
+  const mins = Math.ceil(diff / 60_000);
+  return `${formatTime(targetMs)}（${mins} 分钟后）`;
+}
+
 async function fetchStatus(): Promise<void> {
   try {
     const resp = await sendMessage({ type: 'GET_SCHEDULER_STATUS' });
@@ -128,6 +176,27 @@ async function fetchStatus(): Promise<void> {
     }
   } catch {
     // 静默忽略
+  }
+}
+
+async function runNow(): Promise<void> {
+  if (runNowLoading.value) return;
+
+  runNowLoading.value = true;
+  runNowMsg.value = '';
+  try {
+    const resp = await sendMessage({ type: 'RUN_SCHEDULER_NOW' });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '触发调度失败');
+    }
+
+    const parts = resp.data.channels.map((item) => `${item.name}: +${item.queued}`);
+    runNowMsg.value = `已触发：${parts.join('，')}`;
+    await fetchStatus();
+  } catch (error) {
+    runNowMsg.value = error instanceof Error ? error.message : '触发调度失败';
+  } finally {
+    runNowLoading.value = false;
   }
 }
 

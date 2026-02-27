@@ -14,7 +14,9 @@ export const STORAGE_KEYS = {
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   refreshIntervalMinutes: 30,
-  backgroundRefreshIntervalMinutes: 15,
+  backgroundRefreshIntervalMinutes: 10,
+  groupFavRefreshIntervalMinutes: 10,
+  schedulerBatchSize: 10,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
@@ -27,8 +29,8 @@ export const MIXED_LOAD_INCREMENT = 20;
 export const MAX_READ_MARK_COUNT = 10;
 export const CLICKED_VIDEO_EXPIRE_DAYS = 30;
 
-// 后台刷新每批次的作者数量
-export const BG_REFRESH_BATCH_SIZE = 10;
+// 调度器每批任务数的默认值（可被设置项覆盖）
+export const BG_REFRESH_BATCH_SIZE_DEFAULT = 10;
 // 同一批次内每个作者之间的请求间隔（ms）
 export const BG_REFRESH_INTRA_DELAY_MS = 1000;
 // 批次间延迟下限（ms）
@@ -39,7 +41,10 @@ export const POLL_INTERVAL_MS = 3000;
 export const POLL_MAX_GENERATING = 10;
 export const POLL_MAX_REFRESHING = 20;
 
-export const ALARM_NAME = 'bbe:background-refresh';
+export const ALARM_NAMES = {
+  AUTHOR_VIDEO: 'bbe:background-refresh:author-video',
+  GROUP_FAV: 'bbe:background-refresh:group-fav'
+} as const;
 
 export const EXTENSION_EVENT = {
   TOGGLE_DRAWER: 'bbe:toggle-drawer',

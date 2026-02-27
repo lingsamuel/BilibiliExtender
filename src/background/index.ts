@@ -13,7 +13,6 @@ import {
   loadRuntimeStateMap,
   loadSettings,
   recordVideoClick,
-  saveAuthorVideoCacheMap,
   saveFeedCacheMap,
   saveGroups,
   saveLastGroupId,
@@ -22,14 +21,18 @@ import {
 } from '@/shared/storage/repository';
 import type { GroupConfig } from '@/shared/types';
 import {
-  buildAuthorListFromFav,
   increaseMixedTarget,
   makeSummary,
   markGroupRead,
   removeGroupState,
   toFeedResult
 } from '@/background/feed-service';
-import { enqueuePriority, getStatus, setupAlarm, type SchedulerTask } from '@/background/scheduler';
+import {
+  enqueuePriorityGroup,
+  getStatus,
+  runSchedulerNow,
+  setupAlarm
+} from '@/background/scheduler';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -207,18 +210,9 @@ async function handleGetGroupFeed(
 
   const feedCache = feedCacheMap[group.groupId];
 
-  // 无缓存：首次访问，需要先拉取收藏夹建立作者列表
+  // 无缓存：首次访问，提交收藏夹优先任务，等待调度器异步生成缓存。
   if (!feedCache) {
-    // 异步拉取收藏夹并提交调度任务，不阻塞响应
-    buildAuthorListFromFav(group, feedCacheMap)
-      .then(async (authors) => {
-        await saveFeedCacheMap(feedCacheMap);
-        const tasks: SchedulerTask[] = authors.map((a) => ({ mid: a.mid, name: a.name, groupId: group.groupId }));
-        enqueuePriority(tasks);
-      })
-      .catch((error) => {
-        console.warn('[BBE] 首次拉取收藏夹失败:', error);
-      });
+    enqueuePriorityGroup([group.groupId]);
 
     return {
       groupId: group.groupId,
@@ -340,50 +334,30 @@ async function handleGetWatchHistory(): Promise<ResponseMap['GET_WATCH_HISTORY']
 }
 
 /**
- * 手动刷新：收集分组所有作者作为优先任务插入调度器队列。
- * 立即返回，不等待刷新完成；前台通过轮询 GET_GROUP_FEED 获取最新数据。
+ * 手动刷新：优先提交“收藏夹刷新任务”。
+ * 收藏夹任务完成后会自动衔接作者任务，前台通过轮询 GET_GROUP_FEED 等待缓存就绪。
  */
 async function handleManualRefresh(
   request: Extract<MessageRequest, { type: 'MANUAL_REFRESH' }>
 ): Promise<ResponseMap['MANUAL_REFRESH']> {
-  const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
-    loadGroups(),
-    loadFeedCacheMap(),
-    loadAuthorVideoCacheMap()
-  ]);
+  const groups = await loadGroups();
 
   const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
   if (!group) {
     throw new Error('分组不存在或已禁用');
   }
 
-  const feedCache = feedCacheMap[group.groupId];
-  if (!feedCache) {
-    // 无缓存，需要先拉取收藏夹
-    buildAuthorListFromFav(group, feedCacheMap)
-      .then(async (authors) => {
-        await saveFeedCacheMap(feedCacheMap);
-        const tasks: SchedulerTask[] = authors.map((a) => ({ mid: a.mid, name: a.name, groupId: group.groupId }));
-        enqueuePriority(tasks);
-      })
-      .catch((error) => {
-        console.warn('[BBE] 手动刷新拉取收藏夹失败:', error);
-      });
-  } else {
-    // 有缓存，直接将所有作者作为优先任务
-    const tasks: SchedulerTask[] = feedCache.authorMids.map((mid) => ({
-      mid,
-      name: authorCacheMap[mid]?.name ?? String(mid),
-      groupId: group.groupId
-    }));
-    enqueuePriority(tasks);
-  }
+  enqueuePriorityGroup([group.groupId]);
 
   return { accepted: true };
 }
 
 async function handleGetSchedulerStatus(): Promise<ResponseMap['GET_SCHEDULER_STATUS']> {
   return getStatus();
+}
+
+async function handleRunSchedulerNow(): Promise<ResponseMap['RUN_SCHEDULER_NOW']> {
+  return runSchedulerNow();
 }
 
 async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
@@ -418,6 +392,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleManualRefresh(request));
     case 'GET_SCHEDULER_STATUS':
       return ok(await handleGetSchedulerStatus());
+    case 'RUN_SCHEDULER_NOW':
+      return ok(await handleRunSchedulerNow());
     default:
       return fail('不支持的消息类型');
   }
@@ -438,4 +414,3 @@ chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResp
 
   return true;
 });
-

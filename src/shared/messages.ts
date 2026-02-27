@@ -24,7 +24,8 @@ export type MessageRequest =
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
   | { type: 'GET_WATCH_HISTORY' }
-  | { type: 'GET_SCHEDULER_STATUS' };
+  | { type: 'GET_SCHEDULER_STATUS' }
+  | { type: 'RUN_SCHEDULER_NOW' };
 
 export type MessageResponse<T = unknown> = {
   ok: boolean;
@@ -33,6 +34,7 @@ export type MessageResponse<T = unknown> = {
 };
 
 export interface SchedulerStatusResponse {
+  schedulerBatchSize: number;
   running: boolean;
   queueLength: number;
   currentTask: { mid: number; name: string } | null;
@@ -41,6 +43,16 @@ export interface SchedulerStatusResponse {
   lastRunAt?: number;
   nextAlarmAt?: number;
   queue: Array<{ mid: number; name: string; groupId?: string }>;
+  groupChannel: {
+    running: boolean;
+    queueLength: number;
+    currentTask: { groupId: string } | null;
+    batchCompleted: number;
+    batchFailed: number;
+    lastRunAt?: number;
+    nextAlarmAt?: number;
+    queue: Array<{ groupId: string }>;
+  };
   // 已缓存的作者摘要
   authorCaches: Array<{
     mid: number;
@@ -83,6 +95,15 @@ export interface ResponseMap {
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
   GET_WATCH_HISTORY: { history: WatchedVideo[] };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;
+  RUN_SCHEDULER_NOW: {
+    accepted: true;
+    triggeredAt: number;
+    channels: Array<{
+      name: 'author-video' | 'group-fav';
+      queued: number;
+      nextAlarmAt?: number;
+    }>;
+  };
 }
 
 export async function sendMessage<T extends MessageRequest>(
