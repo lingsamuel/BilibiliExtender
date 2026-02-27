@@ -8,8 +8,8 @@
           v-for="item in summaries"
           :key="item.groupId"
           class="bbe-group-item"
-          :class="{ active: item.groupId === activeGroupId && !showSettings && !showDebug }"
-          @click="selectGroup(item.groupId)"
+          :class="{ active: item.groupId === activeEntryId }"
+          @click="selectEntry(item.groupId)"
         >
           <span>{{ item.title }}</span>
           <span v-if="item.unreadCount > 0" class="bbe-dot">{{ item.unreadCount > 99 ? '99+' : item.unreadCount }}</span>
@@ -17,27 +17,27 @@
       </div>
       <div
         class="bbe-group-item bbe-sidebar-settings"
-        :class="{ active: showSettings && !showDebug }"
-        @click="toggleSettings"
+        :class="{ active: isSettingsView }"
+        @click="selectEntry(ENTRY_ID.SETTINGS)"
       >
         <span>设置</span>
       </div>
       <div
         v-if="debugMode"
         class="bbe-group-item bbe-sidebar-settings"
-        :class="{ active: showDebug }"
-        @click="toggleDebug"
+        :class="{ active: isDebugView }"
+        @click="selectEntry(ENTRY_ID.DEBUG)"
       >
         <span>调试</span>
       </div>
     </aside>
 
     <main class="bbe-main">
-      <section v-if="showDebug" class="bbe-list bbe-settings-scroll">
+      <section v-if="isDebugView" class="bbe-list bbe-settings-scroll">
         <DebugPanel />
       </section>
 
-      <section v-else-if="showSettings" class="bbe-list bbe-settings-scroll">
+      <section v-else-if="isSettingsView" class="bbe-list bbe-settings-scroll">
         <SettingsPanel @group-created="onGroupListChanged" @settings-saved="onSettingsSaved" />
       </section>
 
@@ -137,6 +137,14 @@ const MIN_DRAWER_WIDTH = 500;
 const MAX_DRAWER_WIDTH_RATIO = 0.95;
 const DEFAULT_DRAWER_WIDTH = 900;
 const PAGE_SCROLL_LOCK_CLASS = 'bbe-page-scroll-lock';
+const ENTRY_ID = {
+  SETTINGS: '__bbe_settings__',
+  DEBUG: '__bbe_debug__'
+} as const;
+
+function isVirtualEntryId(entryId: string): boolean {
+  return entryId === ENTRY_ID.SETTINGS || entryId === ENTRY_ID.DEBUG;
+}
 
 const drawerWidth = ref(DEFAULT_DRAWER_WIDTH);
 const drawerStyle = computed(() => ({
@@ -195,21 +203,23 @@ const generating = ref(false);
 const mode = ref<ViewMode>('mixed');
 const summaries = ref<GroupSummary[]>([]);
 const activeGroupId = ref('');
+const activeEntryId = ref('');
 const feed = ref<GroupFeedResult | null>(null);
 const errorMsg = ref('');
-const showSettings = ref(false);
-const showDebug = ref(false);
 const debugMode = ref(false);
 const listRef = ref<HTMLElement | null>(null);
 let summaryTimer: number | null = null;
 let pollTimer: number | null = null;
 let userExplicitlyChoseAll = false;
+const lastGroupIdFromSummary = ref('');
 
 const selectedReadMarkTs = ref(0);
 const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
+const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
+const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
 
 const refreshText = computed(() => {
   if (generating.value) return '正在生成缓存...';
@@ -248,14 +258,31 @@ async function loadSummary(): Promise<void> {
   summaries.value = resp.data.summaries;
   currentSettings.value = { defaultReadMarkDays: resp.data.settings.defaultReadMarkDays };
   debugMode.value = resp.data.settings.debugMode ?? false;
+  lastGroupIdFromSummary.value = resp.data.lastGroupId ?? '';
   emitUnreadChanged();
 
-  if (!activeGroupId.value) {
-    activeGroupId.value = resp.data.lastGroupId ?? summaries.value[0]?.groupId ?? '';
+  if (summaries.value.length === 0) {
+    activeGroupId.value = '';
+    activeEntryId.value = ENTRY_ID.SETTINGS;
+    return;
   }
 
-  if (activeGroupId.value && !summaries.value.some((item) => item.groupId === activeGroupId.value)) {
-    activeGroupId.value = summaries.value[0]?.groupId ?? '';
+  const hasActiveGroup = summaries.value.some((item) => item.groupId === activeGroupId.value);
+  if (!hasActiveGroup) {
+    const preferredLastGroupId = summaries.value.some((item) => item.groupId === lastGroupIdFromSummary.value)
+      ? lastGroupIdFromSummary.value
+      : '';
+    activeGroupId.value = preferredLastGroupId || summaries.value[0]?.groupId || '';
+  }
+
+  if (!activeEntryId.value) {
+    activeEntryId.value = activeGroupId.value || ENTRY_ID.SETTINGS;
+    return;
+  }
+
+  // 当前条目是分组但该分组已不存在时，回退到可用分组（或设置页）。
+  if (!isVirtualEntryId(activeEntryId.value) && !summaries.value.some((item) => item.groupId === activeEntryId.value)) {
+    activeEntryId.value = activeGroupId.value || ENTRY_ID.SETTINGS;
   }
 }
 
@@ -474,14 +501,22 @@ async function openDrawer(): Promise<void> {
 
     // 无分组时自动切换到设置页
     if (summaries.value.length === 0) {
-      showSettings.value = true;
+      activeEntryId.value = ENTRY_ID.SETTINGS;
       return;
     }
-    showSettings.value = false;
 
     if (!activeGroupId.value) {
+      const preferredLastGroupId = summaries.value.some((item) => item.groupId === lastGroupIdFromSummary.value)
+        ? lastGroupIdFromSummary.value
+        : '';
+      activeGroupId.value = preferredLastGroupId || summaries.value[0]?.groupId || '';
+    }
+
+    if (!activeGroupId.value) {
+      activeEntryId.value = ENTRY_ID.SETTINGS;
       return;
     }
+    activeEntryId.value = activeGroupId.value;
 
     // 恢复记忆的 mode、已阅时间点和作者排序方式
     const summary = summaries.value.find((s) => s.groupId === activeGroupId.value);
@@ -551,21 +586,25 @@ async function manualRefresh(): Promise<void> {
   }
 }
 
-async function selectGroup(groupId: string): Promise<void> {
-  if (groupId === activeGroupId.value) {
+async function selectEntry(entryId: string): Promise<void> {
+  if (entryId === activeEntryId.value) {
     return;
   }
 
   stopPoll();
   generating.value = false;
   refreshing.value = false;
-  showSettings.value = false;
-  showDebug.value = false;
-  activeGroupId.value = groupId;
+  activeEntryId.value = entryId;
+
+  if (isVirtualEntryId(entryId)) {
+    return;
+  }
+
+  activeGroupId.value = entryId;
   userExplicitlyChoseAll = false;
 
   // 从 summary 恢复记忆的 mode、已阅时间点和作者排序方式
-  const summary = summaries.value.find((s) => s.groupId === groupId);
+  const summary = summaries.value.find((s) => s.groupId === entryId);
   if (summary?.savedMode) {
     mode.value = summary.savedMode;
   }
@@ -666,17 +705,7 @@ async function onListScroll(event: Event): Promise<void> {
   }
 }
 
-function toggleSettings(): void {
-  showSettings.value = !showSettings.value;
-  if (showSettings.value) showDebug.value = false;
-}
-
-function toggleDebug(): void {
-  showDebug.value = !showDebug.value;
-  if (showDebug.value) showSettings.value = false;
-}
-
-// 分组列表变更（创建/删除），重新加载概要，无分组时留在设置页，有分组时自动切回
+// 分组列表变更（创建/删除）后重新加载概要，当前条目合法性由 loadSummary 内部统一修正。
 async function onGroupListChanged(): Promise<void> {
   try {
     await loadSummary();
