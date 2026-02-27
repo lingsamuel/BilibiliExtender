@@ -100,9 +100,10 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 执行：
 1. 读取分组配置，调用 `getAllFavVideos(mediaId)`。
-2. 提取作者列表并更新 `GroupFeedCache.authorMids` 与 `updatedAt`。
-3. 同步收藏夹标题到 `group.mediaTitle`（`alias` 不变）。
-4. 将该分组最新作者列表转换为 `AuthorVideoTask`，立即入列 `author-video` 通道（优先）。
+2. 若请求失败，或请求成功但作者列表为空数组：判定为“无效更新”，保持现有 `GroupFeedCache` 与 `group.mediaTitle` 不变，不覆盖为“空分组”。
+3. 仅在作者列表非空时，更新 `GroupFeedCache.authorMids` 与 `updatedAt`。
+4. 同步收藏夹标题到 `group.mediaTitle`（`alias` 不变）。
+5. 将该分组最新作者列表转换为 `AuthorVideoTask`，立即入列 `author-video` 通道（优先）。
 
 说明：该通道与 `author-video` 通道独立限流，不共享 ratelimit。
 
@@ -123,6 +124,12 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 - 仅基于缓存组装返回。
 - 分组无缓存时：返回 `cacheStatus: 'generating'`，并优先入列 `group-fav` 任务。
+- 分组有缓存但作者缓存不完整时：
+  1. 识别缺失作者（`AuthorVideoCache[mid]` 不存在，或没有有效 `lastFetchedAt`）。
+  2. 优先入列缺失作者到 `author-video` 通道（去重，避免重复堆积）。
+  3. 返回 `cacheStatus: 'generating'`，但同时返回当前可用的聚合结果（允许部分内容先展示）。
+  4. 仅当本轮缺失作者都完成至少一轮缓存后，返回 `cacheStatus: 'ready'`。
+- 分组有缓存且作者缓存完整时：返回 `cacheStatus: 'ready'`。
 
 #### 3.4.2 MANUAL_REFRESH
 
