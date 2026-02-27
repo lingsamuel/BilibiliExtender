@@ -191,6 +191,8 @@ body.bbe-page-scroll-lock {
   grid-template-columns: 72px 1fr;
   gap: 12px;
   align-items: start;
+  position: relative;
+  min-height: 0;
 }
 
 .bbe-mixed-sections {
@@ -248,15 +250,10 @@ body.bbe-page-scroll-lock {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #222;
+  background: #8d97a8;
   border: 0;
-  opacity: 0.95;
-  transition:
-    width 0.2s ease,
-    height 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    opacity 0.2s ease;
+  opacity: 1;
+  transition: width 0.2s ease, height 0.2s ease;
   z-index: 1;
 }
 
@@ -265,7 +262,6 @@ body.bbe-page-scroll-lock {
   height: 16px;
   border: 2px solid #8d97a8;
   background: #fff;
-  opacity: 1;
 }
 
 .bbe-card {

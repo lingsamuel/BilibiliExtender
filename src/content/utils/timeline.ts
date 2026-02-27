@@ -54,6 +54,14 @@ export function formatTimelineDayLabel(dayKey: string, nowMs = Date.now()): stri
   if (!date) {
     return dayKey;
   }
+
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diffDays = Math.floor((todayStart - targetStart) / (24 * 60 * 60 * 1000));
+  if (diffDays >= 2 && diffDays <= 7) {
+    return `${diffDays}天前`;
+  }
+
   return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 

@@ -98,7 +98,7 @@
               </div>
             </aside>
 
-            <div class="bbe-mixed-sections">
+            <div ref="mixedSectionsRef" class="bbe-mixed-sections">
               <section
                 v-for="day in mixedDayGroups"
                 :key="day.dayKey"
@@ -181,6 +181,7 @@ const PAGE_SCROLL_LOCK_CLASS = 'bbe-page-scroll-lock';
 const MIXED_TIMELINE_WINDOW_RADIUS = 2;
 const MIXED_TIMELINE_EDGE_PADDING = 12;
 const MIXED_TIMELINE_OUTSIDE_GAP = 18;
+const MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD = 0.2;
 const ENTRY_ID = {
   SETTINGS: '__bbe_settings__',
   DEBUG: '__bbe_debug__'
@@ -263,11 +264,13 @@ const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
 const mixedDaySectionElements = new Map<string, HTMLElement>();
+const mixedSectionsRef = ref<HTMLElement | null>(null);
 const mixedDayInViewMap = ref<Record<string, boolean>>({});
 const mixedTimelineNodeTopMap = ref<Record<string, number>>({});
 const mixedTimelineHeight = ref(0);
 const mixedTimelineWindow = ref<{ start: number; end: number }>({ start: 0, end: -1 });
 const mixedTimelineFocusIndex = ref(0);
+let mixedTimelineResizeObserver: ResizeObserver | null = null;
 const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
 const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
 
@@ -290,9 +293,6 @@ const mixedTimelineItems = computed<MixedTimelineItem[]>(() => {
   if (groups.length === 0) {
     return [];
   }
-  if (mixedTimelineHeight.value <= 0) {
-    return [];
-  }
 
   let { start, end } = mixedTimelineWindow.value;
   if (end < start) {
@@ -302,8 +302,9 @@ const mixedTimelineItems = computed<MixedTimelineItem[]>(() => {
     return [];
   }
 
+  const timelineHeight = Math.max(1, mixedTimelineHeight.value || listRef.value?.clientHeight || 0);
   const range = Math.max(1, end - start);
-  const availableHeight = Math.max(0, mixedTimelineHeight.value - MIXED_TIMELINE_EDGE_PADDING * 2);
+  const availableHeight = Math.max(0, timelineHeight - MIXED_TIMELINE_EDGE_PADDING * 2);
 
   return groups.slice(start, end + 1).map((group, offset) => {
     const index = start + offset;
@@ -463,6 +464,34 @@ function resetMixedTimelineState(): void {
   mixedTimelineFocusIndex.value = 0;
 }
 
+function disconnectMixedTimelineResizeObserver(): void {
+  if (!mixedTimelineResizeObserver) {
+    return;
+  }
+  mixedTimelineResizeObserver.disconnect();
+  mixedTimelineResizeObserver = null;
+}
+
+function ensureMixedTimelineResizeObserver(): void {
+  disconnectMixedTimelineResizeObserver();
+
+  if (!visible.value || mode.value !== 'mixed' || typeof ResizeObserver === 'undefined') {
+    return;
+  }
+
+  const listEl = listRef.value;
+  const sectionsEl = mixedSectionsRef.value;
+  if (!listEl || !sectionsEl) {
+    return;
+  }
+
+  mixedTimelineResizeObserver = new ResizeObserver(() => {
+    updateMixedTimelineState();
+  });
+  mixedTimelineResizeObserver.observe(listEl);
+  mixedTimelineResizeObserver.observe(sectionsEl);
+}
+
 /**
  * 计算时间轴状态：
  * 1) 每个日期分段是否在当前可视区域内（决定空心圆/小黑点）；
@@ -484,11 +513,13 @@ function updateMixedTimelineState(): void {
   const scrollTop = container.scrollTop;
   const timelineHeight = Math.max(container.clientHeight, MIXED_TIMELINE_EDGE_PADDING * 2 + 1);
   const viewBottom = scrollTop + timelineHeight;
+  const sectionsOffsetTop = mixedSectionsRef.value?.offsetTop ?? 0;
   const nextInViewMap: Record<string, boolean> = {};
   const nextNodeTopMap: Record<string, number> = {};
   const inViewIndexes: number[] = [];
   const inViewTopMap = new Map<number, number>();
   let focusIndex = -1;
+  let measuredCount = 0;
 
   for (let index = 0; index < groups.length; index++) {
     const group = groups[index];
@@ -496,10 +527,16 @@ function updateMixedTimelineState(): void {
     if (!sectionEl) {
       continue;
     }
+    measuredCount++;
 
-    const sectionTop = sectionEl.offsetTop;
+    const sectionTop = sectionsOffsetTop + sectionEl.offsetTop;
     const sectionBottom = sectionTop + sectionEl.offsetHeight;
-    const inView = sectionBottom > scrollTop && sectionTop < viewBottom;
+    const visibleTop = Math.max(sectionTop, scrollTop);
+    const visibleBottom = Math.min(sectionBottom, viewBottom);
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    const sectionHeight = Math.max(1, sectionEl.offsetHeight);
+    const visibleRatio = visibleHeight / sectionHeight;
+    const inView = visibleRatio > MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD;
     nextInViewMap[group.dayKey] = inView;
     if (inView) {
       inViewIndexes.push(index);
@@ -510,6 +547,34 @@ function updateMixedTimelineState(): void {
     if (focusIndex < 0 && sectionBottom > scrollTop + 1) {
       focusIndex = index;
     }
+  }
+
+  if (measuredCount === 0) {
+    mixedDayInViewMap.value = {};
+    mixedTimelineHeight.value = timelineHeight;
+    const { start: fallbackStart, end: fallbackEnd } = buildTimelineWindow(
+      groups.length,
+      mixedTimelineFocusIndex.value,
+      MIXED_TIMELINE_WINDOW_RADIUS
+    );
+    const range = Math.max(1, fallbackEnd - fallbackStart);
+    const fallbackNodeTopMap: Record<string, number> = {};
+    for (let index = fallbackStart; index <= fallbackEnd; index++) {
+      const ratio = (index - fallbackStart) / range;
+      fallbackNodeTopMap[groups[index].dayKey] =
+        MIXED_TIMELINE_EDGE_PADDING + ratio * (timelineHeight - MIXED_TIMELINE_EDGE_PADDING * 2);
+    }
+    mixedTimelineNodeTopMap.value = fallbackNodeTopMap;
+    mixedTimelineWindow.value = { start: fallbackStart, end: fallbackEnd };
+    requestAnimationFrame(() => {
+      updateMixedTimelineState();
+    });
+    return;
+  }
+  if (measuredCount < groups.length) {
+    requestAnimationFrame(() => {
+      updateMixedTimelineState();
+    });
   }
 
   if (focusIndex < 0) {
@@ -1022,6 +1087,7 @@ watch(visible, (nextVisible) => {
   }
   if (!nextVisible) {
     resetMixedTimelineState();
+    disconnectMixedTimelineResizeObserver();
   }
 });
 
@@ -1029,10 +1095,15 @@ watch(
   [mixedDayGroups, mode, visible],
   async () => {
     if (!visible.value || mode.value !== 'mixed') {
+      disconnectMixedTimelineResizeObserver();
       return;
     }
     await nextTick();
+    ensureMixedTimelineResizeObserver();
     updateMixedTimelineState();
+    requestAnimationFrame(() => {
+      updateMixedTimelineState();
+    });
   },
   { flush: 'post' }
 );
@@ -1059,6 +1130,7 @@ onUnmounted(() => {
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
   window.removeEventListener('resize', onWindowResize);
+  disconnectMixedTimelineResizeObserver();
 
   if (summaryTimer) {
     window.clearInterval(summaryTimer);
