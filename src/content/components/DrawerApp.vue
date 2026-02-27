@@ -1246,8 +1246,11 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
   }
 }
 
-async function reloadFeedWithReadMark(): Promise<void> {
-  loading.value = true;
+async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<void> {
+  const silent = options?.silent === true;
+  if (!silent) {
+    loading.value = true;
+  }
   try {
     const resp = await sendMessage({
       type: 'GET_GROUP_FEED',
@@ -1269,7 +1272,9 @@ async function reloadFeedWithReadMark(): Promise<void> {
     await fetchClickedVideos();
     await loadSummary();
   } finally {
-    loading.value = false;
+    if (!silent) {
+      loading.value = false;
+    }
   }
 }
 
@@ -1429,7 +1434,7 @@ async function switchMode(nextMode: ViewMode): Promise<void> {
 async function onReadMarkTsChange(): Promise<void> {
   userExplicitlyChoseAll = selectedReadMarkTs.value === 0;
   try {
-    await reloadFeedWithReadMark();
+    await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '切换已阅时间点失败';
   }
@@ -1493,13 +1498,18 @@ async function markCurrentGroupRead(): Promise<void> {
       selectedReadMarkTs.value = latestTs;
       userExplicitlyChoseAll = false;
     }
-    await reloadFeedWithReadMark();
+    await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '标记已阅失败';
   }
 }
 
 async function markReadToMixedDay(dayKey: string): Promise<void> {
+  // 点击已激活日期时不做任何更新，避免重复写入同一边界。
+  if (activeTimelineDayKey.value === dayKey) {
+    return;
+  }
+
   if (!activeGroupId.value) {
     return;
   }
@@ -1522,7 +1532,7 @@ async function markReadToMixedDay(dayKey: string): Promise<void> {
     }
     selectedReadMarkTs.value = readMarkTs;
     userExplicitlyChoseAll = false;
-    await reloadFeedWithReadMark();
+    await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '设置按日已阅失败';
   }

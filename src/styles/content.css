@@ -314,7 +314,7 @@ body.bbe-page-scroll-lock {
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 8px;
+  right: 10px;
   width: 2px;
   background: #d4d9e1;
 }
@@ -324,11 +324,15 @@ body.bbe-page-scroll-lock {
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: 1fr 18px;
+  grid-template-columns: 1fr 22px;
   align-items: center;
   gap: 8px;
   min-height: 20px;
   transform: translateY(-50%);
+  transition: none;
+}
+
+.bbe-timeline-item:not(.is-in-view) {
   transition: top 0.2s ease;
 }
 
@@ -358,8 +362,8 @@ body.bbe-page-scroll-lock {
 
 .bbe-timeline-node-btn {
   position: relative;
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   border: 0;
   padding: 0;
   margin: 0;
@@ -381,6 +385,8 @@ body.bbe-page-scroll-lock {
   justify-self: center;
   width: 4px;
   height: 4px;
+  box-sizing: border-box;
+  flex-shrink: 0;
   border-radius: 50%;
   background: #8d97a8;
   border: 0;
@@ -402,7 +408,7 @@ body.bbe-page-scroll-lock {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 1;
   color: var(--bbe-theme-color);
@@ -410,6 +416,8 @@ body.bbe-page-scroll-lock {
   transition: opacity 0.18s ease;
   pointer-events: none;
   z-index: 3;
+  /* 仅保留轻微纵向微调，避免字形视觉中心偏下。 */
+  transform: translate(0, 0.8px);
 }
 
 .bbe-timeline-node-btn:hover .bbe-timeline-check {

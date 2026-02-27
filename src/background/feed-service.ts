@@ -237,6 +237,40 @@ function resolveGroupUnreadBaselineTs(selectedReadMarkTs: number, graceReadMarkT
   return 0;
 }
 
+function getLocalDayStartSeconds(seconds: number): number {
+  const date = new Date(seconds * 1000);
+  return Math.floor(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1000);
+}
+
+function isLocalDayStartSeconds(seconds: number): boolean {
+  const date = new Date(seconds * 1000);
+  return date.getHours() === 0 && date.getMinutes() === 0 && date.getSeconds() === 0;
+}
+
+/**
+ * 时间流模式的可见下界：
+ * - 默认按已阅边界过滤；
+ * - “圆点对勾（日边界）”场景至少保留 D 日内容；
+ * - 若该日边界仍在 N 天窗口内，则扩展为显示完整 N 天窗口，保证时间轴连续性。
+ */
+function resolveMixedVisibleLowerBoundTs(selectedReadMarkTs: number, graceReadMarkTs: number): number {
+  const baseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
+  if (selectedReadMarkTs <= 0 || baseline <= 0) {
+    return baseline;
+  }
+
+  if (!isLocalDayStartSeconds(selectedReadMarkTs)) {
+    return baseline;
+  }
+
+  const readDayStart = getLocalDayStartSeconds(selectedReadMarkTs - 1);
+  if (graceReadMarkTs > 0 && selectedReadMarkTs >= graceReadMarkTs) {
+    return Math.min(readDayStart, graceReadMarkTs);
+  }
+
+  return readDayStart;
+}
+
 function isVideoViewed(video: VideoItem, clickedVideos: ClickedVideoMap): boolean {
   // “已查看”与卡片展示规则保持一致：
   // 1) 点击记录命中；或 2) playback_position >= 10。
@@ -426,6 +460,19 @@ function filterVideosByReadMark(
   return [...newVideos, ...olderVideos];
 }
 
+function filterMixedVideosByReadMark(videos: VideoItem[], selectedTs: number, graceTs: number): VideoItem[] {
+  if (selectedTs === 0) {
+    return videos;
+  }
+
+  const lowerBound = resolveMixedVisibleLowerBoundTs(selectedTs, graceTs);
+  if (lowerBound <= 0) {
+    return videos;
+  }
+
+  return videos.filter((video) => video.pubdate >= lowerBound);
+}
+
 function getLatestPubdate(videos: VideoItem[]): number | null {
   if (videos.length === 0) {
     return null;
@@ -502,8 +549,6 @@ export function toFeedResult(
   const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
   const graceReadMarkTs = getGraceReadMarkTs(settings);
 
-  const effectiveTs = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
-
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
     const allVideos = authorCacheMap[mid]?.videos ?? [];
@@ -540,17 +585,10 @@ export function toFeedResult(
   const injectAuthorMeta = (videos: VideoItem[]): VideoItem[] =>
     videos.map((video) => injectAuthorMetaIntoVideo(video, authorMetaMap.get(video.authorMid)));
 
-  let mixedVideos: VideoItem[];
-  if (effectiveTs === 0) {
-    mixedVideos = injectAuthorMeta(aggregateMixedVideos(authorMids, authorCacheMap));
-  } else {
-    const allFiltered = videosByAuthor.flatMap((a) => a.videos);
-    const deduped = new Map<string, VideoItem>();
-    for (const v of allFiltered) {
-      deduped.set(v.bvid, v);
-    }
-    mixedVideos = injectAuthorMeta(Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate));
-  }
+  const mixedAllVideos = aggregateMixedVideos(authorMids, authorCacheMap);
+  let mixedVideos = injectAuthorMeta(
+    filterMixedVideosByReadMark(mixedAllVideos, selectedReadMarkTs, graceReadMarkTs)
+  );
 
   // 时间流读取遵循 runtime 目标数量，避免一次返回过多数据导致渲染与消息传输变慢。
   const mixedTotalBeforeLimit = mixedVideos.length;
