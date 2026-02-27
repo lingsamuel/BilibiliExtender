@@ -105,7 +105,10 @@ interface GroupFavTask extends SchedulerTaskBase {
 2. 若请求失败，或请求成功但作者列表为空数组：判定为“无效更新”，保持现有 `GroupFeedCache` 与 `group.mediaTitle` 不变，不覆盖为“空分组”。
 3. 仅在作者列表非空时，更新 `GroupFeedCache.authorMids` 与 `updatedAt`。
 4. 同步收藏夹标题到 `group.mediaTitle`（`alias` 不变）。
-5. 将该分组最新作者列表转换为 `AuthorVideoTask`，立即入列 `author-video` 通道（优先）。
+5. 将该分组最新作者列表转换为 `AuthorVideoTask` 后按缓存状态分流：
+   - 若 `AuthorVideoCache[mid]` 不存在：入列 Burst 队列；
+   - 若缓存存在但已过期：入列 `author-video` 常规优先队列；
+   - 若缓存存在且未过期：本轮跳过，不入作者队列。
 
 说明：该通道与 `author-video` 通道独立限流，不共享 ratelimit。
 

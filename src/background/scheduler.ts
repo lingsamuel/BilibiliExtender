@@ -402,10 +402,11 @@ async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): 
  * 完成后会把该分组作者任务优先插入作者通道。
  */
 async function runGroupFavTask(task: GroupFavTask): Promise<void> {
-  const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
+  const [groups, feedCacheMap, authorCacheMap, settings] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
-    loadAuthorVideoCacheMap()
+    loadAuthorVideoCacheMap(),
+    loadSettings()
   ]);
 
   const group = groups.find((item) => item.groupId === task.groupId && item.enabled);
@@ -439,18 +440,23 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
     await saveGroups(groups);
   }
 
-  const tasks: AuthorTask[] = authors.map((author) => ({
-    mid: author.mid,
-    name: authorCacheMap[author.mid]?.name ?? author.name,
-    groupId: group.groupId
-  }));
-
   const burstTasks: AuthorTask[] = [];
   const priorityTasks: AuthorTask[] = [];
-  for (const task of tasks) {
-    if (!authorCacheMap[task.mid]) {
+  for (const author of authors) {
+    const cache = authorCacheMap[author.mid];
+    const task: AuthorTask = {
+      mid: author.mid,
+      name: cache?.name ?? author.name,
+      groupId: group.groupId
+    };
+
+    if (!cache) {
       burstTasks.push(task);
-    } else {
+      continue;
+    }
+
+    // group-fav 衔接作者任务时，只补“已有缓存但已过期”的目标，避免把未过期作者大量挤入常规队列。
+    if (isAuthorCacheExpired(cache, settings)) {
       priorityTasks.push(task);
     }
   }
