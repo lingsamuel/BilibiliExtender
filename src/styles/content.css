@@ -277,11 +277,18 @@ body.bbe-page-scroll-lock {
 
 .bbe-card-author {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px;
   margin-top: auto;
   padding-top: 6px;
+}
+
+.bbe-card-author-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
 }
 
 .bbe-card-author-link {
@@ -289,7 +296,7 @@ body.bbe-page-scroll-lock {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex: 1;
+  max-width: 100%;
   color: inherit;
   text-decoration: none;
 }
@@ -312,7 +319,6 @@ body.bbe-page-scroll-lock {
   font-size: 11px;
   color: #9aa4b5;
   line-height: 1.3;
-  flex-shrink: 0;
 }
 
 .bbe-empty {

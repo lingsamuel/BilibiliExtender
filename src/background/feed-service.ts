@@ -45,6 +45,10 @@ function mergeVideos(existing: VideoItem[], incoming: VideoItem[]): VideoItem[] 
   return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
 }
 
+function isNumericName(value: string | undefined): boolean {
+  return !!value && /^\d+$/.test(value.trim());
+}
+
 // ─── 作者级缓存操作 ───
 
 function isAuthorCacheExpired(cache: AuthorVideoCache | undefined, settings: ExtensionSettings): boolean {
@@ -88,9 +92,21 @@ export async function refreshAuthorCache(
     }
   }
 
+  // 作者名优先使用接口返回的真实名称；若拿不到再回退缓存/任务入参。
+  const apiName = videos.find((item) => item.authorName?.trim())?.authorName?.trim();
+  const existingName = existing?.name?.trim();
+  const taskName = name?.trim();
+  const resolvedName =
+    apiName ||
+    (existingName && !isNumericName(existingName) ? existingName : undefined) ||
+    (taskName && !isNumericName(taskName) ? taskName : undefined) ||
+    existingName ||
+    taskName ||
+    String(mid);
+
   const cache: AuthorVideoCache = {
     mid,
-    name,
+    name: resolvedName,
     face,
     faceFetchedAt,
     videos: merged,
@@ -174,7 +190,14 @@ function getAuthorNames(authorMids: number[], authorCacheMap: AuthorCacheMap): M
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
     if (cache) {
-      names.set(mid, cache.name);
+      const cacheName = cache.name?.trim();
+      const videoName = cache.videos.find((video) => video.authorName?.trim())?.authorName?.trim();
+      const resolvedName =
+        (cacheName && !isNumericName(cacheName) ? cacheName : undefined) ||
+        videoName ||
+        cacheName ||
+        String(mid);
+      names.set(mid, resolvedName);
     }
   }
   return names;

@@ -29,6 +29,7 @@ import {
 } from '@/background/feed-service';
 import {
   enqueuePriorityGroup,
+  getAuthorCacheSnapshot,
   getStatus,
   runSchedulerNow,
   setupAlarm
@@ -169,7 +170,7 @@ async function handleGetGroupSummary(
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
-    loadAuthorVideoCacheMap(),
+    getAuthorCacheSnapshot(),
     loadLastGroupId()
   ]);
 
@@ -199,7 +200,7 @@ async function handleGetGroupFeed(
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
-    loadAuthorVideoCacheMap()
+    getAuthorCacheSnapshot()
   ]);
 
   const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);

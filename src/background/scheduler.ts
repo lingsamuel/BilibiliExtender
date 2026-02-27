@@ -88,6 +88,16 @@ function getGroupTitle(group: GroupConfig): string {
   return group.alias?.trim() || group.mediaTitle || group.groupId;
 }
 
+function resolveAuthorName(name: string | undefined, videos: Array<{ authorName: string }>, mid: number): string {
+  const cacheName = name?.trim();
+  const isNumeric = !!cacheName && /^\d+$/.test(cacheName);
+  const videoName = videos.find((item) => item.authorName?.trim())?.authorName?.trim();
+  if (cacheName && !isNumeric) return cacheName;
+  if (videoName) return videoName;
+  if (cacheName) return cacheName;
+  return String(mid);
+}
+
 function normalizeBatchSize(settings: ExtensionSettings): number {
   const raw = Number(settings.schedulerBatchSize) || BG_REFRESH_BATCH_SIZE_DEFAULT;
   return Math.min(50, Math.max(1, raw));
@@ -497,7 +507,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
   const authorCaches = Object.values(authorCacheMap)
     .map((item) => ({
       mid: item.mid,
-      name: item.name,
+      name: resolveAuthorName(item.name, item.videos, item.mid),
       groupNames: Array.from(authorGroupNamesMap.get(item.mid) ?? []).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')),
       videoCount: item.videos.length,
       lastFetchedAt: item.lastFetchedAt,
@@ -538,6 +548,14 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     groupCaches,
     history
   };
+}
+
+/**
+ * 提供给前台读取路径的作者缓存快照：
+ * 调度器运行中优先返回内存实时缓存，避免读到 storage 的滞后数据。
+ */
+export async function getAuthorCacheSnapshot(): Promise<AuthorCacheMap> {
+  return liveAuthorCacheMap ?? loadAuthorVideoCacheMap();
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
