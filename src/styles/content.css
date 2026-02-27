@@ -238,11 +238,27 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-timeline-label {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
   justify-self: end;
   font-size: 12px;
   color: #6e788a;
   line-height: 1.2;
   white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.bbe-timeline-label:hover {
+  color: #00a1d6;
+}
+
+.bbe-timeline-label:focus-visible {
+  outline: 2px solid #8d97a8;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .bbe-timeline-node {

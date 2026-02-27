@@ -93,7 +93,14 @@
                 :class="{ 'is-in-view': item.isInView }"
                 :style="{ top: `${item.topPx}px` }"
               >
-                <span class="bbe-timeline-label">{{ item.label }}</span>
+                <button
+                  type="button"
+                  class="bbe-timeline-label"
+                  :title="`跳转到${item.label}`"
+                  @click.stop="scrollToMixedDay(item.dayKey)"
+                >
+                  {{ item.label }}
+                </button>
                 <span class="bbe-timeline-node" />
               </div>
             </aside>
@@ -1021,6 +1028,22 @@ async function onVideoClick(bvid: string): Promise<void> {
   } catch {
     // 静默失败
   }
+}
+
+function scrollToMixedDay(dayKey: string): void {
+  const container = listRef.value;
+  const sectionEl = mixedDaySectionElements.get(dayKey);
+  if (!container || !sectionEl) {
+    return;
+  }
+
+  const sectionsOffsetTop = mixedSectionsRef.value?.offsetTop ?? 0;
+  const targetTop = Math.max(0, sectionsOffsetTop + sectionEl.offsetTop - 8);
+  container.scrollTo({ top: targetTop, behavior: 'smooth' });
+
+  requestAnimationFrame(() => {
+    updateMixedTimelineState();
+  });
 }
 
 async function onListScroll(event: Event): Promise<void> {
