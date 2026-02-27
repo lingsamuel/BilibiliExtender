@@ -52,6 +52,10 @@ export interface AuthorFeed {
   authorName: string;
   authorFace?: string;
   videos: VideoItem[];
+  // 当前筛选结果是否“仅由已阅前额外视频构成”（没有已阅基线之后的新视频）
+  hasOnlyExtraOlderVideos?: boolean;
+  // 该作者投稿缓存里的最新发布时间（秒级时间戳）
+  latestPubdate?: number;
 }
 
 export interface GroupFeedResult {

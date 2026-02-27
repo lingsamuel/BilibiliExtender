@@ -107,6 +107,12 @@
                 <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
                 <span>{{ author.authorName }}</span>
               </a>
+              <span
+                v-if="author.hasOnlyExtraOlderVideos && author.latestPubdate"
+                class="bbe-author-title-note"
+              >
+                最近更新：{{ formatDaysAgo(author.latestPubdate) }}
+              </span>
             </h3>
             <div class="bbe-grid">
               <VideoCard
@@ -131,7 +137,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_REFRESHING } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
 import type { GroupFeedResult, GroupSummary, ViewMode } from '@/shared/types';
-import { formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
+import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
 import SettingsPanel from '@/shared/components/SettingsPanel.vue';

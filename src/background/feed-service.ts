@@ -485,19 +485,32 @@ export function toFeedResult(
   const effectiveTs = selectedReadMarkTs === -1 ? graceReadMarkTs : selectedReadMarkTs;
 
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
-  let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => ({
-    authorMid: mid,
-    authorName: authorNames.get(mid) ?? String(mid),
-    authorFace: authorCacheMap[mid]?.face,
-    videos: filterVideosByReadMark(
-      authorCacheMap[mid]?.videos ?? [],
+  let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
+    const allVideos = authorCacheMap[mid]?.videos ?? [];
+    const videos = filterVideosByReadMark(
+      allVideos,
       mid,
       selectedReadMarkTs,
       readMarks,
       settings.extraOlderVideoCount,
       graceReadMarkTs
-    )
-  }));
+    );
+    const baseline = resolveAuthorUnreadBaselineTs(mid, selectedReadMarkTs, readMarks, graceReadMarkTs);
+
+    // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
+    return {
+      authorMid: mid,
+      authorName: authorNames.get(mid) ?? String(mid),
+      authorFace: authorCacheMap[mid]?.face,
+      videos,
+      hasOnlyExtraOlderVideos:
+        selectedReadMarkTs !== 0 &&
+        baseline > 0 &&
+        videos.length > 0 &&
+        videos.every((video) => video.pubdate < baseline),
+      latestPubdate: getLatestPubdate(allVideos) ?? undefined
+    };
+  });
 
   if (mode === 'byAuthor' && byAuthorSortEnabled) {
     videosByAuthor = sortAuthorsByLatestPubdate(videosByAuthor);

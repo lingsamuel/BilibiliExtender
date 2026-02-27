@@ -299,9 +299,16 @@ body.bbe-page-scroll-lock {
 .bbe-author-title {
   display: flex;
   align-items: center;
+  gap: 8px;
   font-size: 14px;
   font-weight: 600;
   margin: 0 0 8px;
+}
+
+.bbe-author-title-note {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8f98a8;
 }
 
 .bbe-author-link {

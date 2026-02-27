@@ -38,3 +38,10 @@ export function formatPubdate(seconds: number): string {
 export function formatReadMarkTs(seconds: number): string {
   return formatPubdate(seconds);
 }
+
+export function formatDaysAgo(seconds: number): string {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const diffSeconds = Math.max(0, nowSeconds - seconds);
+  const days = Math.floor(diffSeconds / (24 * 60 * 60));
+  return `${days} 天前`;
+}
