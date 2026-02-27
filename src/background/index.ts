@@ -164,6 +164,11 @@ async function handleUpsertGroup(
     saveFeedCacheMap(feedCacheMap)
   ]);
 
+  // 新增分组后立即触发一次该分组刷新，确保尽快生成首份缓存。
+  if (index < 0) {
+    enqueuePriorityGroup([incoming.groupId]);
+  }
+
   return { groups };
 }
 

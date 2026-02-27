@@ -127,6 +127,17 @@ function resolveAuthorName(name: string | undefined, videos: Array<{ authorName:
   return String(mid);
 }
 
+/**
+ * 调试展示中仅将“非空且非纯数字”的作者名视为有效名称。
+ */
+function resolveDisplayName(name: string | undefined): string | undefined {
+  const trimmed = name?.trim();
+  if (!trimmed || /^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+}
+
 function normalizeBatchSize(settings: ExtensionSettings): number {
   const raw = Number(settings.schedulerBatchSize) || BG_REFRESH_BATCH_SIZE_DEFAULT;
   return Math.min(50, Math.max(1, raw));
@@ -865,7 +876,7 @@ export async function runSchedulerNow(): Promise<{
 
 /**
  * 获取调度器状态（调试用）。
- * 顶层字段保持与历史结构兼容，默认展示作者通道状态。
+ * 顶层作者字段仅表示“常规更新队列”；Burst 明细在 burst 字段单独展示。
  */
 export async function getStatus(): Promise<SchedulerStatusResponse> {
   const [settings, authorCacheMap, feedCacheMap, groups, authorAlarm, groupFavAlarm] = await Promise.all([
@@ -920,28 +931,30 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
-  const authorCurrentTask = burstState.currentTask ?? authorState.currentTask;
-  const authorQueue = [
-    ...burstState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId })),
-    ...authorState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId }))
-  ];
+  const authorCurrentTask = authorState.currentTask;
+  const authorQueue = authorState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId }));
   const burstCurrentTask = burstState.currentTask
-    ? { mid: burstState.currentTask.mid, groupNames: getGroupNamesForTask(burstState.currentTask.mid, burstState.currentTask.groupId) }
+    ? {
+        mid: burstState.currentTask.mid,
+        name: resolveDisplayName(burstState.currentTask.name),
+        groupNames: getGroupNamesForTask(burstState.currentTask.mid, burstState.currentTask.groupId)
+      }
     : null;
   const burstQueue = burstState.queue.map((item) => ({
     mid: item.mid,
+    name: resolveDisplayName(item.name),
     groupNames: getGroupNamesForTask(item.mid, item.groupId)
   }));
   const burstCooldownReason: BurstCooldownReason = burstState.nextAllowedAt > Date.now() ? burstState.cooldownReason : null;
 
   return {
     schedulerBatchSize: normalizeBatchSize(settings),
-    running: burstState.running || authorState.running,
-    queueLength: burstState.queue.length + authorState.queue.length,
+    running: authorState.running,
+    queueLength: authorState.queue.length,
     currentTask: authorCurrentTask ? { mid: authorCurrentTask.mid, name: authorCurrentTask.name } : null,
     batchCompleted: authorState.batchCompleted,
     batchFailed: authorState.batchFailed.length,
-    lastRunAt: burstState.lastRunAt ?? authorState.lastRunAt,
+    lastRunAt: authorState.lastRunAt,
     nextAlarmAt: authorAlarm?.scheduledTime,
     queue: authorQueue,
     groupChannel: {

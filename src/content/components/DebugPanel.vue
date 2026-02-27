@@ -1,6 +1,6 @@
 <template>
   <section class="bbe-panel bbe-debug-panel">
-    <h2 class="bbe-panel-title">调度器状态</h2>
+    <h2 class="bbe-panel-title">常规更新队列</h2>
     <div class="bbe-row" style="margin-bottom: 10px">
       <button class="bbe-btn primary" :disabled="runNowLoading" @click="runNow">
         {{ runNowLoading ? '触发中...' : '立刻发起调度' }}
@@ -52,7 +52,7 @@
     <h3 v-if="status && status.burst.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
     <div v-if="status && status.burst.queue.length > 0" class="bbe-debug-queue">
       <div v-for="(task, i) in status.burst.queue" :key="`${task.mid}-${i}`" class="bbe-debug-queue-item">
-        {{ i + 1 }}. MID {{ task.mid }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+        {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
       </div>
     </div>
   </section>
@@ -189,7 +189,7 @@ const burstCurrentTaskText = computed(() => {
   const task = status.value?.burst.currentTask;
   if (!task) return '无';
   const groups = task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组';
-  return `MID ${task.mid}（${groups}）`;
+  return `${formatBurstTaskLabel(task.name, task.mid)}（${groups}）`;
 });
 
 const burstNextAllowedText = computed(() => {
@@ -227,6 +227,14 @@ function formatAlarmText(targetMs: number): string {
   if (diff <= 0) return '即将触发';
   const mins = Math.ceil(diff / 60_000);
   return `${formatTime(targetMs)}（${mins} 分钟后）`;
+}
+
+function formatBurstTaskLabel(name: string | undefined, mid: number): string {
+  const normalized = name?.trim();
+  if (!normalized || /^\d+$/.test(normalized)) {
+    return `MID ${mid}`;
+  }
+  return normalized;
 }
 
 async function fetchStatus(): Promise<void> {

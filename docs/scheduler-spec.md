@@ -159,6 +159,11 @@ interface GroupFavTask extends SchedulerTaskBase {
 5. 若通道空闲则立即启动执行循环；若已在运行则只合并任务队列，不创建并行循环。
 6. 触发后必须重置该通道 alarm 的下次触发时间：`nextAlarmAt = now + 对应通道 interval`。
 
+#### 3.4.5 新增分组自动刷新
+
+1. `UPSERT_GROUP` 在“新增分组”场景下，保存成功后立即触发一次该分组刷新（等价入列一条 `group-fav` 优先任务）。
+2. “编辑已有分组”不自动触发此刷新，避免重复请求；仍由手动刷新或调度器驱动更新。
+
 ### 3.5 常规模式批次与限速规则（关键约束）
 
 以下规则在“非 Burst 执行窗口”内生效，`author-video` 与 `group-fav` 两个通道都适用，且互相独立执行：
@@ -217,14 +222,14 @@ persist();
 2. Burst 队列非空时，不执行任意通道的常规 alarm 调度（`author-video` / `group-fav` 都暂停常规执行）。
 3. Burst 期间，用户触发任务仍可入常规队列，但执行时机延后到 Burst 队列清空之后。
 4. 若 Burst 激活时已有非 Burst 任务正在执行，允许该任务完成当前项后再切换到 Burst 循环。
-5. Burst 队列清空后，恢复常规调度；并立即补偿触发一次常规任务收集（不重置 alarm）。
+5. Burst 队列清空后，恢复常规调度；仅当 Burst 期间实际拦截过某通道 alarm 时，才补偿触发对应通道的一次常规任务收集（不重置 alarm）。
 
 #### 3.6.3 执行语义
 
 1. Burst 仍然串行执行（一次一个作者）。
 2. 成功路径仍使用 `INTRA_DELAY_MS`（与常规任务一致），且为“无条件冷却”：每次任务成功后都要记录下一次可执行时间（`nextAllowedAt = now + INTRA_DELAY_MS`），即使此刻队列为空也不例外。
 3. Burst 不使用批次间延迟，不受 `batchDelay`/`intervalMinutes` 约束。
-4. 只要遇到任意错误，立即进入冷却：等待 `60s` 后再继续执行。
+4. 只要遇到任意错误，立即进入冷却：等待 `60s` 后再继续执行，并记录冷却原因为 `error`（供调试面板展示）。
 5. Burst 每次取任务前都必须先检查 `now >= nextAllowedAt`，不满足则等待剩余时间，避免“上一条刚完成、下一条立刻入队”导致的无间隔请求。
 6. 失败任务留在队首，冷却结束后优先重试；直到 Burst 队列为空才退出 Burst 模式。
 
@@ -289,6 +294,51 @@ interface SchedulerStatusResponse {
   }>;
 }
 ```
+
+Burst 监控字段（调试页必须展示）：
+
+```ts
+interface SchedulerStatusResponse {
+  // 兼容现有 author 顶层状态，补充 burst 明细
+  burst: {
+    running: boolean;
+    queueLength: number;
+    currentTask: {
+      // 可选：若任务来源可提供作者名则展示
+      name?: string;
+      mid: number;
+      // 显示口径以分组名为主；作者名缺失时允许回退 MID。
+      groupNames: string[];
+    } | null;
+    // 下一次允许执行的时间戳（用于观测无条件冷却）
+    nextAllowedAt: number;
+    // 冷却原因：正常节流或错误退避
+    cooldownReason: 'intra-delay' | 'error' | null;
+    lastRunAt?: number;
+    queue: Array<{
+      name?: string;
+      mid: number;
+      groupNames: string[];
+    }>;
+  };
+  history: Array<{
+    mid: number;
+    name: string;
+    success: boolean;
+    timestamp: number;
+    error?: string;
+    // 新增：区分常规与 Burst 执行来源
+    mode: 'regular' | 'burst';
+  }>;
+}
+```
+
+调试页显示要求：
+1. 顶层作者面板标题改为“常规更新队列”，仅展示常规作者队列，不混入 Burst 队列。
+2. 新增“Burst 状态”面板，显示 `running`、`currentTask(groupNames + name?)`、`queueLength`、`lastRunAt`、`nextAllowedAt`。
+3. Burst 队列详情按执行顺序展示“分组名 + 作者名”；仅当作者名缺失时回退显示 `MID`。
+4. 当 `cooldownReason === 'error'` 且 `nextAllowedAt > now` 时，展示“错误冷却中（剩余 X 秒）”。
+5. 调度历史增加 `mode` 列，显示 `regular` / `burst`。
 
 ## 5. 文件变更清单
 

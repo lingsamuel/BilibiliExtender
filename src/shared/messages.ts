@@ -64,11 +64,11 @@ export interface SchedulerStatusResponse {
   burst: {
     running: boolean;
     queueLength: number;
-    currentTask: { mid: number; groupNames: string[] } | null;
+    currentTask: { mid: number; name?: string; groupNames: string[] } | null;
     nextAllowedAt: number;
     cooldownReason: 'intra-delay' | 'error' | null;
     lastRunAt?: number;
-    queue: Array<{ mid: number; groupNames: string[] }>;
+    queue: Array<{ mid: number; name?: string; groupNames: string[] }>;
   };
   // 已缓存的作者摘要
   authorCaches: Array<{
