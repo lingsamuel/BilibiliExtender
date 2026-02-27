@@ -12,6 +12,25 @@ type RuntimeStateMap = Record<string, GroupRuntimeState>;
 type FeedCacheMap = Record<string, GroupFeedCache>;
 type AuthorVideoCacheMap = Record<number, AuthorVideoCache>;
 
+/**
+ * 进程内缓存：
+ * - Service Worker 存活期间优先命中内存，减少频繁 storage I/O。
+ * - Service Worker 被浏览器回收后，缓存自然失效并在下次请求时重新加载。
+ */
+const memoryCache: {
+  settings?: ExtensionSettings;
+  groups?: GroupConfig[];
+  runtime?: RuntimeStateMap;
+  feed?: FeedCacheMap;
+  authorVideo?: AuthorVideoCacheMap;
+  lastGroupId?: string;
+  hasLastGroupId: boolean;
+  authorReadMarks?: Record<number, AuthorReadMark>;
+  clickedVideos?: Record<string, number>;
+} = {
+  hasLastGroupId: false
+};
+
 async function storageGet<T>(
   area: chrome.storage.StorageArea,
   key: string,
@@ -26,14 +45,21 @@ async function storageSet(area: chrome.storage.StorageArea, key: string, value: 
 }
 
 async function getSettings(): Promise<ExtensionSettings> {
+  if (memoryCache.settings) {
+    return memoryCache.settings;
+  }
+
   const settings = await storageGet(chrome.storage.local, STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
-  return {
+  const merged = {
     ...DEFAULT_SETTINGS,
     ...settings
   };
+  memoryCache.settings = merged;
+  return merged;
 }
 
 async function setSettings(settings: ExtensionSettings): Promise<void> {
+  memoryCache.settings = settings;
   await storageSet(chrome.storage.local, STORAGE_KEYS.SETTINGS, settings);
 }
 
@@ -46,15 +72,23 @@ async function getGroupsStorageArea(): Promise<chrome.storage.StorageArea> {
  * 读取分组配置：按设置优先从 sync 读取，失败时自动回退 local。
  */
 export async function loadGroups(): Promise<GroupConfig[]> {
+  if (memoryCache.groups) {
+    return memoryCache.groups;
+  }
+
   const area = await getGroupsStorageArea();
   const key = area === chrome.storage.sync ? STORAGE_KEYS.GROUPS_SYNC : STORAGE_KEYS.GROUPS_LOCAL;
 
   try {
-    return await storageGet(area, key, [] as GroupConfig[]);
+    const groups = await storageGet(area, key, [] as GroupConfig[]);
+    memoryCache.groups = groups;
+    return groups;
   } catch (error) {
     // sync 读取失败时回退 local，避免配置不可用。
     console.warn('[BBE] loadGroups from preferred area failed, fallback to local:', error);
-    return storageGet(chrome.storage.local, STORAGE_KEYS.GROUPS_LOCAL, [] as GroupConfig[]);
+    const groups = await storageGet(chrome.storage.local, STORAGE_KEYS.GROUPS_LOCAL, [] as GroupConfig[]);
+    memoryCache.groups = groups;
+    return groups;
   }
 }
 
@@ -62,6 +96,7 @@ export async function loadGroups(): Promise<GroupConfig[]> {
  * 写入分组配置：sync 超配额时自动切换到 local 并关闭 useStorageSync。
  */
 export async function saveGroups(groups: GroupConfig[]): Promise<void> {
+  memoryCache.groups = groups;
   const settings = await getSettings();
   const preferredArea = settings.useStorageSync ? chrome.storage.sync : chrome.storage.local;
   const preferredKey = settings.useStorageSync ? STORAGE_KEYS.GROUPS_SYNC : STORAGE_KEYS.GROUPS_LOCAL;
@@ -93,10 +128,17 @@ export async function saveSettings(settings: ExtensionSettings): Promise<void> {
 }
 
 export async function loadRuntimeStateMap(): Promise<RuntimeStateMap> {
-  return storageGet(chrome.storage.local, STORAGE_KEYS.RUNTIME, {} as RuntimeStateMap);
+  if (memoryCache.runtime) {
+    return memoryCache.runtime;
+  }
+
+  const runtime = await storageGet(chrome.storage.local, STORAGE_KEYS.RUNTIME, {} as RuntimeStateMap);
+  memoryCache.runtime = runtime;
+  return runtime;
 }
 
 export async function saveRuntimeStateMap(stateMap: RuntimeStateMap): Promise<void> {
+  memoryCache.runtime = stateMap;
   await storageSet(chrome.storage.local, STORAGE_KEYS.RUNTIME, stateMap);
 }
 
@@ -104,6 +146,10 @@ export async function saveRuntimeStateMap(stateMap: RuntimeStateMap): Promise<vo
  * 读取分组 feed 缓存，自动丢弃不含 authorMids 的旧格式条目。
  */
 export async function loadFeedCacheMap(): Promise<FeedCacheMap> {
+  if (memoryCache.feed) {
+    return memoryCache.feed;
+  }
+
   const raw = await storageGet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, {} as FeedCacheMap);
   const cleaned: FeedCacheMap = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -111,26 +157,44 @@ export async function loadFeedCacheMap(): Promise<FeedCacheMap> {
       cleaned[key] = value;
     }
   }
+  memoryCache.feed = cleaned;
   return cleaned;
 }
 
 export async function saveFeedCacheMap(cacheMap: FeedCacheMap): Promise<void> {
+  memoryCache.feed = cacheMap;
   await storageSet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, cacheMap);
 }
 
 export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
-  return storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
+  if (memoryCache.authorVideo) {
+    return memoryCache.authorVideo;
+  }
+
+  const cacheMap = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
+  memoryCache.authorVideo = cacheMap;
+  return cacheMap;
 }
 
 export async function saveAuthorVideoCacheMap(cacheMap: AuthorVideoCacheMap): Promise<void> {
+  memoryCache.authorVideo = cacheMap;
   await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, cacheMap);
 }
 
 export async function loadLastGroupId(): Promise<string | undefined> {
-  return storageGet<string | undefined>(chrome.storage.local, STORAGE_KEYS.LAST_GROUP_ID, undefined);
+  if (memoryCache.hasLastGroupId) {
+    return memoryCache.lastGroupId;
+  }
+
+  const lastGroupId = await storageGet<string | undefined>(chrome.storage.local, STORAGE_KEYS.LAST_GROUP_ID, undefined);
+  memoryCache.lastGroupId = lastGroupId;
+  memoryCache.hasLastGroupId = true;
+  return lastGroupId;
 }
 
 export async function saveLastGroupId(groupId: string): Promise<void> {
+  memoryCache.lastGroupId = groupId;
+  memoryCache.hasLastGroupId = true;
   await storageSet(chrome.storage.local, STORAGE_KEYS.LAST_GROUP_ID, groupId);
 }
 
@@ -138,10 +202,17 @@ type ReadMarkMap = Record<number, AuthorReadMark>;
 type ClickedVideoMap = Record<string, number>;
 
 export async function loadAuthorReadMarks(): Promise<ReadMarkMap> {
-  return storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_READ_MARKS, {} as ReadMarkMap);
+  if (memoryCache.authorReadMarks) {
+    return memoryCache.authorReadMarks;
+  }
+
+  const marks = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_READ_MARKS, {} as ReadMarkMap);
+  memoryCache.authorReadMarks = marks;
+  return marks;
 }
 
 export async function saveAuthorReadMarks(marks: ReadMarkMap): Promise<void> {
+  memoryCache.authorReadMarks = marks;
   await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_READ_MARKS, marks);
 }
 
@@ -170,10 +241,17 @@ export async function appendReadMarks(mids: number[]): Promise<ReadMarkMap> {
 }
 
 export async function loadClickedVideos(): Promise<ClickedVideoMap> {
-  return storageGet(chrome.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, {} as ClickedVideoMap);
+  if (memoryCache.clickedVideos) {
+    return memoryCache.clickedVideos;
+  }
+
+  const map = await storageGet(chrome.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, {} as ClickedVideoMap);
+  memoryCache.clickedVideos = map;
+  return map;
 }
 
 export async function saveClickedVideos(map: ClickedVideoMap): Promise<void> {
+  memoryCache.clickedVideos = map;
   await storageSet(chrome.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, map);
 }
 

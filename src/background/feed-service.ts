@@ -172,11 +172,37 @@ function ensureRuntimeState(
   return runtimeMap[groupId];
 }
 
-function calcUnreadCount(videos: VideoItem[], lastReadAt?: number): number {
-  if (!lastReadAt) {
-    return videos.length;
+/**
+ * 统计分组内去重后的视频总数与未读数。
+ * 仅用于计数场景，避免为“只要计数”去做全量排序。
+ */
+function calcGroupVideoStats(
+  authorMids: number[],
+  authorCacheMap: AuthorCacheMap,
+  lastReadAt?: number
+): { totalUniqueCount: number; unreadCount: number } {
+  const bvidSet = new Set<string>();
+  let unreadCount = 0;
+  const threshold = lastReadAt ?? 0;
+  const hasReadMark = threshold > 0;
+
+  for (const mid of authorMids) {
+    const videos = authorCacheMap[mid]?.videos ?? [];
+    for (const video of videos) {
+      if (bvidSet.has(video.bvid)) {
+        continue;
+      }
+      bvidSet.add(video.bvid);
+      if (!hasReadMark || video.pubdate > threshold) {
+        unreadCount++;
+      }
+    }
   }
-  return videos.filter((video) => video.pubdate > lastReadAt).length;
+
+  return {
+    totalUniqueCount: bvidSet.size,
+    unreadCount
+  };
 }
 
 /**
@@ -379,16 +405,21 @@ export function toFeedResult(
     mixedVideos = injectFace(Array.from(deduped.values()).sort((a, b) => b.pubdate - a.pubdate));
   }
 
-  const allMixedVideos = aggregateMixedVideos(authorMids, authorCacheMap);
-  runtime.unreadCount = calcUnreadCount(allMixedVideos, runtime.lastReadAt);
+  // 时间流读取遵循 runtime 目标数量，避免一次返回过多数据导致渲染与消息传输变慢。
+  const mixedTotalBeforeLimit = mixedVideos.length;
+  const mixedLimit = Math.max(1, runtime.mixedTargetCount || settings.timelineMixedMaxCount);
+  mixedVideos = mixedVideos.slice(0, mixedLimit);
+
+  const groupStats = calcGroupVideoStats(authorMids, authorCacheMap, runtime.lastReadAt);
+  runtime.unreadCount = groupStats.unreadCount;
 
   runtime.savedMode = mode;
   runtime.savedReadMarkTs = selectedReadMarkTs;
   runtime.savedByAuthorSortByLatest = byAuthorSortEnabled;
 
-  const hasMoreForMixed = authorMids.some((mid) => authorCacheMap[mid]?.hasMore);
+  const hasMoreForMixed = mixedTotalBeforeLimit > mixedVideos.length || authorMids.some((mid) => authorCacheMap[mid]?.hasMore);
 
-  return {
+  const result: GroupFeedResult = {
     groupId: group.groupId,
     mode,
     mixedVideos,
@@ -400,6 +431,8 @@ export function toFeedResult(
     readMarkTimestamps,
     graceReadMarkTs
   };
+
+  return result;
 }
 
 export function markGroupRead(groupId: string, settings: ExtensionSettings, runtimeMap: RuntimeMap): number {
@@ -429,19 +462,20 @@ export function makeSummary(
   savedReadMarkTs?: number;
   savedByAuthorSortByLatest?: boolean;
 }> {
-  return groups.map((group) => {
+  const result = groups.map((group) => {
     const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
     const feedCache = feedCacheMap[group.groupId];
+    let unreadCount = runtime.unreadCount;
 
     if (feedCache) {
-      const mixedVideos = aggregateMixedVideos(feedCache.authorMids, authorCacheMap);
-      runtime.unreadCount = calcUnreadCount(mixedVideos, runtime.lastReadAt);
+      const groupStats = calcGroupVideoStats(feedCache.authorMids, authorCacheMap, runtime.lastReadAt);
+      unreadCount = groupStats.unreadCount;
     }
 
     return {
       groupId: group.groupId,
       title: getGroupTitle(group),
-      unreadCount: runtime.unreadCount,
+      unreadCount,
       lastRefreshAt: runtime.lastRefreshAt,
       enabled: group.enabled,
       savedMode: runtime.savedMode,
@@ -449,6 +483,8 @@ export function makeSummary(
       savedByAuthorSortByLatest: runtime.savedByAuthorSortByLatest
     };
   });
+
+  return result;
 }
 
 export function removeGroupState(groupId: string, runtimeMap: RuntimeMap, feedCacheMap: FeedCacheMap): void {

@@ -305,6 +305,7 @@ async function loadSummary(): Promise<void> {
   if (!isVirtualEntryId(activeEntryId.value) && !summaries.value.some((item) => item.groupId === activeEntryId.value)) {
     activeEntryId.value = activeGroupId.value || ENTRY_ID.SETTINGS;
   }
+
 }
 
 function collectAllBvids(): string[] {
@@ -389,7 +390,6 @@ function startPoll(maxAttempts: number): void {
 
         await markCurrentGroupRead();
         await fetchClickedVideos();
-        await loadSummary();
         return;
       }
 
@@ -657,7 +657,6 @@ async function selectEntry(entryId: string): Promise<void> {
 
   try {
     await loadFeed();
-    await loadSummary();
   } catch (error) {
     errorMsg.value = error instanceof Error ? error.message : '切换分组失败';
   }

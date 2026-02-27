@@ -5,7 +5,6 @@ import {
   appendReadMarks,
   cleanExpiredClicks,
   loadAuthorReadMarks,
-  loadAuthorVideoCacheMap,
   loadClickedVideos,
   loadFeedCacheMap,
   loadGroups,
@@ -202,8 +201,6 @@ async function handleGetGroupSummary(
   // 纯缓存读取，不再触发 API 请求；刷新由调度器 alarm 驱动
   const summaries = makeSummary(groups, settings, runtimeMap, feedCacheMap, authorCacheMap).filter((item) => item.enabled);
 
-  await saveRuntimeStateMap(runtimeMap);
-
   return {
     summaries,
     hasUnread: summaries.some((item) => item.unreadCount > 0),
@@ -266,6 +263,7 @@ async function handleGetGroupFeed(
   const readMarks = await loadAuthorReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
 
+  const runtimeBefore = JSON.stringify(runtimeMap[group.groupId] ?? null);
   const result = toFeedResult(
     group,
     request.payload.mode,
@@ -277,15 +275,21 @@ async function handleGetGroupFeed(
     selectedReadMarkTs,
     request.payload.byAuthorSortByLatest
   );
+  const runtimeAfter = JSON.stringify(runtimeMap[group.groupId] ?? null);
+  const runtimeChanged = runtimeBefore !== runtimeAfter;
 
   const missingAuthorTasks = collectMissingAuthorTasks(feedCache.authorMids, authorCacheMap);
   if (missingAuthorTasks.length > 0) {
     enqueuePriority(missingAuthorTasks);
-    await saveRuntimeStateMap(runtimeMap);
+    if (runtimeChanged) {
+      await saveRuntimeStateMap(runtimeMap);
+    }
     return { ...result, cacheStatus: 'generating' };
   }
 
-  await saveRuntimeStateMap(runtimeMap);
+  if (runtimeChanged) {
+    await saveRuntimeStateMap(runtimeMap);
+  }
 
   return { ...result, cacheStatus: 'ready' };
 }
