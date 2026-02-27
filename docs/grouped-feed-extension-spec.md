@@ -139,7 +139,6 @@ interface GroupFeedCache {
 
 | 请求 | 缓存粒度 | 缓存位置 | 过期时间 |
 |------|----------|----------|----------|
-| `getWatchHistory` | 全局单例 | 内存 | `refreshIntervalMinutes` |
 | `getMyCreatedFolders` | 全局单例 | 内存 | `refreshIntervalMinutes` |
 | `getCurrentUser` | 全局单例 | 内存 | `refreshIntervalMinutes` |
 | `getWbiKeys` | 全局单例 | 内存 | 2 分钟（固定），遇 412 自动清除重试 |

@@ -2,13 +2,15 @@
 
 ## 1. 概述
 
-为"按作者"和"时间流"模式添加已阅标记功能，解决固定显示数量导致旧视频过多、新视频显示不全的问题。同时集成 Bilibili 观看历史，展示视频的查看/观看状态。
+为"按作者"和"时间流"模式添加已阅标记功能，解决固定显示数量导致旧视频过多、新视频显示不全的问题。同时基于投稿接口返回的播放进度，展示视频的查看/观看状态。
 
 ## 2. 术语
 
 - **已阅时间点（ReadMark）**：用户手动标记的时间戳，表示"此时间点之前的视频我已经看过了"。按作者（`mid`）独立记录，跨分组共享。
-- **已查看（Clicked）**：用户在本扩展中点击过某视频链接。
-- **已观看（Watched）**：Bilibili 官方记录的观看历史，含观看进度。
+- **点击记录（Clicked）**：用户在本扩展中点击过某视频链接。
+- **播放进度（PlaybackPosition）**：投稿接口字段 `playback_position`，范围 `0-100`，表示观看进度百分比。
+- **已查看（Viewed）**：满足“点击记录命中”或“播放进度 >= 10”。
+- **已看完（Finished）**：播放进度 `>= 90`。
 
 ## 3. 功能需求
 
@@ -69,38 +71,36 @@ interface AuthorReadMark {
 
 #### 3.2.2 行为
 
-- 监听 VideoCard 组件的点击事件（`<a>` 标签）。
+- 监听 VideoCard 组件的点击事件（卡片打开视频）。
 - 点击时将 `bvid` 和当前时间戳写入存储。
-- VideoCard 上显示"已查看"标签（左上角半透明遮罩）。
+- UI 判定规则：点击记录命中后可显示"已查看"标签；若同一卡片满足"已看完"，则不显示"已查看"。
 
-### 3.3 Bilibili 观看历史集成
+### 3.3 播放进度派生状态
 
 #### 3.3.1 数据获取
 
-- 打开抽屉时，从 Bilibili API 批量拉取最近观看历史。
-- API：`/x/web-interface/history/cursor`（游标分页，按时间倒序）。
-- 拉取策略：拉取最近 7 天的记录（或最多 500 条），在内存中缓存。
-- 缓存生命周期：跟随抽屉打开/关闭，不持久化。
+- 数据来源：作者投稿接口 `/x/space/wbi/arc/search` 返回的 `playback_position` 字段。
+- 不额外请求观看历史接口，不引入额外缓存层。
 
-#### 3.3.2 数据结构
+#### 3.3.2 状态判定规则
 
 ```ts
-interface WatchedVideo {
-  bvid: string;
-  // 观看进度（秒），-1 表示已看完
-  progress: number;
-  // 视频总时长（秒）
-  duration: number;
+// playback_position 范围 0-100（百分比）
+if (playback_position >= 90) {
+  status = 'finished'; // 已看完
+} else if (playback_position >= 10) {
+  status = 'viewed'; // 自动视作已查看
+} else {
+  status = 'unviewed';
 }
-
-// 内存缓存：Map<string, WatchedVideo>（bvid -> WatchedVideo）
 ```
 
 #### 3.3.3 展示
 
-- VideoCard 底部显示观看进度条（仅当有观看记录时）。
-- 进度条样式：视频封面图底部的细条，颜色参考 Bilibili 官方风格（粉红色 `#fb7299`）。
-- 已看完的视频显示"已看完"标签。
+- VideoCard 底部显示观看进度条（`playback_position > 0` 时显示）。
+- `playback_position >= 90`：显示"已看完"标签。
+- `10 <= playback_position < 90`：可显示"已查看"标签（即使没有点击记录）。
+- 若已看完，则隐藏"已查看"标签，避免语义重复。
 
 ### 3.4 设置项变更
 
@@ -143,7 +143,6 @@ interface WatchedVideo {
 | { type: 'GET_AUTHOR_READ_MARKS'; payload: { mids: number[] } }
 | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
 | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
-| { type: 'GET_WATCH_HISTORY' }
 ```
 
 ## 6. UI 变更
@@ -158,10 +157,10 @@ interface WatchedVideo {
 
 ```
 ┌──────────────┐
-│ [已查看]     │  ← 左上角标签（如果用户点击过）
+│ [已查看]     │  ← 左上角标签（命中点击记录或播放进度 >= 10，且未已看完）
 │   封面图     │
-│ [已看完]     │  ← 右上角标签（如果 Bilibili 记录已看完）
-│ ████░░░░░░░░ │  ← 底部进度条（如果有观看记录）
+│ [已看完]     │  ← 右上角标签（播放进度 >= 90）
+│ ████░░░░░░░░ │  ← 底部进度条（播放进度 > 0）
 ├──────────────┤
 │ 视频标题     │
 │ 作者名       │
@@ -173,5 +172,5 @@ interface WatchedVideo {
 
 - 已阅时间点按作者 `mid` 存储，跨分组共享。分组 A 和 B 有同一作者时，标记已阅会同时影响两个分组。
 - 过滤逻辑在 background 的 `toFeedResult` 中执行，content script 只负责展示。
-- 观看历史在 content script 中通过消息请求 background 拉取（因为需要登录态 Cookie）。
+- 视频“已查看/已看完”状态由 `playback_position` 与点击记录共同决定，不再依赖观看历史接口。
 - 点击追踪在 content script 中直接写入 `chrome.storage.local`（content script 有权限）。
