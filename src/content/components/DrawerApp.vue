@@ -973,12 +973,14 @@ function updateByAuthorNavState(): void {
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
   let nextMid: number | null = null;
+  let measuredCount = 0;
 
   for (const author of sections) {
     const sectionEl = byAuthorSectionElements.get(author.authorMid);
     if (!sectionEl) {
       continue;
     }
+    measuredCount++;
 
     const sectionRect = sectionEl.getBoundingClientRect();
     const sectionTopPx = sectionRect.top;
@@ -1004,6 +1006,17 @@ function updateByAuthorNavState(): void {
     if (nextMid === null && sectionTopPx >= viewTopPx + 1) {
       nextMid = author.authorMid;
     }
+  }
+
+  if (measuredCount === 0) {
+    // 初始渲染时 section 引用可能尚未挂载，先稳定选第一个，下一帧再按真实可见比例重算。
+    byAuthorActiveMid.value = byAuthorActiveMid.value ?? sections[0]?.authorMid ?? null;
+    requestAnimationFrame(() => {
+      if (visible.value && mode.value === 'byAuthor') {
+        updateByAuthorNavState();
+      }
+    });
+    return;
   }
 
   if (activeMid === null) {
