@@ -115,23 +115,33 @@ function calcBatchDelay(totalTasks: number, intervalMinutes: number, batchSize: 
   return Math.max(BG_REFRESH_MIN_BATCH_DELAY_MS, Math.floor(intervalMs / batchCount));
 }
 
+function buildExistingTaskKeySet<TTask>(state: ChannelState<TTask>, keyOf: (task: TTask) => string): Set<string> {
+  const existing = new Set<string>();
+  if (state.currentTask) {
+    existing.add(keyOf(state.currentTask));
+  }
+  for (const task of state.queue) {
+    existing.add(keyOf(task));
+  }
+  return existing;
+}
+
 function dedupeAndEnqueue<TTask>(
   state: ChannelState<TTask>,
   tasks: TTask[],
   keyOf: (task: TTask) => string,
   priority: boolean
 ): number {
-  const existing = new Set<string>();
-
-  if (state.currentTask) {
-    existing.add(keyOf(state.currentTask));
+  const existing = buildExistingTaskKeySet(state, keyOf);
+  const newTasks: TTask[] = [];
+  for (const task of tasks) {
+    const key = keyOf(task);
+    if (existing.has(key)) {
+      continue;
+    }
+    existing.add(key);
+    newTasks.push(task);
   }
-
-  for (const task of state.queue) {
-    existing.add(keyOf(task));
-  }
-
-  const newTasks = tasks.filter((task) => !existing.has(keyOf(task)));
   if (newTasks.length === 0) {
     return 0;
   }
@@ -143,6 +153,43 @@ function dedupeAndEnqueue<TTask>(
   }
 
   return newTasks.length;
+}
+
+/**
+ * 调试页“立刻发起调度”使用的补齐策略：
+ * 仅补到 batchSize，不做全量入队，且按候选列表顺序（最旧优先）补齐。
+ */
+function fillQueueToBatchSize<TTask>(
+  state: ChannelState<TTask>,
+  candidates: TTask[],
+  keyOf: (task: TTask) => string,
+  batchSize: number
+): number {
+  const need = Math.max(0, batchSize - state.queue.length);
+  if (need === 0 || candidates.length === 0) {
+    return 0;
+  }
+
+  const existing = buildExistingTaskKeySet(state, keyOf);
+  const picked: TTask[] = [];
+  for (const task of candidates) {
+    const key = keyOf(task);
+    if (existing.has(key)) {
+      continue;
+    }
+    existing.add(key);
+    picked.push(task);
+    if (picked.length >= need) {
+      break;
+    }
+  }
+
+  if (picked.length === 0) {
+    return 0;
+  }
+
+  state.queue.push(...picked);
+  return picked.length;
 }
 
 async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<number | undefined> {
@@ -190,6 +237,39 @@ async function collectStaleAuthorTasks(settings: ExtensionSettings): Promise<Aut
   return stale.map(({ mid, name }) => ({ mid, name }));
 }
 
+async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
+  const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap(),
+    loadAuthorVideoCacheMap()
+  ]);
+
+  const enabledGroups = groups.filter((g) => g.enabled);
+  if (enabledGroups.length === 0) return [];
+
+  const mids = new Set<number>();
+  for (const group of enabledGroups) {
+    const cache = feedCacheMap[group.groupId];
+    if (!cache) continue;
+    for (const mid of cache.authorMids) {
+      mids.add(mid);
+    }
+  }
+
+  const oldest: Array<{ mid: number; name: string; lastFetchedAt: number }> = [];
+  for (const mid of mids) {
+    const cache = authorCacheMap[mid];
+    oldest.push({
+      mid,
+      name: cache?.name ?? String(mid),
+      lastFetchedAt: cache?.lastFetchedAt ?? 0
+    });
+  }
+
+  oldest.sort((a, b) => a.lastFetchedAt - b.lastFetchedAt);
+  return oldest.map(({ mid, name }) => ({ mid, name }));
+}
+
 async function collectStaleGroupFavTasks(settings: ExtensionSettings): Promise<GroupFavTask[]> {
   const [groups, feedCacheMap] = await Promise.all([loadGroups(), loadFeedCacheMap()]);
   const intervalMs = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10) * 60 * 1000;
@@ -210,6 +290,20 @@ async function collectStaleGroupFavTasks(settings: ExtensionSettings): Promise<G
 
   stale.sort((a, b) => a.updatedAt - b.updatedAt);
   return stale.map((item) => ({ groupId: item.groupId }));
+}
+
+async function collectOldestGroupFavTasks(): Promise<GroupFavTask[]> {
+  const [groups, feedCacheMap] = await Promise.all([loadGroups(), loadFeedCacheMap()]);
+  const oldest: Array<{ groupId: string; updatedAt: number }> = [];
+
+  for (const group of groups) {
+    if (!group.enabled) continue;
+    const cache = feedCacheMap[group.groupId];
+    oldest.push({ groupId: group.groupId, updatedAt: cache?.updatedAt ?? 0 });
+  }
+
+  oldest.sort((a, b) => a.updatedAt - b.updatedAt);
+  return oldest.map((item) => ({ groupId: item.groupId }));
 }
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
@@ -425,6 +519,30 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
   return { queued, nextAlarmAt };
 }
 
+async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
+  const settings = await loadSettings();
+  const interval = normalizeInterval(settings.backgroundRefreshIntervalMinutes, 10);
+  const batchSize = normalizeBatchSize(settings);
+
+  let nextAlarmAt: number | undefined;
+  if (options?.resetAlarmSchedule) {
+    nextAlarmAt = await resetAlarm(ALARM_NAMES.AUTHOR_VIDEO, interval);
+  }
+
+  const candidates = await collectOldestAuthorTasks();
+  const targetTotal = Math.max(batchSize, authorState.queue.length);
+  authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
+  const queued = fillQueueToBatchSize(authorState, candidates, (task) => String(task.mid), batchSize);
+  startAuthorLoopIfIdle();
+
+  if (!nextAlarmAt) {
+    const alarm = await chrome.alarms.get(ALARM_NAMES.AUTHOR_VIDEO);
+    nextAlarmAt = alarm?.scheduledTime;
+  }
+
+  return { queued, nextAlarmAt };
+}
+
 async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
   const settings = await loadSettings();
   const interval = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10);
@@ -437,6 +555,30 @@ async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean })
   const tasks = await collectStaleGroupFavTasks(settings);
   groupFavState.currentBatchDelay = calcBatchDelay(tasks.length, interval, normalizeBatchSize(settings));
   const queued = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, false);
+  startGroupFavLoopIfIdle();
+
+  if (!nextAlarmAt) {
+    const alarm = await chrome.alarms.get(ALARM_NAMES.GROUP_FAV);
+    nextAlarmAt = alarm?.scheduledTime;
+  }
+
+  return { queued, nextAlarmAt };
+}
+
+async function triggerGroupFavRoutineNow(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
+  const settings = await loadSettings();
+  const interval = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10);
+  const batchSize = normalizeBatchSize(settings);
+
+  let nextAlarmAt: number | undefined;
+  if (options?.resetAlarmSchedule) {
+    nextAlarmAt = await resetAlarm(ALARM_NAMES.GROUP_FAV, interval);
+  }
+
+  const candidates = await collectOldestGroupFavTasks();
+  const targetTotal = Math.max(batchSize, groupFavState.queue.length);
+  groupFavState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
+  const queued = fillQueueToBatchSize(groupFavState, candidates, (task) => task.groupId, batchSize);
   startGroupFavLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -460,14 +602,18 @@ export async function setupAlarm(settings: ExtensionSettings): Promise<void> {
   ]);
 }
 
+/**
+ * 调试页立即触发调度：
+ * 每个通道只补齐到 batchSize（不足时按“最旧优先”补齐），不会全量入队。
+ */
 export async function runSchedulerNow(): Promise<{
   accepted: true;
   triggeredAt: number;
   channels: Array<{ name: 'author-video' | 'group-fav'; queued: number; nextAlarmAt?: number }>;
 }> {
   const [author, groupFav] = await Promise.all([
-    triggerAuthorRoutine({ resetAlarmSchedule: true }),
-    triggerGroupFavRoutine({ resetAlarmSchedule: true })
+    triggerAuthorRoutineNow({ resetAlarmSchedule: true }),
+    triggerGroupFavRoutineNow({ resetAlarmSchedule: true })
   ]);
 
   return {

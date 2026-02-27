@@ -144,10 +144,16 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 #### 3.4.4 调试页“立刻发起调度”
 
-1. 调试页新增“立刻发起调度”按钮，点击后立即执行一次“常规定时调度同款”任务收集（仅收集当前过期任务，不做全量强刷）。
-2. 目标范围为全部通道（`author-video` + `group-fav`）。
-3. 若通道空闲则立即启动执行循环；若已在运行则只合并任务队列，不创建并行循环。
-4. 触发后必须重置该通道 alarm 的下次触发时间：`nextAlarmAt = now + 对应通道 interval`。
+1. 调试页新增“立刻发起调度”按钮，触发目标范围为全部通道（`author-video` + `group-fav`）。
+2. 每个通道执行“单次补齐调度”：本次触发仅保证该通道队列总量达到 `schedulerBatchSize`，不会把候选任务全量入队。
+3. 补齐顺序固定为：
+   - 先保留当前队列中的已有任务；
+   - 若不足 `schedulerBatchSize`，按“最旧优先”补齐候选任务（不区分是否过期）。
+4. “最旧”口径固定为：
+   - `author-video`：按 `AuthorVideoCache.lastFetchedAt` 升序（缺失缓存视为 `0`）；
+   - `group-fav`：按 `GroupFeedCache.updatedAt` 升序（缺失缓存视为 `0`）。
+5. 若通道空闲则立即启动执行循环；若已在运行则只合并任务队列，不创建并行循环。
+6. 触发后必须重置该通道 alarm 的下次触发时间：`nextAlarmAt = now + 对应通道 interval`。
 
 ### 3.5 批次与限速规则（关键约束）
 
