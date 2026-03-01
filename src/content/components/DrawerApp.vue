@@ -212,14 +212,8 @@
                       </button>
                     </div>
                     <div class="bbe-author-title-actions">
-                      <button
-                        type="button"
-                        class="bbe-author-switch bbe-author-read-switch"
-                        :class="{ active: author.hasAuthorReadMarkOverride }"
-                        @click="toggleAuthorReadMark(author)"
-                      >
-                        <span class="bbe-author-switch-dot" aria-hidden="true" />
-                        <span>{{ getAuthorReadMarkButtonText(author) }}</span>
+                      <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">
+                        标记已阅
                       </button>
                       <button
                         type="button"
@@ -886,10 +880,6 @@ function getFollowButtonText(author: AuthorFeed): string {
 
 function getAuthorIgnoreUnreadButtonText(author: AuthorFeed): string {
   return author.ignoreUnreadCount ? '不计算未读（开）' : '不计算未读';
-}
-
-function getAuthorReadMarkButtonText(author: AuthorFeed): string {
-  return author.hasAuthorReadMarkOverride ? '标记已阅（开）' : '标记已阅';
 }
 
 function getCsrfFromCookie(): string | null {
@@ -2070,14 +2060,6 @@ async function toggleAuthorIgnoreUnread(author: AuthorFeed): Promise<void> {
 async function markAuthorReadNow(author: AuthorFeed): Promise<void> {
   const nowTs = Math.floor(Date.now() / 1000);
   await setAuthorReadMark(author.authorMid, nowTs);
-}
-
-async function toggleAuthorReadMark(author: AuthorFeed): Promise<void> {
-  if (author.hasAuthorReadMarkOverride) {
-    await clearAuthorReadMark(author.authorMid);
-    return;
-  }
-  await markAuthorReadNow(author);
 }
 
 function resolveAuthorReadMarkTsByBoundaryIndex(authorMid: number, boundaryIndex: number): number {

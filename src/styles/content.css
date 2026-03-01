@@ -442,6 +442,7 @@ body.bbe-page-scroll-lock {
   display: flex;
   flex-direction: column;
   cursor: default;
+  height: 100%;
 }
 
 .bbe-card-cover img {
@@ -597,7 +598,7 @@ body.bbe-page-scroll-lock {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -620,7 +621,8 @@ body.bbe-page-scroll-lock {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
+  max-width: 360px;
   color: #1f2329;
   text-decoration: none;
 }
@@ -649,6 +651,11 @@ body.bbe-page-scroll-lock {
 .bbe-author-grid-item {
   position: relative;
   min-width: 0;
+  display: flex;
+}
+
+.bbe-author-grid-item > .bbe-card {
+  width: 100%;
 }
 
 .bbe-author-read-boundary {
@@ -725,6 +732,24 @@ body.bbe-page-scroll-lock {
   cursor: wait;
 }
 
+.bbe-author-mark-read-btn {
+  border: 1px solid #ffb9d2;
+  border-radius: 999px;
+  background: #fff3f8;
+  color: var(--bbe-theme-color);
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bbe-author-mark-read-btn:hover {
+  background: #ffe8f1;
+  border-color: #ff95bc;
+}
+
 .bbe-author-switch {
   border: 1px solid #d4dcec;
   border-radius: 999px;
@@ -761,12 +786,6 @@ body.bbe-page-scroll-lock {
 .bbe-author-switch.active .bbe-author-switch-dot {
   background: #fff;
   box-shadow: inset 0 0 0 3px currentColor;
-}
-
-.bbe-author-read-switch.active {
-  border-color: #ff9cc3;
-  background: #fff0f7;
-  color: var(--bbe-theme-color);
 }
 
 .bbe-author-ignore-switch.active {
