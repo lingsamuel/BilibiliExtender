@@ -80,9 +80,8 @@
         <div v-else-if="!feed || (mode === 'mixed' && feed.mixedVideos.length === 0)" class="bbe-empty">
           当前分组暂无投稿
         </div>
-        <div v-if="!errorMsg && !loading && feed && warningMsg" class="bbe-warning">{{ warningMsg }}</div>
-
-        <template v-if="mode === 'mixed'">
+        <template v-else-if="mode === 'mixed'">
+          <div v-if="warningMsg" class="bbe-warning">{{ warningMsg }}</div>
           <div class="bbe-mixed-layout">
             <aside
               v-if="mixedTimelineItems.length > 0"
@@ -145,7 +144,7 @@
               </template>
             </div>
           </div>
-          <div class="bbe-load-more-row">
+          <div v-if="!loading && !loadingMore && !generating" class="bbe-load-more-row">
             <button
               type="button"
               class="bbe-btn"
@@ -160,6 +159,7 @@
         </template>
 
         <template v-else>
+          <div v-if="warningMsg" class="bbe-warning">{{ warningMsg }}</div>
           <div class="bbe-by-author-layout">
             <aside
               v-if="byAuthorNavItems.length > 0"
@@ -190,32 +190,47 @@
               >
                 <h3 class="bbe-author-title">
                   <div class="bbe-author-title-main">
-                    <a
-                      class="bbe-author-link"
-                      :href="`https://space.bilibili.com/${author.authorMid}`"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
-                      <span>{{ author.authorName }}</span>
-                    </a>
-                    <button
-                      type="button"
-                      class="bbe-author-follow-btn"
-                      :class="{ followed: author.following, loading: isFollowPending(author.authorMid) }"
-                      :disabled="isFollowPending(author.authorMid)"
-                      @click="toggleAuthorFollow(author)"
-                    >
-                      {{ getFollowButtonText(author) }}
-                    </button>
-                    <button
-                      type="button"
-                      class="bbe-author-ignore-btn"
-                      :class="{ active: author.ignoreUnreadCount }"
-                      @click="toggleAuthorIgnoreUnread(author)"
-                    >
-                      {{ author.ignoreUnreadCount ? '不计数中' : '不计数' }}
-                    </button>
+                    <div class="bbe-author-title-left">
+                      <a
+                        class="bbe-author-link"
+                        :href="`https://space.bilibili.com/${author.authorMid}`"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
+                        <span v-else class="bbe-avatar bbe-avatar-placeholder" aria-hidden="true" />
+                        <span>{{ author.authorName }}</span>
+                      </a>
+                      <button
+                        type="button"
+                        class="bbe-author-follow-btn"
+                        :class="{ followed: author.following, loading: isFollowPending(author.authorMid) }"
+                        :disabled="isFollowPending(author.authorMid)"
+                        @click="toggleAuthorFollow(author)"
+                      >
+                        {{ getFollowButtonText(author) }}
+                      </button>
+                    </div>
+                    <div class="bbe-author-title-actions">
+                      <button
+                        type="button"
+                        class="bbe-author-switch bbe-author-read-switch"
+                        :class="{ active: author.hasAuthorReadMarkOverride }"
+                        @click="toggleAuthorReadMark(author)"
+                      >
+                        <span class="bbe-author-switch-dot" aria-hidden="true" />
+                        <span>{{ getAuthorReadMarkButtonText(author) }}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="bbe-author-switch bbe-author-ignore-switch"
+                        :class="{ active: author.ignoreUnreadCount }"
+                        @click="toggleAuthorIgnoreUnread(author)"
+                      >
+                        <span class="bbe-author-switch-dot" aria-hidden="true" />
+                        {{ getAuthorIgnoreUnreadButtonText(author) }}
+                      </button>
+                    </div>
                   </div>
                   <span
                     v-if="author.hasOnlyExtraOlderVideos && author.latestPubdate"
@@ -226,7 +241,7 @@
                 </h3>
                 <div class="bbe-grid bbe-author-grid">
                   <div
-                    v-for="(video, index) in author.videos"
+                    v-for="(video, index) in getAuthorVisibleVideos(author)"
                     :key="video.bvid"
                     class="bbe-author-grid-item"
                     :class="{
@@ -235,22 +250,79 @@
                     }"
                   >
                     <button
-                      v-if="isAuthorBoundaryIndex(author, index)"
+                      v-if="index > 0"
                       type="button"
                       class="bbe-author-read-boundary"
-                      :class="{ 'is-author-mark': author.hasAuthorReadMarkOverride }"
-                      title="左键设置作者已阅，右键清除"
-                      @click.stop="setAuthorReadMarkFromBoundary(author)"
-                      @contextmenu.prevent.stop="clearAuthorReadMarkFromBoundary(author)"
+                      :class="{
+                        'is-active': isAuthorBoundaryIndex(author, index),
+                        'is-author-mark': author.hasAuthorReadMarkOverride && isAuthorBoundaryIndex(author, index)
+                      }"
+                      :title="
+                        isAuthorBoundaryIndex(author, index)
+                          ? '左键设置作者已阅，右键清除'
+                          : '左键将该分界设置为作者已阅时间'
+                      "
+                      @click.stop="setAuthorReadMarkFromBoundaryIndex(author, index)"
+                      @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index)"
                     />
                     <VideoCard
                       :video="video"
                       :clicked="clickedMap[video.bvid] !== undefined"
                       :reviewed="isVideoReviewed(video)"
-                      hide-author-name
                       @click="onVideoClick"
                       @toggle-reviewed="onToggleVideoReviewed"
                     />
+                  </div>
+                </div>
+                <div v-if="shouldShowAuthorPagination(author)" class="bbe-author-pagination">
+                  <div class="bbe-author-pagination-btns">
+                    <button
+                      type="button"
+                      class="bbe-author-pagination-btn bbe-author-pagination-btn-side"
+                      :disabled="isAuthorPageLoading(author.authorMid) || getAuthorCurrentPage(author) <= 1"
+                      @click="goToAuthorPage(author, getAuthorCurrentPage(author) - 1)"
+                    >
+                      上一页
+                    </button>
+                    <template v-for="(pagerItem, pagerIndex) in getAuthorPagerItems(author)" :key="`${author.authorMid}-${pagerIndex}-${pagerItem}`">
+                      <button
+                        v-if="typeof pagerItem === 'number'"
+                        type="button"
+                        class="bbe-author-pagination-btn bbe-author-pagination-btn-num"
+                        :class="{ active: pagerItem === getAuthorCurrentPage(author) }"
+                        :disabled="isAuthorPageLoading(author.authorMid)"
+                        @click="goToAuthorPage(author, pagerItem)"
+                      >
+                        {{ pagerItem }}
+                      </button>
+                      <span v-else class="bbe-author-pagination-more">...</span>
+                    </template>
+                    <button
+                      type="button"
+                      class="bbe-author-pagination-btn bbe-author-pagination-btn-side"
+                      :disabled="
+                        isAuthorPageLoading(author.authorMid) ||
+                        getAuthorCurrentPage(author) >= getAuthorTotalPages(author)
+                      "
+                      @click="goToAuthorPage(author, getAuthorCurrentPage(author) + 1)"
+                    >
+                      下一页
+                    </button>
+                  </div>
+                  <div class="bbe-author-pagination-go">
+                    <span class="bbe-author-pagination-go-count">
+                      共 {{ getAuthorTotalPages(author) }} 页 / {{ getAuthorTotalCount(author) }} 个，跳至
+                    </span>
+                    <input
+                      type="number"
+                      class="bbe-author-pagination-go-input"
+                      min="1"
+                      :max="getAuthorTotalPages(author)"
+                      :value="getAuthorJumpPageInput(author.authorMid)"
+                      @input="onAuthorPageJumpInput(author.authorMid, $event)"
+                      @keydown.enter.prevent="submitAuthorPageJump(author)"
+                    />
+                    <span class="bbe-author-pagination-go-page">页</span>
                   </div>
                 </div>
               </section>
@@ -265,7 +337,13 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue';
-import { EXTENSION_EVENT, POLL_INTERVAL_MS, POLL_MAX_REFRESHING, VIRTUAL_GROUP_ID } from '@/shared/constants';
+import {
+  AUTHOR_VIDEOS_PAGE_SIZE,
+  EXTENSION_EVENT,
+  POLL_INTERVAL_MS,
+  POLL_MAX_REFRESHING,
+  VIRTUAL_GROUP_ID
+} from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
 import type { AuthorFeed, GroupFeedResult, GroupSummary, OverviewFilterKey, VideoItem, ViewMode } from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
@@ -378,6 +456,9 @@ const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
 const reviewedOverrideMap = ref<Record<string, boolean>>({});
 const followPendingMap = ref<Record<number, boolean>>({});
+const byAuthorPageMap = ref<Record<number, number>>({});
+const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
+const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
 const mixedDaySectionElements = new Map<string, HTMLElement>();
 const mixedSectionsRef = ref<HTMLElement | null>(null);
 const mixedDayInViewMap = ref<Record<string, boolean>>({});
@@ -588,6 +669,180 @@ const byAuthorFeeds = computed<AuthorFeed[]>(() => {
     .map((item) => item.author);
 });
 
+const isByAuthorPaginationEnabled = computed(
+  () => mode.value === 'byAuthor' && selectedOverviewFilter.value === 'none' && selectedReadMarkTs.value === 0
+);
+
+function getAuthorApiPageSize(author: AuthorFeed): number {
+  return Math.max(1, Number(author.apiPageSize) || feed.value?.byAuthorPageSize || AUTHOR_VIDEOS_PAGE_SIZE);
+}
+
+function getAuthorTotalPages(author: AuthorFeed): number {
+  const pageSize = getAuthorApiPageSize(author);
+  const cachedMaxPn = Math.max(1, Number(author.maxCachedPn) || 1);
+  const cachedPageByVideoCount = Math.max(1, Math.ceil(author.videos.length / pageSize));
+  const knownTotalCount = Number(author.totalVideoCount);
+  if (Number.isFinite(knownTotalCount) && knownTotalCount >= 0) {
+    return Math.max(1, Math.ceil(knownTotalCount / pageSize));
+  }
+  if (author.hasMorePages) {
+    return Math.max(cachedMaxPn + 1, cachedPageByVideoCount);
+  }
+  return Math.max(cachedMaxPn, cachedPageByVideoCount);
+}
+
+function getAuthorTotalCount(author: AuthorFeed): number {
+  const knownTotalCount = Number(author.totalVideoCount);
+  if (Number.isFinite(knownTotalCount) && knownTotalCount >= 0) {
+    return Math.max(author.videos.length, Math.floor(knownTotalCount));
+  }
+  return Math.max(author.videos.length, getAuthorTotalPages(author) * getAuthorApiPageSize(author));
+}
+
+function getAuthorCurrentPage(author: AuthorFeed): number {
+  const raw = Number(byAuthorPageMap.value[author.authorMid]) || 1;
+  const totalPages = getAuthorTotalPages(author);
+  return Math.min(totalPages, Math.max(1, raw));
+}
+
+function normalizeVideoSourcePn(video: VideoItem): number {
+  return Math.max(1, Number(video.meta?.sourcePn) || 1);
+}
+
+const byAuthorVisibleVideosMap = computed<Record<number, VideoItem[]>>(() => {
+  const result: Record<number, VideoItem[]> = {};
+  for (const author of byAuthorFeeds.value) {
+    if (!isByAuthorPaginationEnabled.value) {
+      result[author.authorMid] = author.videos;
+      continue;
+    }
+    const currentPage = getAuthorCurrentPage(author);
+    result[author.authorMid] = author.videos.filter((video) => normalizeVideoSourcePn(video) === currentPage);
+  }
+  return result;
+});
+
+function getAuthorVisibleVideos(author: AuthorFeed): VideoItem[] {
+  return byAuthorVisibleVideosMap.value[author.authorMid] ?? [];
+}
+
+function shouldShowAuthorPagination(author: AuthorFeed): boolean {
+  return isByAuthorPaginationEnabled.value && getAuthorTotalPages(author) > 1;
+}
+
+function isAuthorPageLoading(authorMid: number): boolean {
+  return byAuthorPageLoadingMap.value[authorMid] === true;
+}
+
+function setAuthorPageLoading(authorMid: number, loadingState: boolean): void {
+  if (loadingState) {
+    byAuthorPageLoadingMap.value = { ...byAuthorPageLoadingMap.value, [authorMid]: true };
+    return;
+  }
+  const next = { ...byAuthorPageLoadingMap.value };
+  delete next[authorMid];
+  byAuthorPageLoadingMap.value = next;
+}
+
+function getAuthorJumpPageInput(authorMid: number): string {
+  return byAuthorPageJumpInputMap.value[authorMid] ?? '';
+}
+
+function onAuthorPageJumpInput(authorMid: number, event: Event): void {
+  const input = event.target as HTMLInputElement;
+  byAuthorPageJumpInputMap.value = {
+    ...byAuthorPageJumpInputMap.value,
+    [authorMid]: input.value
+  };
+}
+
+function clearAuthorPageJumpInput(authorMid: number): void {
+  const next = { ...byAuthorPageJumpInputMap.value };
+  delete next[authorMid];
+  byAuthorPageJumpInputMap.value = next;
+}
+
+function getAuthorPagerItems(author: AuthorFeed): Array<number | '...'> {
+  const total = getAuthorTotalPages(author);
+  const current = getAuthorCurrentPage(author);
+  if (total <= 9) {
+    return Array.from({ length: total }, (_, index) => index + 1);
+  }
+
+  const items: Array<number | '...'> = [1];
+  const start = Math.max(2, current - 2);
+  const end = Math.min(total - 1, current + 2);
+  if (start > 2) {
+    items.push('...');
+  }
+  for (let pn = start; pn <= end; pn++) {
+    items.push(pn);
+  }
+  if (end < total - 1) {
+    items.push('...');
+  }
+  items.push(total);
+  return items;
+}
+
+async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<void> {
+  if (!isByAuthorPaginationEnabled.value || isAuthorPageLoading(author.authorMid)) {
+    return;
+  }
+
+  const totalPages = getAuthorTotalPages(author);
+  const nextPage = Math.min(totalPages, Math.max(1, Math.floor(targetPage)));
+  const currentPage = getAuthorCurrentPage(author);
+  if (nextPage === currentPage) {
+    return;
+  }
+
+  setAuthorPageLoading(author.authorMid, true);
+  try {
+    // 作者分页按“页号”按需补齐：仅当目标页尚未缓存时才触发后台 Burst 拉取，避免每次翻页都全量重载。
+    const cachedPages = new Set(author.cachedPagePns ?? []);
+    const hasCachedPage = cachedPages.has(nextPage);
+    if (!hasCachedPage) {
+      const resp = await sendMessage({
+        type: 'ENSURE_AUTHOR_PAGE',
+        payload: {
+          mid: author.authorMid,
+          pn: nextPage
+        }
+      });
+      if (!resp.ok || !resp.data) {
+        throw new Error(resp.error ?? '作者分页加载失败');
+      }
+      if (resp.data.warningMsg) {
+        warningMsg.value = resp.data.warningMsg;
+      }
+      await reloadFeedWithReadMark({ silent: true });
+    }
+
+    byAuthorPageMap.value = {
+      ...byAuthorPageMap.value,
+      [author.authorMid]: nextPage
+    };
+    clearAuthorPageJumpInput(author.authorMid);
+    await nextTick();
+    updateByAuthorNavState();
+  } catch (error) {
+    errorMsg.value = error instanceof Error ? error.message : '作者分页切换失败';
+  } finally {
+    setAuthorPageLoading(author.authorMid, false);
+  }
+}
+
+async function submitAuthorPageJump(author: AuthorFeed): Promise<void> {
+  const rawInput = byAuthorPageJumpInputMap.value[author.authorMid];
+  const parsed = Number(rawInput);
+  if (!Number.isFinite(parsed)) {
+    clearAuthorPageJumpInput(author.authorMid);
+    return;
+  }
+  await goToAuthorPage(author, Math.floor(parsed));
+}
+
 const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
   if (mode.value !== 'byAuthor') {
     return [];
@@ -627,6 +882,14 @@ function getFollowButtonText(author: AuthorFeed): string {
     return `已关注 ${followerText}`;
   }
   return `+ 关注 ${followerText}`;
+}
+
+function getAuthorIgnoreUnreadButtonText(author: AuthorFeed): string {
+  return author.ignoreUnreadCount ? '不计算未读（开）' : '不计算未读';
+}
+
+function getAuthorReadMarkButtonText(author: AuthorFeed): string {
+  return author.hasAuthorReadMarkOverride ? '标记已阅（开）' : '标记已阅';
 }
 
 function getCsrfFromCookie(): string | null {
@@ -792,7 +1055,12 @@ const graceLabel = computed(() => {
 });
 
 const isAllGroupEntry = computed(() => activeGroupId.value === ENTRY_ID.ALL);
-const markReadButtonText = computed(() => (isAllGroupEntry.value ? '全部已阅' : '标记已阅'));
+const markReadButtonText = computed(() => {
+  if (isAllGroupEntry.value) {
+    return '标记全部分组为已阅';
+  }
+  return mode.value === 'byAuthor' ? '全部标记已阅' : '标记已阅';
+});
 
 const currentSettings = ref<{ defaultReadMarkDays: number } | null>(null);
 const globalUnreadCount = ref(0);
@@ -924,6 +1192,46 @@ function resetMixedTimelineState(): void {
 
 function resetByAuthorNavState(): void {
   byAuthorActiveMid.value = null;
+}
+
+function resetAuthorPaginationState(): void {
+  byAuthorPageMap.value = {};
+  byAuthorPageJumpInputMap.value = {};
+  byAuthorPageLoadingMap.value = {};
+}
+
+function syncAuthorPaginationStateWithFeed(): void {
+  if (!feed.value) {
+    resetAuthorPaginationState();
+    return;
+  }
+
+  const mids = new Set(feed.value.videosByAuthor.map((author) => author.authorMid));
+  const nextPageMap: Record<number, number> = {};
+  for (const author of feed.value.videosByAuthor) {
+    const current = Number(byAuthorPageMap.value[author.authorMid]) || 1;
+    const totalPages = getAuthorTotalPages(author);
+    nextPageMap[author.authorMid] = Math.min(totalPages, Math.max(1, current));
+  }
+  byAuthorPageMap.value = nextPageMap;
+
+  const nextJumpMap: Record<number, string> = {};
+  for (const [rawMid, rawValue] of Object.entries(byAuthorPageJumpInputMap.value)) {
+    const mid = Number(rawMid);
+    if (mids.has(mid)) {
+      nextJumpMap[mid] = rawValue;
+    }
+  }
+  byAuthorPageJumpInputMap.value = nextJumpMap;
+
+  const nextLoadingMap: Record<number, boolean> = {};
+  for (const [rawMid, rawLoading] of Object.entries(byAuthorPageLoadingMap.value)) {
+    const mid = Number(rawMid);
+    if (mids.has(mid) && rawLoading === true) {
+      nextLoadingMap[mid] = true;
+    }
+  }
+  byAuthorPageLoadingMap.value = nextLoadingMap;
 }
 
 function disconnectMixedTimelineResizeObserver(): void {
@@ -1232,6 +1540,7 @@ function startPoll(maxAttempts: number): void {
         generating.value = false;
         refreshing.value = false;
         feed.value = resp.data;
+        syncAuthorPaginationStateWithFeed();
         applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
@@ -1262,6 +1571,7 @@ function startPoll(maxAttempts: number): void {
       // 刷新尚未完成时，若已出现部分可展示内容，则先展示增量结果并继续轮询。
       if (hasRenderableFeedData(resp.data)) {
         feed.value = resp.data;
+        syncAuthorPaginationStateWithFeed();
         applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
@@ -1274,9 +1584,6 @@ function startPoll(maxAttempts: number): void {
 
 async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
   if (!activeGroupId.value) {
-    return;
-  }
-  if (activeGroupId.value === ENTRY_ID.ALL) {
     return;
   }
 
@@ -1311,11 +1618,13 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
       generating.value = true;
       if (hasRenderableFeedData(resp.data)) {
         feed.value = resp.data;
+        syncAuthorPaginationStateWithFeed();
         applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
       } else {
         feed.value = null;
+        syncAuthorPaginationStateWithFeed();
         applyFeedWarning(null);
       }
       await loadSummary();
@@ -1333,6 +1642,7 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
     } else {
       feed.value = resp.data;
     }
+    syncAuthorPaginationStateWithFeed();
     applyFeedWarning(resp.data);
 
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
@@ -1388,6 +1698,7 @@ async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<v
     }
 
     feed.value = resp.data;
+    syncAuthorPaginationStateWithFeed();
     applyFeedWarning(resp.data);
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
@@ -1405,6 +1716,7 @@ async function openDrawer(): Promise<void> {
   clickedMap.value = {};
   reviewedOverrideMap.value = {};
   followPendingMap.value = {};
+  resetAuthorPaginationState();
   userExplicitlyChoseAll = false;
   warningMsg.value = '';
 
@@ -1462,6 +1774,7 @@ async function openDrawer(): Promise<void> {
 function closeDrawer(): void {
   visible.value = false;
   followPendingMap.value = {};
+  resetAuthorPaginationState();
   warningMsg.value = '';
 }
 
@@ -1522,6 +1835,7 @@ async function selectEntry(entryId: string): Promise<void> {
 
   activeGroupId.value = entryId;
   followPendingMap.value = {};
+  resetAuthorPaginationState();
   userExplicitlyChoseAll = false;
   warningMsg.value = '';
 
@@ -1574,6 +1888,7 @@ async function onReadFilterChange(): Promise<void> {
   selectedReadMarkTs.value = parsed.readMarkTs;
   selectedOverviewFilter.value = parsed.overviewFilter;
   userExplicitlyChoseAll = selectedOverviewFilter.value === 'none' && selectedReadMarkTs.value === 0;
+  resetAuthorPaginationState();
   try {
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
@@ -1593,19 +1908,20 @@ const byAuthorBoundaryIndexMap = computed<Record<number, number>>(() => {
   const result: Record<number, number> = {};
   for (const author of byAuthorFeeds.value) {
     const boundaryTs = author.effectiveReadBoundaryTs ?? 0;
+    const visibleVideos = getAuthorVisibleVideos(author);
     if (boundaryTs <= 0) {
       result[author.authorMid] = -1;
       continue;
     }
-    if (author.hasOnlyExtraOlderVideos || author.videos.length < 2) {
+    if (author.hasOnlyExtraOlderVideos || visibleVideos.length < 2) {
       result[author.authorMid] = -1;
       continue;
     }
 
     let boundaryIndex = -1;
-    for (let index = 1; index < author.videos.length; index++) {
+    for (let index = 1; index < visibleVideos.length; index++) {
       // 视频按发布时间倒序排列：第一次从“>=边界”跨到“<边界”的位置就是分界点。
-      if (author.videos[index - 1].pubdate >= boundaryTs && author.videos[index].pubdate < boundaryTs) {
+      if (visibleVideos[index - 1].pubdate >= boundaryTs && visibleVideos[index].pubdate < boundaryTs) {
         boundaryIndex = index;
         break;
       }
@@ -1629,7 +1945,7 @@ async function markCurrentGroupRead(): Promise<void> {
     if (activeGroupId.value === ENTRY_ID.ALL) {
       const resp = await sendMessage({ type: 'MARK_ALL_GROUPS_READ' });
       if (!resp.ok || !resp.data) {
-        throw new Error(resp.error ?? '全部已阅失败');
+        throw new Error(resp.error ?? '标记全部分组为已阅失败');
       }
       if (resp.data.readMarkTs > 0) {
         selectedReadMarkTs.value = resp.data.readMarkTs;
@@ -1712,18 +2028,23 @@ function isVideoReviewed(video: VideoItem): boolean {
 }
 
 async function onToggleVideoReviewed(payload: { bvid: string; reviewed: boolean }): Promise<void> {
+  const prevMap = reviewedOverrideMap.value;
   reviewedOverrideMap.value = {
     ...reviewedOverrideMap.value,
     [payload.bvid]: payload.reviewed
   };
   try {
-    await sendMessage({
+    const resp = await sendMessage({
       type: 'SET_VIDEO_REVIEWED',
       payload
     });
-    await loadSummary();
-  } catch {
-    // 静默失败：本地先行覆盖，下一轮拉取会纠正
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '设置视频已阅状态失败');
+    }
+    await reloadFeedWithReadMark({ silent: true });
+  } catch (error) {
+    reviewedOverrideMap.value = prevMap;
+    errorMsg.value = error instanceof Error ? error.message : '设置视频已阅状态失败';
   }
 }
 
@@ -1738,16 +2059,53 @@ async function toggleAuthorIgnoreUnread(author: AuthorFeed): Promise<void> {
       }
     });
     if (!resp.ok || !resp.data) {
-      throw new Error(resp.error ?? '设置作者计数开关失败');
+      throw new Error(resp.error ?? '设置作者不计算未读失败');
     }
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '设置作者计数开关失败';
+    errorMsg.value = error instanceof Error ? error.message : '设置作者不计算未读失败';
   }
 }
 
-async function setAuthorReadMarkFromBoundary(author: AuthorFeed): Promise<void> {
-  const readMarkTs = author.effectiveReadBoundaryTs ?? 0;
+async function markAuthorReadNow(author: AuthorFeed): Promise<void> {
+  const nowTs = Math.floor(Date.now() / 1000);
+  await setAuthorReadMark(author.authorMid, nowTs);
+}
+
+async function toggleAuthorReadMark(author: AuthorFeed): Promise<void> {
+  if (author.hasAuthorReadMarkOverride) {
+    await clearAuthorReadMark(author.authorMid);
+    return;
+  }
+  await markAuthorReadNow(author);
+}
+
+function resolveAuthorReadMarkTsByBoundaryIndex(authorMid: number, boundaryIndex: number): number {
+  const visibleVideos = byAuthorVisibleVideosMap.value[authorMid] ?? [];
+  if (boundaryIndex <= 0 || boundaryIndex >= visibleVideos.length) {
+    return 0;
+  }
+
+  const newerVideo = visibleVideos[boundaryIndex - 1];
+  const olderVideo = visibleVideos[boundaryIndex];
+  const newerTs = newerVideo?.pubdate ?? 0;
+  const olderTs = olderVideo?.pubdate ?? 0;
+  if (newerTs <= 0 || olderTs <= 0) {
+    return 0;
+  }
+
+  /**
+   * 目标是把边界稳定放在“newer 与 older”之间：
+   * - 常规情况下取 olderTs + 1，可保证 newer >= 边界 且 older < 边界；
+   * - 当出现同秒投稿等无法精确切分的情况，退化为 newerTs，至少保证可落盘为作者级已阅点。
+   */
+  if (olderTs >= newerTs) {
+    return newerTs;
+  }
+  return Math.min(newerTs, olderTs + 1);
+}
+
+async function setAuthorReadMark(authorMid: number, readMarkTs: number): Promise<void> {
   if (readMarkTs <= 0) {
     return;
   }
@@ -1756,7 +2114,7 @@ async function setAuthorReadMarkFromBoundary(author: AuthorFeed): Promise<void> 
     const resp = await sendMessage({
       type: 'SET_AUTHOR_READ_MARK',
       payload: {
-        mid: author.authorMid,
+        mid: authorMid,
         readMarkTs
       }
     });
@@ -1769,15 +2127,31 @@ async function setAuthorReadMarkFromBoundary(author: AuthorFeed): Promise<void> 
   }
 }
 
+async function setAuthorReadMarkFromBoundaryIndex(author: AuthorFeed, boundaryIndex: number): Promise<void> {
+  const readMarkTs = resolveAuthorReadMarkTsByBoundaryIndex(author.authorMid, boundaryIndex);
+  await setAuthorReadMark(author.authorMid, readMarkTs);
+}
+
+function onAuthorBoundaryContextMenu(author: AuthorFeed, boundaryIndex: number): void {
+  if (!isAuthorBoundaryIndex(author, boundaryIndex)) {
+    return;
+  }
+  void clearAuthorReadMarkFromBoundary(author);
+}
+
 async function clearAuthorReadMarkFromBoundary(author: AuthorFeed): Promise<void> {
   if (!author.hasAuthorReadMarkOverride) {
     return;
   }
+  await clearAuthorReadMark(author.authorMid);
+}
+
+async function clearAuthorReadMark(authorMid: number): Promise<void> {
   try {
     const resp = await sendMessage({
       type: 'CLEAR_AUTHOR_READ_MARK',
       payload: {
-        mid: author.authorMid
+        mid: authorMid
       }
     });
     if (!resp.ok || !resp.data) {
@@ -1916,12 +2290,13 @@ watch(visible, (nextVisible) => {
   if (!nextVisible) {
     resetMixedTimelineState();
     resetByAuthorNavState();
+    resetAuthorPaginationState();
     disconnectMixedTimelineResizeObserver();
   }
 });
 
 watch(
-  [mixedDayGroups, byAuthorNavItems, mode, visible, byAuthorSortByLatest],
+  [mixedDayGroups, byAuthorNavItems, byAuthorVisibleVideosMap, mode, visible, byAuthorSortByLatest],
   async () => {
     if (!visible.value) {
       disconnectMixedTimelineResizeObserver();

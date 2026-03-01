@@ -207,6 +207,7 @@ batchDelay = max(MIN_BATCH_DELAY_MS, intervalMinutes * 60 * 1000 / batchCount);
 5. 失败重试：任务失败后先放入 `batchFailed`，在当前批次结束时追加到队列尾部，进入下一批或下次 alarm 重试。
 6. 优先入列：用户触发的优先任务插入队首；去重键冲突时跳过重复任务。
 7. 运行中告警：若某通道正在运行，alarm 触发时不重复创建新执行循环，只补充队列。
+8. 全局冷却门：每次从任一通道真正发起请求前，都必须先检查 `now >= globalNextAllowedAt`；若未到时刻则统一等待剩余时间后再执行请求。
 
 执行循环约束如下：
 
@@ -232,15 +233,29 @@ queue.push(...batchFailed); // 留给下一批或下次 alarm
 persist();
 ```
 
-### 3.6 Burst 模式（作者优先补页）
+### 3.6 全局 WBI 风控冷却（新增）
 
-#### 3.6.1 触发条件
+该机制独立于通道批次节奏，作用范围覆盖全部请求入口（`author-video`、`group-fav`、`burst`）：
+
+1. 触发条件（唯一）：
+   - 作者投稿 WBI 接口出现 `WBI 签名过期`；
+   - 且该请求已经执行过“清除 WBI key 后重试一次”仍失败（即 `getUploaderVideos` 抛出 `WbiExpiredError`）。
+2. 一旦触发，调度器判定为 `Ratelimit` 超限，设置 `globalNextAllowedAt = now + 60s`。
+3. 在 `globalNextAllowedAt` 到达前，任意通道都不得发起下一次请求（包括 `group-fav` 通道）。
+4. 若冷却结束后再次触发同类错误，重复设置 `globalNextAllowedAt = now + 60s`；按固定 1 分钟阶梯持续退避，直到恢复。
+5. 除上述 `WbiExpiredError` 外，其他错误保持现有处理，不触发全局冷却。
+6. 对“前台同步等待”的 Burst `failFast` 请求：仍可立即向前台返回失败，但同时必须写入全局冷却，防止下一次请求立即发出。
+7. 全局冷却不重置 alarm 周期；仅延后实际请求执行时机。
+
+### 3.7 Burst 模式（作者优先补页）
+
+#### 3.7.1 触发条件
 
 1. 任意作者 `mid` 在 `AuthorVideoCache` 中不存在时，触发 Burst 入列（优先 `pn=1`）。
 2. 时间流构造命中分页边界时，触发 Burst 入列（按 `nextPn` 补页）。
 3. Burst 去重键使用 `(mid, pn)`；同一作者同一页避免重复堆积。
 
-#### 3.6.2 优先级与阻塞规则
+#### 3.7.2 优先级与阻塞规则
 
 1. Burst 优先级高于常规任务。
 2. Burst 队列非空时，不执行任意通道的常规 alarm 调度（`author-video` / `group-fav` 都暂停常规执行）。
@@ -249,7 +264,7 @@ persist();
 5. Burst 队列清空后，恢复常规调度；仅当 Burst 期间实际拦截过某通道 alarm 时，才补偿触发对应通道的一次常规任务收集（不重置 alarm）。
 6. “加载更多命中边界”触发的 Burst 任务必须插入队首（head），优先于已有 Burst 队列任务（包括补第二页）。
 
-#### 3.6.3 执行语义
+#### 3.7.3 执行语义
 
 1. Burst 仍然串行执行（一次一个作者）。
 2. 成功路径仍使用 `INTRA_DELAY_MS`（与常规任务一致），且为“无条件冷却”：每次任务成功后都要记录下一次可执行时间（`nextAllowedAt = now + INTRA_DELAY_MS`），即使此刻队列为空也不例外。
@@ -258,6 +273,7 @@ persist();
 5. Burst 每次取任务前都必须先检查 `now >= nextAllowedAt`，不满足则等待剩余时间，避免“上一条刚完成、下一条立刻入队”导致的无间隔请求。
 6. 失败任务留在队首，冷却结束后优先重试；直到 Burst 队列为空才退出 Burst 模式。
 7. 对前台同步等待的 Burst 请求：若任务失败，需把失败状态回传给构造器，构造器以 best-effort 返回当前缓存结果。
+8. Burst 发起请求前同样受“全局冷却门”约束：需同时满足 `now >= nextAllowedAt` 与 `now >= globalNextAllowedAt`。
 
 执行循环约束如下：
 
@@ -274,6 +290,24 @@ while (burstQueue not empty) {
   }
 }
 ```
+
+### 3.8 调试页可观测性（新增）
+
+调试页 `GET_SCHEDULER_STATUS` 需新增“全局冷却”状态块，用于定位 WBI 风控退避：
+
+```ts
+globalCooldown: {
+  active: boolean;
+  nextAllowedAt: number; // 0 表示无冷却
+  reason: 'wbi-ratelimit' | null;
+  lastTriggeredAt?: number;
+}
+```
+
+展示要求：
+1. 显示当前是否处于全局冷却中。
+2. 显示下一次允许请求时间与剩余秒数。
+3. 显示最近一次触发时间与触发原因（固定为 `wbi-ratelimit`）。
 
 ## 4. 消息协议
 

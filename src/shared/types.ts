@@ -75,6 +75,16 @@ export interface AuthorFeed {
   hasAuthorReadMarkOverride?: boolean;
   // 当前作者用于分割线与过滤的有效边界（秒级时间戳，0 表示无边界）。
   effectiveReadBoundaryTs?: number;
+  // 该作者当前缓存里已拉取到的最大页码（至少为 1）。
+  maxCachedPn?: number;
+  // 当前已实际拉取并写入缓存的页码集合（可能不连续）。
+  cachedPagePns?: number[];
+  // 该作者是否仍有后续分页可拉取。
+  hasMorePages?: boolean;
+  // 作者投稿总量（来自投稿接口 page.count）。
+  totalVideoCount?: number;
+  // 作者投稿接口页大小（来自投稿接口 page.ps）。
+  apiPageSize?: number;
   videos: VideoItem[];
   // 当前筛选结果是否“仅由已阅前额外视频构成”（没有已阅基线之后的新视频）
   hasOnlyExtraOlderVideos?: boolean;
@@ -97,6 +107,8 @@ export interface GroupFeedResult {
   graceReadMarkTs: number;
   // 构造过程中的降级提示（如某些补页失败），前台可展示但不阻断内容渲染。
   warningMsg?: string;
+  // 按作者模式分页大小（与投稿接口 ps 保持一致）。
+  byAuthorPageSize: number;
 }
 
 export interface GroupSummary {
@@ -136,6 +148,10 @@ export interface AuthorVideoCache {
   maxCachedPn: number;
   nextPn: number;
   hasMore: boolean;
+  // 投稿接口返回的作者视频总量（page.count）
+  totalCount?: number;
+  // 投稿接口返回的页大小（page.ps）
+  apiPageSize?: number;
   firstPageFetchedAt: number;
   secondPageFetchedAt?: number;
   lastFetchedAt: number;

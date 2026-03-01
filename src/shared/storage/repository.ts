@@ -247,6 +247,10 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
       rawCache.secondPageFetchedAt && rawCache.secondPageFetchedAt > 0
         ? rawCache.secondPageFetchedAt
         : pageState[2]?.fetchedAt;
+    const totalCountRaw = Number(rawCache.totalCount);
+    const totalCount = Number.isFinite(totalCountRaw) && totalCountRaw >= 0 ? Math.floor(totalCountRaw) : undefined;
+    const apiPageSizeRaw = Number(rawCache.apiPageSize);
+    const apiPageSize = Number.isFinite(apiPageSizeRaw) && apiPageSizeRaw > 0 ? Math.floor(apiPageSizeRaw) : undefined;
 
     normalized[mid] = {
       ...rawCache,
@@ -256,6 +260,8 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
       maxCachedPn,
       nextPn,
       hasMore: Boolean(rawCache.hasMore),
+      totalCount,
+      apiPageSize,
       firstPageFetchedAt,
       secondPageFetchedAt,
       lastFetchedAt

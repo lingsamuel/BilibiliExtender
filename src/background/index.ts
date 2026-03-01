@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
+import { AUTHOR_VIDEOS_PAGE_SIZE, DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import { getMyCreatedFolders, getUserCard, modifyUserRelation } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
@@ -385,6 +385,7 @@ async function handleGetGroupFeed(
       hasMoreForMixed: false,
       readMarkTimestamps: [],
       graceReadMarkTs: 0,
+      byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE,
       cacheStatus: 'generating'
     };
   }
@@ -466,7 +467,12 @@ async function handleGetGroupFeed(
       );
 
       if (burstResult.failed.length > 0) {
-        const failedNames = burstResult.failed.map((item) => `${item.mid}(p${item.pn})`);
+        const taskNameMap = new Map(diagnostics.boundaryTasks.map((task) => [`${task.mid}:${task.pn}`, task.name]));
+        const failedNames = burstResult.failed.map((item) => {
+          const key = `${item.mid}:${item.pn}`;
+          const displayName = taskNameMap.get(key)?.trim() || authorCacheMap[item.mid]?.name?.trim() || String(item.mid);
+          return `${displayName}(p${item.pn})`;
+        });
         warningMessages.push(`部分作者补页失败: ${failedNames.join(', ')}`);
       }
 
@@ -711,6 +717,66 @@ async function handleClearAuthorReadMark(
   return { preference };
 }
 
+async function handleEnsureAuthorPage(
+  request: Extract<MessageRequest, { type: 'ENSURE_AUTHOR_PAGE' }>
+): Promise<ResponseMap['ENSURE_AUTHOR_PAGE']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  const pn = Math.max(1, Number(request.payload.pn) || 1);
+  if (!mid) {
+    throw new Error('作者参数不合法');
+  }
+
+  let authorCacheMap = await getAuthorCacheSnapshot();
+  let cache = authorCacheMap[mid];
+  const name = cache?.name?.trim() || String(mid);
+
+  // 只补目标页：前台按页号直接跳转时，使用 Burst 队首同步等待该页完成，避免“级联拉满中间页”。
+  if (!cache || !cache.pageState[pn]) {
+    if (cache && cache.hasMore === false && pn > cache.maxCachedPn) {
+      return {
+        mid,
+        pn,
+        maxCachedPn: cache.maxCachedPn,
+        hasMore: false,
+        totalCount: cache.totalCount,
+        pageSize: cache.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE,
+        warningMsg: '该作者没有更多分页数据'
+      };
+    }
+
+    const burstResult = await enqueueBurstHeadAndWait([
+      {
+        mid,
+        name,
+        pn,
+        reason: 'load-more-boundary',
+        failFast: true
+      }
+    ]);
+
+    if (burstResult.failed.length > 0) {
+      const failed = burstResult.failed[0];
+      throw new Error(failed?.error || '作者分页加载失败');
+    }
+
+    authorCacheMap = await getAuthorCacheSnapshot();
+    cache = authorCacheMap[mid];
+  }
+
+  if (!cache) {
+    throw new Error('作者缓存不存在');
+  }
+
+  return {
+    mid,
+    pn,
+    maxCachedPn: cache.maxCachedPn,
+    hasMore: cache.hasMore === true,
+    totalCount: cache.totalCount,
+    pageSize: cache.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE
+  };
+}
+
 async function handleGetAuthorPreferences(
   request: Extract<MessageRequest, { type: 'GET_AUTHOR_PREFERENCES' }>
 ): Promise<ResponseMap['GET_AUTHOR_PREFERENCES']> {
@@ -800,6 +866,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleSetAuthorReadMark(request));
     case 'CLEAR_AUTHOR_READ_MARK':
       return ok(await handleClearAuthorReadMark(request));
+    case 'ENSURE_AUTHOR_PAGE':
+      return ok(await handleEnsureAuthorPage(request));
     case 'GET_AUTHOR_PREFERENCES':
       return ok(await handleGetAuthorPreferences(request));
     case 'MANUAL_REFRESH':

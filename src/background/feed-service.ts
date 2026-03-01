@@ -1,4 +1,4 @@
-import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
+import { AUTHOR_VIDEOS_PAGE_SIZE, MIXED_LOAD_INCREMENT } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
   AuthorPreference,
@@ -98,6 +98,17 @@ function mergeVideos(existing: VideoItem[], incoming: VideoItem[]): VideoItem[] 
   return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
 }
 
+function resolveMaxSourcePn(videos: VideoItem[]): number {
+  let maxPn = 1;
+  for (const video of videos) {
+    const sourcePn = Math.max(1, Number(video.meta?.sourcePn) || 1);
+    if (sourcePn > maxPn) {
+      maxPn = sourcePn;
+    }
+  }
+  return maxPn;
+}
+
 function isNumericName(value: string | undefined): boolean {
   return !!value && /^\d+$/.test(value.trim());
 }
@@ -143,7 +154,7 @@ export async function refreshAuthorCache(
   const existing = authorCacheMap[mid];
   const pn = Math.max(1, options?.pn ?? 1);
   const pageFetchedAt = Date.now();
-  const { videos, hasMore } = await getUploaderVideos(mid, pn, 20);
+  const { videos, hasMore, totalCount, pageSize } = await getUploaderVideos(mid, pn, AUTHOR_VIDEOS_PAGE_SIZE);
   const videosWithMeta = videos.map((video) => withVideoMeta(video, pn, pageFetchedAt));
   const merged = existing ? mergeVideos(existing.videos, videosWithMeta) : videosWithMeta;
 
@@ -200,10 +211,11 @@ export async function refreshAuthorCache(
 
   const inferredMaxCachedPn = Math.max(
     pn,
-    existing?.maxCachedPn ?? 1,
+    resolveMaxSourcePn(merged),
     ...Object.keys(nextPageState).map((rawPn) => Math.max(1, Number(rawPn) || 1))
   );
-  const nextPn = hasMore ? Math.max((existing?.nextPn ?? 2), pn + 1) : Math.max(pn + 1, existing?.nextPn ?? pn + 1);
+  // 统一由“当前已缓存最深页 + 1”推导下一页，避免历史 nextPn 脏值导致跳到异常深页。
+  const nextPn = Math.max(2, inferredMaxCachedPn + 1);
   const nextHasMore = pn < inferredMaxCachedPn ? Boolean(existing?.hasMore) : hasMore;
   const firstPageFetchedAt = pn === 1
     ? pageFetchedAt
@@ -224,6 +236,8 @@ export async function refreshAuthorCache(
     maxCachedPn: inferredMaxCachedPn,
     nextPn,
     hasMore: nextHasMore,
+    totalCount,
+    apiPageSize: pageSize,
     firstPageFetchedAt,
     secondPageFetchedAt,
     lastFetchedAt: pageFetchedAt
@@ -829,7 +843,15 @@ export function toFeedResult(
       following: meta?.following,
       ignoreUnreadCount: pref?.ignoreUnreadCount === true,
       hasAuthorReadMarkOverride,
-      effectiveReadBoundaryTs: overviewFilter === 'none' ? authorBoundaryTs : 0,
+      // 概览模式仍返回作者边界，供“按作者”视图显示/调整已阅分界线使用。
+      effectiveReadBoundaryTs: authorBoundaryTs,
+      maxCachedPn: authorCacheMap[mid]?.maxCachedPn ?? 1,
+      cachedPagePns: Array.from(
+        new Set(allVideos.map((video) => Math.max(1, Number(video.meta?.sourcePn) || 1)))
+      ).sort((a, b) => a - b),
+      hasMorePages: authorCacheMap[mid]?.hasMore === true,
+      totalVideoCount: authorCacheMap[mid]?.totalCount,
+      apiPageSize: authorCacheMap[mid]?.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE,
       videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),
       hasOnlyExtraOlderVideos:
         overviewFilter === 'none' &&
@@ -904,7 +926,8 @@ export function toFeedResult(
         continue;
       }
 
-      const pn = Math.max(2, cache.nextPn || cache.maxCachedPn + 1 || 2);
+      // 时间流补页只基于“当前缓存里实际存在的视频页”推进，防止继承到历史抬高的 nextPn。
+      const pn = Math.max(2, resolveMaxSourcePn(cache.videos) + 1);
       const key = `${mid}:${pn}`;
       boundaryTaskMap.set(key, {
         mid,
@@ -945,7 +968,8 @@ export function toFeedResult(
     unreadCount: runtime.unreadCount,
     hasMoreForMixed,
     readMarkTimestamps,
-    graceReadMarkTs
+    graceReadMarkTs,
+    byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE
   };
 
   return result;

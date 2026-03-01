@@ -41,6 +41,7 @@ export type MessageRequest =
   | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
   | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
+  | { type: 'ENSURE_AUTHOR_PAGE'; payload: { mid: number; pn: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
   | { type: 'MARK_ALL_GROUPS_READ' }
   | { type: 'GET_SCHEDULER_STATUS' }
@@ -163,6 +164,15 @@ export interface ResponseMap {
   SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };
   SET_AUTHOR_READ_MARK: { preference: AuthorPreference };
   CLEAR_AUTHOR_READ_MARK: { preference: AuthorPreference };
+  ENSURE_AUTHOR_PAGE: {
+    mid: number;
+    pn: number;
+    maxCachedPn: number;
+    hasMore: boolean;
+    totalCount?: number;
+    pageSize: number;
+    warningMsg?: string;
+  };
   GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };
   MARK_ALL_GROUPS_READ: { marks: Record<string, GroupReadMark>; readMarkTs: number };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;

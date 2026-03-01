@@ -28,7 +28,7 @@
       <div>别名</div>
       <div>作者数</div>
       <div>启用</div>
-      <div>不计数</div>
+      <div>不计算未读</div>
       <div>操作</div>
     </div>
     <div v-if="groups.length === 0" class="bbe-sub">暂无分组</div>
@@ -54,7 +54,7 @@
       <div>
         <label>
           <input type="checkbox" v-model="group.excludeFromUnreadCount" @change="saveGroup(group)" />
-          忽略
+          不计算
         </label>
       </div>
       <div>

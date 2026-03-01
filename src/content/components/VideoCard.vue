@@ -11,15 +11,6 @@
       <div class="bbe-card-cover">
         <img :src="video.cover" :alt="video.title" />
         <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
-        <button
-          type="button"
-          class="bbe-reviewed-check"
-          :class="{ reviewed: reviewedState }"
-          :title="reviewedState ? '已阅（点击取消）' : '未阅（点击设为已阅）'"
-          @click.stop.prevent="onToggleReviewedClick"
-        >
-          ✓
-        </button>
         <div v-if="playbackPercent > 0" class="bbe-progress-bar">
           <div class="bbe-progress-fill" :style="{ width: playbackPercent + '%' }" />
         </div>
@@ -47,17 +38,20 @@
           <img class="bbe-avatar-sm" :src="video.authorFace" alt="" />
         </a>
         <div class="bbe-card-author-info">
-          <a
-            v-if="!props.hideAuthorName"
-            class="bbe-card-author-link"
-            :href="authorSpaceUrl"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a class="bbe-card-author-link" :href="authorSpaceUrl" target="_blank" rel="noreferrer">
             <span class="bbe-card-author-name">{{ video.authorName }}</span>
           </a>
           <span class="bbe-card-author-date">{{ formatPubdate(video.pubdate) }}</span>
         </div>
+        <button
+          type="button"
+          class="bbe-reviewed-check"
+          :class="{ reviewed: reviewedState }"
+          :title="reviewedState ? '已阅（点击取消）' : '未阅（点击设为已阅）'"
+          @click.stop.prevent="onToggleReviewedClick"
+        >
+          ✓
+        </button>
       </div>
     </div>
   </article>
@@ -72,7 +66,6 @@ const props = defineProps<{
   video: VideoItem;
   clicked?: boolean;
   reviewed?: boolean;
-  hideAuthorName?: boolean;
 }>();
 
 const emit = defineEmits<{

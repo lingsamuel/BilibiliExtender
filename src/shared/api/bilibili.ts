@@ -258,7 +258,7 @@ export async function getUploaderVideos(
   mid: number,
   pn: number,
   ps: number
-): Promise<{ videos: VideoItem[]; hasMore: boolean }> {
+): Promise<{ videos: VideoItem[]; hasMore: boolean; totalCount: number; pageSize: number }> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const { imgKey, subKey } = await getWbiKeys();
@@ -283,7 +283,12 @@ export async function getUploaderVideos(
       const page = payload.data.page;
       const hasMore = page.pn * page.ps < page.count;
 
-      return { videos, hasMore };
+      return {
+        videos,
+        hasMore,
+        totalCount: Math.max(0, Number(page.count) || 0),
+        pageSize: Math.max(1, Number(page.ps) || ps)
+      };
     } catch (error) {
       if (error instanceof WbiExpiredError && attempt === 0) {
         invalidateWbiKeys();
