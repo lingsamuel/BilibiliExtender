@@ -1,6 +1,7 @@
 import { DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import { getMyCreatedFolders, getUserCard, modifyUserRelation } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
+import { ext } from '@/shared/platform/webext';
 import {
   appendGroupReadMark,
   clearAuthorReadMark,
@@ -812,7 +813,7 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
   }
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+ext.runtime.onInstalled.addListener(async () => {
   const settings = await loadSettings();
   const merged = { ...DEFAULT_SETTINGS, ...settings };
   await saveSettings(merged);
@@ -820,7 +821,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await setupAlarm(merged);
 });
 
-chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse) => {
+ext.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse) => {
   routeMessage(request)
     .then((response) => sendResponse(response))
     .catch((error) => sendResponse(fail(error)));

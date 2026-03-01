@@ -9,13 +9,15 @@ const sharedResolve = {
 };
 
 const target = process.env.BUILD_TARGET;
+const browserTarget = process.env.BROWSER_TARGET === 'firefox' ? 'firefox' : 'chromium';
+const outDir = resolve(__dirname, 'dist', browserTarget);
 
 // Content Script：不支持 ESM，必须构建为 IIFE 并内联所有依赖
 const contentConfig = defineConfig({
   plugins: [vue()],
   resolve: sharedResolve,
   build: {
-    outDir: 'dist',
+    outDir,
     emptyOutDir: false,
     cssCodeSplit: false,
     rollupOptions: {
@@ -37,7 +39,7 @@ const mainConfig = defineConfig({
   plugins: [vue()],
   resolve: sharedResolve,
   build: {
-    outDir: 'dist',
+    outDir,
     emptyOutDir: true,
     rollupOptions: {
       input: {

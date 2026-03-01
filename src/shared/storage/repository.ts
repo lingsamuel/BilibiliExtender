@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
+import { ext, type StorageAreaLike } from '@/shared/platform/webext';
 import type {
   AuthorPreference,
   AuthorVideoCache,
@@ -37,7 +38,7 @@ const memoryCache: {
 };
 
 async function storageGet<T>(
-  area: chrome.storage.StorageArea,
+  area: StorageAreaLike,
   key: string,
   fallback: T
 ): Promise<T> {
@@ -45,7 +46,7 @@ async function storageGet<T>(
   return (result[key] as T | undefined) ?? fallback;
 }
 
-async function storageSet(area: chrome.storage.StorageArea, key: string, value: unknown): Promise<void> {
+async function storageSet(area: StorageAreaLike, key: string, value: unknown): Promise<void> {
   await area.set({ [key]: value });
 }
 
@@ -54,7 +55,7 @@ async function getSettings(): Promise<ExtensionSettings> {
     return memoryCache.settings;
   }
 
-  const settings = await storageGet(chrome.storage.local, STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
+  const settings = await storageGet(ext.storage.local, STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
   const merged = {
     ...DEFAULT_SETTINGS,
     ...settings
@@ -65,12 +66,12 @@ async function getSettings(): Promise<ExtensionSettings> {
 
 async function setSettings(settings: ExtensionSettings): Promise<void> {
   memoryCache.settings = settings;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.SETTINGS, settings);
+  await storageSet(ext.storage.local, STORAGE_KEYS.SETTINGS, settings);
 }
 
-async function getGroupsStorageArea(): Promise<chrome.storage.StorageArea> {
+async function getGroupsStorageArea(): Promise<StorageAreaLike> {
   const settings = await getSettings();
-  return settings.useStorageSync ? chrome.storage.sync : chrome.storage.local;
+  return settings.useStorageSync ? ext.storage.sync : ext.storage.local;
 }
 
 /**
@@ -82,7 +83,7 @@ export async function loadGroups(): Promise<GroupConfig[]> {
   }
 
   const area = await getGroupsStorageArea();
-  const key = area === chrome.storage.sync ? STORAGE_KEYS.GROUPS_SYNC : STORAGE_KEYS.GROUPS_LOCAL;
+  const key = area === ext.storage.sync ? STORAGE_KEYS.GROUPS_SYNC : STORAGE_KEYS.GROUPS_LOCAL;
 
   try {
     const groups = await storageGet(area, key, [] as GroupConfig[]);
@@ -91,7 +92,7 @@ export async function loadGroups(): Promise<GroupConfig[]> {
   } catch (error) {
     // sync 读取失败时回退 local，避免配置不可用。
     console.warn('[BBE] loadGroups from preferred area failed, fallback to local:', error);
-    const groups = await storageGet(chrome.storage.local, STORAGE_KEYS.GROUPS_LOCAL, [] as GroupConfig[]);
+    const groups = await storageGet(ext.storage.local, STORAGE_KEYS.GROUPS_LOCAL, [] as GroupConfig[]);
     memoryCache.groups = groups;
     return groups;
   }
@@ -103,17 +104,17 @@ export async function loadGroups(): Promise<GroupConfig[]> {
 export async function saveGroups(groups: GroupConfig[]): Promise<void> {
   memoryCache.groups = groups;
   const settings = await getSettings();
-  const preferredArea = settings.useStorageSync ? chrome.storage.sync : chrome.storage.local;
+  const preferredArea = settings.useStorageSync ? ext.storage.sync : ext.storage.local;
   const preferredKey = settings.useStorageSync ? STORAGE_KEYS.GROUPS_SYNC : STORAGE_KEYS.GROUPS_LOCAL;
 
   try {
     await storageSet(preferredArea, preferredKey, groups);
-    if (preferredArea === chrome.storage.sync) {
-      await storageSet(chrome.storage.local, STORAGE_KEYS.GROUPS_LOCAL, groups);
+    if (preferredArea === ext.storage.sync) {
+      await storageSet(ext.storage.local, STORAGE_KEYS.GROUPS_LOCAL, groups);
     }
   } catch (error) {
     console.warn('[BBE] saveGroups failed in preferred area, fallback to local:', error);
-    await storageSet(chrome.storage.local, STORAGE_KEYS.GROUPS_LOCAL, groups);
+    await storageSet(ext.storage.local, STORAGE_KEYS.GROUPS_LOCAL, groups);
 
     if (settings.useStorageSync) {
       await setSettings({
@@ -137,14 +138,14 @@ export async function loadRuntimeStateMap(): Promise<RuntimeStateMap> {
     return memoryCache.runtime;
   }
 
-  const runtime = await storageGet(chrome.storage.local, STORAGE_KEYS.RUNTIME, {} as RuntimeStateMap);
+  const runtime = await storageGet(ext.storage.local, STORAGE_KEYS.RUNTIME, {} as RuntimeStateMap);
   memoryCache.runtime = runtime;
   return runtime;
 }
 
 export async function saveRuntimeStateMap(stateMap: RuntimeStateMap): Promise<void> {
   memoryCache.runtime = stateMap;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.RUNTIME, stateMap);
+  await storageSet(ext.storage.local, STORAGE_KEYS.RUNTIME, stateMap);
 }
 
 /**
@@ -155,7 +156,7 @@ export async function loadFeedCacheMap(): Promise<FeedCacheMap> {
     return memoryCache.feed;
   }
 
-  const raw = await storageGet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, {} as FeedCacheMap);
+  const raw = await storageGet(ext.storage.local, STORAGE_KEYS.FEED_CACHE, {} as FeedCacheMap);
   const cleaned: FeedCacheMap = {};
   for (const [key, value] of Object.entries(raw)) {
     if (value && Array.isArray(value.authorMids)) {
@@ -168,7 +169,7 @@ export async function loadFeedCacheMap(): Promise<FeedCacheMap> {
 
 export async function saveFeedCacheMap(cacheMap: FeedCacheMap): Promise<void> {
   memoryCache.feed = cacheMap;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.FEED_CACHE, cacheMap);
+  await storageSet(ext.storage.local, STORAGE_KEYS.FEED_CACHE, cacheMap);
 }
 
 export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
@@ -176,7 +177,7 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
     return memoryCache.authorVideo;
   }
 
-  const rawCacheMap = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
+  const rawCacheMap = await storageGet(ext.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
   const normalized: AuthorVideoCacheMap = {};
   const now = Date.now();
 
@@ -267,7 +268,7 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
 
 export async function saveAuthorVideoCacheMap(cacheMap: AuthorVideoCacheMap): Promise<void> {
   memoryCache.authorVideo = cacheMap;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, cacheMap);
+  await storageSet(ext.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, cacheMap);
 }
 
 export async function loadLastGroupId(): Promise<string | undefined> {
@@ -275,7 +276,7 @@ export async function loadLastGroupId(): Promise<string | undefined> {
     return memoryCache.lastGroupId;
   }
 
-  const lastGroupId = await storageGet<string | undefined>(chrome.storage.local, STORAGE_KEYS.LAST_GROUP_ID, undefined);
+  const lastGroupId = await storageGet<string | undefined>(ext.storage.local, STORAGE_KEYS.LAST_GROUP_ID, undefined);
   memoryCache.lastGroupId = lastGroupId;
   memoryCache.hasLastGroupId = true;
   return lastGroupId;
@@ -284,7 +285,7 @@ export async function loadLastGroupId(): Promise<string | undefined> {
 export async function saveLastGroupId(groupId: string): Promise<void> {
   memoryCache.lastGroupId = groupId;
   memoryCache.hasLastGroupId = true;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.LAST_GROUP_ID, groupId);
+  await storageSet(ext.storage.local, STORAGE_KEYS.LAST_GROUP_ID, groupId);
 }
 
 type ReadMarkMap = Record<string, GroupReadMark>;
@@ -298,7 +299,7 @@ async function dropLegacyAuthorReadMarksIfNeeded(): Promise<void> {
     return;
   }
   legacyAuthorReadMarksDropped = true;
-  await chrome.storage.local.remove(STORAGE_KEYS.LEGACY_AUTHOR_READ_MARKS);
+  await ext.storage.local.remove(STORAGE_KEYS.LEGACY_AUTHOR_READ_MARKS);
 }
 
 export async function loadGroupReadMarks(): Promise<ReadMarkMap> {
@@ -308,14 +309,14 @@ export async function loadGroupReadMarks(): Promise<ReadMarkMap> {
 
   await dropLegacyAuthorReadMarksIfNeeded();
 
-  const marks = await storageGet(chrome.storage.local, STORAGE_KEYS.GROUP_READ_MARKS, {} as ReadMarkMap);
+  const marks = await storageGet(ext.storage.local, STORAGE_KEYS.GROUP_READ_MARKS, {} as ReadMarkMap);
   memoryCache.groupReadMarks = marks;
   return marks;
 }
 
 export async function saveGroupReadMarks(marks: ReadMarkMap): Promise<void> {
   memoryCache.groupReadMarks = marks;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.GROUP_READ_MARKS, marks);
+  await storageSet(ext.storage.local, STORAGE_KEYS.GROUP_READ_MARKS, marks);
 }
 
 /**
@@ -343,14 +344,14 @@ export async function loadClickedVideos(): Promise<ClickedVideoMap> {
     return memoryCache.clickedVideos;
   }
 
-  const map = await storageGet(chrome.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, {} as ClickedVideoMap);
+  const map = await storageGet(ext.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, {} as ClickedVideoMap);
   memoryCache.clickedVideos = map;
   return map;
 }
 
 export async function saveClickedVideos(map: ClickedVideoMap): Promise<void> {
   memoryCache.clickedVideos = map;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, map);
+  await storageSet(ext.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, map);
 }
 
 export async function recordVideoClick(bvid: string): Promise<void> {
@@ -365,7 +366,7 @@ export async function loadVideoReviewedOverrides(): Promise<VideoReviewedOverrid
   }
 
   const map = await storageGet(
-    chrome.storage.local,
+    ext.storage.local,
     STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES,
     {} as VideoReviewedOverrideMap
   );
@@ -375,7 +376,7 @@ export async function loadVideoReviewedOverrides(): Promise<VideoReviewedOverrid
 
 export async function saveVideoReviewedOverrides(map: VideoReviewedOverrideMap): Promise<void> {
   memoryCache.videoReviewedOverrides = map;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES, map);
+  await storageSet(ext.storage.local, STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES, map);
 }
 
 export async function setVideoReviewedOverride(bvid: string, reviewed: boolean): Promise<void> {
@@ -389,14 +390,14 @@ export async function loadAuthorPreferences(): Promise<AuthorPreferenceMap> {
     return memoryCache.authorPreferences;
   }
 
-  const map = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_PREFERENCES, {} as AuthorPreferenceMap);
+  const map = await storageGet(ext.storage.local, STORAGE_KEYS.AUTHOR_PREFERENCES, {} as AuthorPreferenceMap);
   memoryCache.authorPreferences = map;
   return map;
 }
 
 export async function saveAuthorPreferences(map: AuthorPreferenceMap): Promise<void> {
   memoryCache.authorPreferences = map;
-  await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_PREFERENCES, map);
+  await storageSet(ext.storage.local, STORAGE_KEYS.AUTHOR_PREFERENCES, map);
 }
 
 function normalizeAuthorPreference(mid: number, prev?: AuthorPreference): AuthorPreference {

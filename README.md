@@ -1,6 +1,6 @@
 # Bilibili Extender
 
-一个面向 Chrome/Edge 的 Bilibili 扩展：
+一个面向 Chrome/Edge，并支持 Firefox 本地调试的 Bilibili 扩展：
 - 用用户当前登录态请求 Bilibili 接口
 - 将“我创建的收藏夹”映射为分组
 - 在站点 Header 注入“分组动态”入口
@@ -29,10 +29,19 @@ npm install
 npm run build
 ```
 
-构建后加载 `dist/`：
+构建后会输出两套产物：
+- `dist/chromium`：Chrome/Edge
+- `dist/firefox`：Firefox（本地调试）
+
+Chrome/Edge 加载步骤：
 1. 打开 Chrome/Edge 扩展管理页
 2. 开启“开发者模式”
-3. 选择“加载已解压的扩展程序”并指向 `dist/`
+3. 选择“加载已解压的扩展程序”并指向 `dist/chromium`
+
+Firefox 本地调试加载步骤：
+1. 打开 `about:debugging#/runtime/this-firefox`
+2. 点击“临时载入附加组件”
+3. 选择 `dist/firefox/manifest.json`
 
 ## 目录结构
 ```text
@@ -43,6 +52,7 @@ src/
   shared/       # 类型、消息协议、存储封装、API 与工具函数
 docs/
   grouped-feed-extension-spec.md
+  firefox-support-spec.md
 ```
 
 ## 权限说明

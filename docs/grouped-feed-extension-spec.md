@@ -1,4 +1,4 @@
-# 分组动态扩展 Spec（Chrome/Edge + Bilibili）
+# 分组动态扩展 Spec（Chrome/Edge + Firefox 本地调试 + Bilibili）
 
 ## 1. 背景与目标
 

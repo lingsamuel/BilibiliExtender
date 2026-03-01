@@ -13,6 +13,7 @@ import {
   saveFeedCacheMap,
   saveGroups
 } from '@/shared/storage/repository';
+import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, GroupConfig } from '@/shared/types';
 import type { SchedulerStatusResponse } from '@/shared/messages';
 import {
@@ -282,12 +283,12 @@ function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
 }
 
 async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<number | undefined> {
-  await chrome.alarms.clear(alarmName);
-  chrome.alarms.create(alarmName, {
+  await ext.alarms.clear(alarmName);
+  ext.alarms.create(alarmName, {
     delayInMinutes: intervalMinutes,
     periodInMinutes: intervalMinutes
   });
-  const alarm = await chrome.alarms.get(alarmName);
+  const alarm = await ext.alarms.get(alarmName);
   return alarm?.scheduledTime;
 }
 
@@ -981,7 +982,7 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
-    const alarm = await chrome.alarms.get(ALARM_NAMES.AUTHOR_VIDEO);
+    const alarm = await ext.alarms.get(ALARM_NAMES.AUTHOR_VIDEO);
     nextAlarmAt = alarm?.scheduledTime;
   }
 
@@ -1006,7 +1007,7 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
-    const alarm = await chrome.alarms.get(ALARM_NAMES.AUTHOR_VIDEO);
+    const alarm = await ext.alarms.get(ALARM_NAMES.AUTHOR_VIDEO);
     nextAlarmAt = alarm?.scheduledTime;
   }
 
@@ -1028,7 +1029,7 @@ async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean })
   startGroupFavLoopIfIdle();
 
   if (!nextAlarmAt) {
-    const alarm = await chrome.alarms.get(ALARM_NAMES.GROUP_FAV);
+    const alarm = await ext.alarms.get(ALARM_NAMES.GROUP_FAV);
     nextAlarmAt = alarm?.scheduledTime;
   }
 
@@ -1052,7 +1053,7 @@ async function triggerGroupFavRoutineNow(options?: { resetAlarmSchedule: boolean
   startGroupFavLoopIfIdle();
 
   if (!nextAlarmAt) {
-    const alarm = await chrome.alarms.get(ALARM_NAMES.GROUP_FAV);
+    const alarm = await ext.alarms.get(ALARM_NAMES.GROUP_FAV);
     nextAlarmAt = alarm?.scheduledTime;
   }
 
@@ -1106,8 +1107,8 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     liveAuthorCacheMap ?? loadAuthorVideoCacheMap(),
     loadFeedCacheMap(),
     loadGroups(),
-    chrome.alarms.get(ALARM_NAMES.AUTHOR_VIDEO),
-    chrome.alarms.get(ALARM_NAMES.GROUP_FAV)
+    ext.alarms.get(ALARM_NAMES.AUTHOR_VIDEO),
+    ext.alarms.get(ALARM_NAMES.GROUP_FAV)
   ]);
 
   const groupTitleMap = new Map<string, string>();
@@ -1249,7 +1250,7 @@ export async function getAuthorCacheSnapshot(): Promise<AuthorCacheMap> {
   return liveAuthorCacheMap ?? loadAuthorVideoCacheMap();
 }
 
-chrome.alarms.onAlarm.addListener((alarm) => {
+ext.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAMES.AUTHOR_VIDEO) {
     if (isBurstActive()) {
       pendingAuthorRoutineAfterBurst = true;

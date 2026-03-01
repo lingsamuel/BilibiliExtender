@@ -9,6 +9,7 @@ import type {
   OverviewFilterKey,
   ViewMode
 } from '@/shared/types';
+import { ext } from '@/shared/platform/webext';
 
 export type MessageRequest =
   | { type: 'PING' }
@@ -179,5 +180,5 @@ export interface ResponseMap {
 export async function sendMessage<T extends MessageRequest>(
   request: T
 ): Promise<MessageResponse<ResponseMap[T['type']]>> {
-  return chrome.runtime.sendMessage(request);
+  return ext.runtime.sendMessage(request);
 }
