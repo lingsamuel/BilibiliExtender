@@ -45,6 +45,15 @@ export interface VideoItem {
   authorName: string;
   authorFace?: string;
   playbackPosiiton?: number;
+  // 分页缓存元信息：
+  // - updatedAt: 当前这条视频元数据最后一次刷新时间；
+  // - sourcePn: 该条数据来源页码（用于“页使用回报”统计）；
+  // - pageFetchedAt: 来源页的抓取时间（跨页去重时作为次级比较项）。
+  meta?: {
+    updatedAt: number;
+    sourcePn: number;
+    pageFetchedAt: number;
+  };
 }
 
 export interface AuthorFeed {
@@ -73,6 +82,8 @@ export interface GroupFeedResult {
   readMarkTimestamps: number[];
   // 无真实已阅记录时的 grace 默认时间点（秒级时间戳），0 表示不适用
   graceReadMarkTs: number;
+  // 构造过程中的降级提示（如某些补页失败），前台可展示但不阻断内容渲染。
+  warningMsg?: string;
 }
 
 export interface GroupSummary {
@@ -106,8 +117,13 @@ export interface AuthorVideoCache {
   following?: boolean;
   faceFetchedAt?: number;
   videos: VideoItem[];
+  // 每页缓存状态：用于页级预取推进与去重回放。
+  pageState: Record<number, { fetchedAt: number; usedInMixed: boolean; lastUsedAt?: number }>;
+  maxCachedPn: number;
   nextPn: number;
   hasMore: boolean;
+  firstPageFetchedAt: number;
+  secondPageFetchedAt?: number;
   lastFetchedAt: number;
 }
 

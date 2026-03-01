@@ -11,7 +11,7 @@
       <span>状态</span>
       <span>{{ status?.running ? '运行中' : '空闲' }}</span>
       <span>当前任务</span>
-      <span>{{ status?.currentTask ? `${status.currentTask.name} (${status.currentTask.mid})` : '无' }}</span>
+      <span>{{ status?.currentTask ? `${status.currentTask.name} (${status.currentTask.mid}, p${status.currentTask.pn ?? 1})` : '无' }}</span>
       <span>队列长度</span>
       <span>{{ status?.queueLength ?? 0 }}</span>
       <span>批次进度</span>
@@ -26,8 +26,8 @@
 
     <h3 v-if="status && status.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
     <div v-if="status && status.queue.length > 0" class="bbe-debug-queue">
-      <div v-for="(task, i) in status.queue" :key="task.mid" class="bbe-debug-queue-item">
-        {{ i + 1 }}. {{ task.name }} ({{ task.mid }})
+      <div v-for="(task, i) in status.queue" :key="`${task.mid}-${task.pn ?? 1}-${i}`" class="bbe-debug-queue-item">
+        {{ i + 1 }}. {{ task.name }} ({{ task.mid }}, p{{ task.pn ?? 1 }})
       </div>
     </div>
   </section>
@@ -52,7 +52,7 @@
     <h3 v-if="status && status.burst.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
     <div v-if="status && status.burst.queue.length > 0" class="bbe-debug-queue">
       <div v-for="(task, i) in status.burst.queue" :key="`${task.mid}-${i}`" class="bbe-debug-queue-item">
-        {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+        {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }} / p{{ task.pn ?? 1 }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
       </div>
     </div>
   </section>
@@ -189,7 +189,7 @@ const burstCurrentTaskText = computed(() => {
   const task = status.value?.burst.currentTask;
   if (!task) return '无';
   const groups = task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组';
-  return `${formatBurstTaskLabel(task.name, task.mid)}（${groups}）`;
+  return `${formatBurstTaskLabel(task.name, task.mid)} / p${task.pn ?? 1}（${groups}）`;
 });
 
 const burstNextAllowedText = computed(() => {

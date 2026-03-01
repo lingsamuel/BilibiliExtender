@@ -40,10 +40,57 @@ function buildAuthorList(favVideos: FavMediaItem[]): Array<{ mid: number; name: 
   return Array.from(authorMap.entries()).map(([mid, name]) => ({ mid, name }));
 }
 
+function toPositiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function withVideoMeta(video: VideoItem, pn: number, pageFetchedAt: number): VideoItem {
+  const sourcePn = Math.max(1, toPositiveNumber(video.meta?.sourcePn, pn));
+  const nextPageFetchedAt = toPositiveNumber(video.meta?.pageFetchedAt, pageFetchedAt);
+  const updatedAt = toPositiveNumber(video.meta?.updatedAt, nextPageFetchedAt);
+  return {
+    ...video,
+    meta: {
+      updatedAt,
+      sourcePn,
+      pageFetchedAt: nextPageFetchedAt
+    }
+  };
+}
+
+function pickPreferVideo(left: VideoItem, right: VideoItem): VideoItem {
+  const leftUpdatedAt = toPositiveNumber(left.meta?.updatedAt, 0);
+  const rightUpdatedAt = toPositiveNumber(right.meta?.updatedAt, 0);
+  if (leftUpdatedAt !== rightUpdatedAt) {
+    return rightUpdatedAt > leftUpdatedAt ? right : left;
+  }
+
+  const leftPageFetchedAt = toPositiveNumber(left.meta?.pageFetchedAt, 0);
+  const rightPageFetchedAt = toPositiveNumber(right.meta?.pageFetchedAt, 0);
+  if (leftPageFetchedAt !== rightPageFetchedAt) {
+    return rightPageFetchedAt > leftPageFetchedAt ? right : left;
+  }
+
+  return right;
+}
+
 function mergeVideos(existing: VideoItem[], incoming: VideoItem[]): VideoItem[] {
   const map = new Map<string, VideoItem>();
-  existing.forEach((video) => map.set(video.bvid, video));
-  incoming.forEach((video) => map.set(video.bvid, video));
+
+  for (const video of existing) {
+    map.set(video.bvid, video);
+  }
+
+  for (const video of incoming) {
+    const prev = map.get(video.bvid);
+    if (!prev) {
+      map.set(video.bvid, video);
+      continue;
+    }
+    map.set(video.bvid, pickPreferVideo(prev, video));
+  }
+
   return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
 }
 
@@ -61,30 +108,40 @@ function hasCardSnapshot(cache: AuthorVideoCache | undefined): boolean {
 // ─── 作者级缓存操作 ───
 
 function isAuthorCacheExpired(cache: AuthorVideoCache | undefined, settings: ExtensionSettings): boolean {
-  if (!cache?.lastFetchedAt) {
+  if (!cache) {
+    return true;
+  }
+
+  const firstPageFetchedAt = cache.firstPageFetchedAt || cache.lastFetchedAt;
+  if (!firstPageFetchedAt) {
     return true;
   }
   // 缓存里还没有完整 Card 信息时，视为过期并优先补齐。
   if (!hasCardSnapshot(cache)) {
     return true;
   }
-  return Date.now() - cache.lastFetchedAt > settings.refreshIntervalMinutes * 60 * 1000;
+  return Date.now() - firstPageFetchedAt > settings.refreshIntervalMinutes * 60 * 1000;
 }
 
 /**
- * 刷新单个作者的视频缓存：重置分页游标，拉取首页并与已有数据合并；
- * 并在同一轮请求中同步刷新 Card 信息（作者名、头像、粉丝数、关注状态）。
- * 仅由调度器调用，不应被前台路径直接使用。
+ * 刷新单个作者的视频缓存：
+ * - pn=1: 首页刷新（用于过期修复与基础缓存维持）；
+ * - pn>=2: 分页预取/按需补页（用于时间流扩展）。
+ *
+ * 同一轮会同步刷新 Card 信息，确保作者展示字段与缓存一致。
  */
 export async function refreshAuthorCache(
   mid: number,
   name: string,
-  authorCacheMap: AuthorCacheMap
+  authorCacheMap: AuthorCacheMap,
+  options?: { pn?: number }
 ): Promise<AuthorVideoCache> {
   const existing = authorCacheMap[mid];
-  const { videos, hasMore } = await getUploaderVideos(mid, 1, 20);
-
-  const merged = existing ? mergeVideos(existing.videos, videos) : videos;
+  const pn = Math.max(1, options?.pn ?? 1);
+  const pageFetchedAt = Date.now();
+  const { videos, hasMore } = await getUploaderVideos(mid, pn, 20);
+  const videosWithMeta = videos.map((video) => withVideoMeta(video, pn, pageFetchedAt));
+  const merged = existing ? mergeVideos(existing.videos, videosWithMeta) : videosWithMeta;
 
   const existingHasCardSnapshot = hasCardSnapshot(existing);
   let cardName: string | undefined;
@@ -121,6 +178,36 @@ export async function refreshAuthorCache(
   const resolvedFollower = cardFollower ?? (existingHasCardSnapshot ? existing?.follower : undefined);
   const resolvedFollowing = cardFollowing ?? (existingHasCardSnapshot ? existing?.following : undefined);
 
+  const nextPageState: AuthorVideoCache['pageState'] = {
+    ...(existing?.pageState ?? {})
+  };
+  const prevPageState = nextPageState[pn];
+  nextPageState[pn] = {
+    fetchedAt: pageFetchedAt,
+    usedInMixed: prevPageState?.usedInMixed ?? false,
+    lastUsedAt: prevPageState?.lastUsedAt
+  };
+  if (!nextPageState[1]) {
+    nextPageState[1] = {
+      fetchedAt: existing?.firstPageFetchedAt || existing?.lastFetchedAt || pageFetchedAt,
+      usedInMixed: false
+    };
+  }
+
+  const inferredMaxCachedPn = Math.max(
+    pn,
+    existing?.maxCachedPn ?? 1,
+    ...Object.keys(nextPageState).map((rawPn) => Math.max(1, Number(rawPn) || 1))
+  );
+  const nextPn = hasMore ? Math.max((existing?.nextPn ?? 2), pn + 1) : Math.max(pn + 1, existing?.nextPn ?? pn + 1);
+  const nextHasMore = pn < inferredMaxCachedPn ? Boolean(existing?.hasMore) : hasMore;
+  const firstPageFetchedAt = pn === 1
+    ? pageFetchedAt
+    : (existing?.firstPageFetchedAt || nextPageState[1]?.fetchedAt || pageFetchedAt);
+  const secondPageFetchedAt = pn === 2
+    ? pageFetchedAt
+    : (existing?.secondPageFetchedAt || nextPageState[2]?.fetchedAt);
+
   const cache: AuthorVideoCache = {
     mid,
     name: resolvedName,
@@ -129,9 +216,13 @@ export async function refreshAuthorCache(
     following: resolvedFollowing,
     faceFetchedAt: resolvedFace ? Date.now() : existing?.faceFetchedAt,
     videos: merged,
-    nextPn: 2,
-    hasMore,
-    lastFetchedAt: Date.now()
+    pageState: nextPageState,
+    maxCachedPn: inferredMaxCachedPn,
+    nextPn,
+    hasMore: nextHasMore,
+    firstPageFetchedAt,
+    secondPageFetchedAt,
+    lastFetchedAt: pageFetchedAt
   };
 
   authorCacheMap[mid] = cache;
@@ -321,7 +412,12 @@ function aggregateMixedVideos(authorMids: number[], authorCacheMap: AuthorCacheM
     const cache = authorCacheMap[mid];
     if (!cache) continue;
     for (const video of cache.videos) {
-      map.set(video.bvid, video);
+      const prev = map.get(video.bvid);
+      if (!prev) {
+        map.set(video.bvid, video);
+      } else {
+        map.set(video.bvid, pickPreferVideo(prev, video));
+      }
     }
   }
   return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
@@ -511,6 +607,60 @@ function sortAuthorsByLatestPubdate(videosByAuthor: AuthorFeed[]): AuthorFeed[] 
     .map((item) => item.author);
 }
 
+export interface MixedUsedPageItem {
+  mid: number;
+  usedMaxPn: number;
+}
+
+export interface MixedBoundaryTask {
+  mid: number;
+  name: string;
+  pn: number;
+}
+
+export interface MixedBuildDiagnostics {
+  usedPages: MixedUsedPageItem[];
+  boundaryTasks: MixedBoundaryTask[];
+}
+
+export function markAuthorPageUsage(
+  authorCacheMap: AuthorCacheMap,
+  usedPages: MixedUsedPageItem[]
+): boolean {
+  if (usedPages.length === 0) {
+    return false;
+  }
+
+  const now = Date.now();
+  let changed = false;
+
+  for (const item of usedPages) {
+    const cache = authorCacheMap[item.mid];
+    if (!cache) {
+      continue;
+    }
+
+    const usedPn = Math.max(1, item.usedMaxPn);
+    if (!cache.pageState[usedPn]) {
+      cache.pageState[usedPn] = {
+        fetchedAt: now,
+        usedInMixed: true,
+        lastUsedAt: now
+      };
+      changed = true;
+      continue;
+    }
+
+    if (!cache.pageState[usedPn].usedInMixed || cache.pageState[usedPn].lastUsedAt !== now) {
+      cache.pageState[usedPn].usedInMixed = true;
+      cache.pageState[usedPn].lastUsedAt = now;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
 /**
  * 纯缓存组装：从已有缓存数据构建前台展示所需的 GroupFeedResult。
  * 不发起任何 API 请求。
@@ -525,7 +675,8 @@ export function toFeedResult(
   readMarks: ReadMarkMap,
   clickedVideos: ClickedVideoMap,
   selectedReadMarkTs: number,
-  byAuthorSortByLatest?: boolean
+  byAuthorSortByLatest?: boolean,
+  diagnostics?: MixedBuildDiagnostics
 ): GroupFeedResult {
   const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
   const feedCache = feedCacheMap[group.groupId];
@@ -594,6 +745,55 @@ export function toFeedResult(
   const mixedTotalBeforeLimit = mixedVideos.length;
   const mixedLimit = Math.max(1, runtime.mixedTargetCount || settings.timelineMixedMaxCount);
   mixedVideos = mixedVideos.slice(0, mixedLimit);
+
+  if (diagnostics) {
+    const usedPageMap = new Map<number, number>();
+    const selectedMapByAuthor = new Map<number, Set<string>>();
+
+    for (const video of mixedVideos) {
+      const sourcePn = Math.max(1, video.meta?.sourcePn ?? 1);
+      const prev = usedPageMap.get(video.authorMid) ?? 0;
+      if (sourcePn > prev) {
+        usedPageMap.set(video.authorMid, sourcePn);
+      }
+
+      const selectedSet = selectedMapByAuthor.get(video.authorMid) ?? new Set<string>();
+      selectedSet.add(video.bvid);
+      selectedMapByAuthor.set(video.authorMid, selectedSet);
+    }
+
+    const boundaryTaskMap = new Map<string, MixedBoundaryTask>();
+    for (const mid of authorMids) {
+      const cache = authorCacheMap[mid];
+      if (!cache || !cache.hasMore) {
+        continue;
+      }
+      const selectedSet = selectedMapByAuthor.get(mid);
+      if (!selectedSet || selectedSet.size === 0) {
+        continue;
+      }
+
+      const filteredByReadMark = filterMixedVideosByReadMark(cache.videos, selectedReadMarkTs, graceReadMarkTs);
+      if (filteredByReadMark.length === 0) {
+        continue;
+      }
+      const oldest = filteredByReadMark[filteredByReadMark.length - 1];
+      if (!selectedSet.has(oldest.bvid)) {
+        continue;
+      }
+
+      const pn = Math.max(2, cache.nextPn || cache.maxCachedPn + 1 || 2);
+      const key = `${mid}:${pn}`;
+      boundaryTaskMap.set(key, {
+        mid,
+        name: cache.name?.trim() || String(mid),
+        pn
+      });
+    }
+
+    diagnostics.usedPages = Array.from(usedPageMap.entries()).map(([mid, usedMaxPn]) => ({ mid, usedMaxPn }));
+    diagnostics.boundaryTasks = Array.from(boundaryTaskMap.values());
+  }
 
   runtime.unreadCount = calcGroupUnreadCount(
     authorMids,

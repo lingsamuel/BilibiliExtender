@@ -45,12 +45,23 @@ export interface SchedulerStatusResponse {
   schedulerBatchSize: number;
   running: boolean;
   queueLength: number;
-  currentTask: { mid: number; name: string } | null;
+  currentTask: {
+    mid: number;
+    name: string;
+    pn?: number;
+    reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+  } | null;
   batchCompleted: number;
   batchFailed: number;
   lastRunAt?: number;
   nextAlarmAt?: number;
-  queue: Array<{ mid: number; name: string; groupId?: string }>;
+  queue: Array<{
+    mid: number;
+    name: string;
+    groupId?: string;
+    pn?: number;
+    reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+  }>;
   groupChannel: {
     running: boolean;
     queueLength: number;
@@ -64,11 +75,23 @@ export interface SchedulerStatusResponse {
   burst: {
     running: boolean;
     queueLength: number;
-    currentTask: { mid: number; name?: string; groupNames: string[] } | null;
+    currentTask: {
+      mid: number;
+      name?: string;
+      pn?: number;
+      reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+      groupNames: string[];
+    } | null;
     nextAllowedAt: number;
     cooldownReason: 'intra-delay' | 'error' | null;
     lastRunAt?: number;
-    queue: Array<{ mid: number; name?: string; groupNames: string[] }>;
+    queue: Array<{
+      mid: number;
+      name?: string;
+      pn?: number;
+      reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+      groupNames: string[];
+    }>;
   };
   // 已缓存的作者摘要
   authorCaches: Array<{

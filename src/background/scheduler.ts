@@ -18,8 +18,10 @@ import type { SchedulerStatusResponse } from '@/shared/messages';
 import {
   buildAuthorListFromFav,
   isAuthorCacheExpired,
+  markAuthorPageUsage,
   refreshAuthorCache,
-  type AuthorCacheMap
+  type AuthorCacheMap,
+  type MixedUsedPageItem
 } from '@/background/feed-service';
 import { getMyCreatedFolders } from '@/shared/api/bilibili';
 
@@ -27,6 +29,10 @@ export interface SchedulerTask {
   mid: number;
   name: string;
   groupId?: string;
+  pn?: number;
+  reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+  // 仅用于“前台同步等待”的补页任务：失败后不重试，直接回传错误。
+  failFast?: boolean;
 }
 
 interface GroupFavTask {
@@ -36,7 +42,7 @@ interface GroupFavTask {
 const MAX_HISTORY = 50;
 const BURST_RETRY_DELAY_MS = 60_000;
 
-type AuthorTask = SchedulerTask;
+type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'reason' | 'failFast'>> & Pick<SchedulerTask, 'groupId'>;
 type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
 interface HistoryEntry {
@@ -101,9 +107,22 @@ let pendingGroupFavRoutineAfterBurst = false;
 
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
+const burstTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function notifyBurstTaskFinished(task: AuthorTask, result: { ok: boolean; error?: string }): void {
+  const key = keyOfAuthorTask(task);
+  const waiters = burstTaskWaiters.get(key);
+  if (!waiters || waiters.length === 0) {
+    return;
+  }
+  burstTaskWaiters.delete(key);
+  for (const waiter of waiters) {
+    waiter(result);
+  }
 }
 
 function pushHistory(entry: HistoryEntry): void {
@@ -115,6 +134,21 @@ function pushHistory(entry: HistoryEntry): void {
 
 function getGroupTitle(group: GroupConfig): string {
   return group.alias?.trim() || group.mediaTitle || group.groupId;
+}
+
+function keyOfAuthorTask(task: Pick<AuthorTask, 'mid' | 'pn'>): string {
+  return `${task.mid}:${task.pn}`;
+}
+
+function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
+  return {
+    mid: task.mid,
+    name: task.name?.trim() || String(task.mid),
+    groupId: task.groupId,
+    pn: Math.max(1, Number(task.pn) || 1),
+    reason: task.reason ?? 'first-page-refresh',
+    failFast: task.failFast === true
+  };
 }
 
 function resolveAuthorName(name: string | undefined, videos: Array<{ authorName: string }>, mid: number): string {
@@ -244,7 +278,7 @@ function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
   if (taskKeys.size === 0 || authorState.queue.length === 0) {
     return;
   }
-  authorState.queue = authorState.queue.filter((task) => !taskKeys.has(String(task.mid)));
+  authorState.queue = authorState.queue.filter((task) => !taskKeys.has(keyOfAuthorTask(task)));
 }
 
 async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<number | undefined> {
@@ -283,16 +317,23 @@ async function collectStaleAuthorTasks(settings: ExtensionSettings): Promise<Aut
       continue;
     }
     if (isAuthorCacheExpired(cache, settings)) {
+      const firstFetchedAt = cache.firstPageFetchedAt || cache.lastFetchedAt || 0;
       stale.push({
         mid,
         name: cache.name ?? String(mid),
-        lastFetchedAt: cache.lastFetchedAt ?? 0
+        lastFetchedAt: firstFetchedAt
       });
     }
   }
 
   stale.sort((a, b) => a.lastFetchedAt - b.lastFetchedAt);
-  return stale.map(({ mid, name }) => ({ mid, name }));
+  return stale.map(({ mid, name }) => ({
+    mid,
+    name,
+    pn: 1,
+    reason: 'first-page-refresh',
+    failFast: false
+  }));
 }
 
 async function collectNoCacheAuthorTasks(): Promise<AuthorTask[]> {
@@ -318,7 +359,13 @@ async function collectNoCacheAuthorTasks(): Promise<AuthorTask[]> {
 
   return Array.from(mids)
     .sort((a, b) => a - b)
-    .map((mid) => ({ mid, name: String(mid) }));
+    .map((mid) => ({
+      mid,
+      name: String(mid),
+      pn: 1,
+      reason: 'first-page-refresh',
+      failFast: false
+    }));
 }
 
 async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
@@ -349,12 +396,96 @@ async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
     oldest.push({
       mid,
       name: cache.name ?? String(mid),
-      lastFetchedAt: cache.lastFetchedAt ?? 0
+      lastFetchedAt: cache.firstPageFetchedAt || cache.lastFetchedAt || 0
     });
   }
 
   oldest.sort((a, b) => a.lastFetchedAt - b.lastFetchedAt);
-  return oldest.map(({ mid, name }) => ({ mid, name }));
+  return oldest.map(({ mid, name }) => ({
+    mid,
+    name,
+    pn: 1,
+    reason: 'first-page-refresh',
+    failFast: false
+  }));
+}
+
+function isPageFresh(
+  fetchedAt: number | undefined,
+  settings: ExtensionSettings
+): boolean {
+  if (!fetchedAt || fetchedAt <= 0) {
+    return false;
+  }
+  return Date.now() - fetchedAt <= settings.refreshIntervalMinutes * 60 * 1000;
+}
+
+function resolveNextPrefetchPn(
+  cache: {
+    pageState: Record<number, { fetchedAt: number; usedInMixed: boolean }>;
+    hasMore: boolean;
+    firstPageFetchedAt: number;
+    maxCachedPn: number;
+  },
+  settings: ExtensionSettings
+): number | null {
+  if (!cache.hasMore) {
+    return null;
+  }
+
+  if (!isPageFresh(cache.firstPageFetchedAt, settings)) {
+    return null;
+  }
+
+  const page2 = cache.pageState[2];
+  if (!page2 || !isPageFresh(page2.fetchedAt, settings)) {
+    return 2;
+  }
+
+  let k = 2;
+  while (true) {
+    const state = cache.pageState[k];
+    if (!state || !isPageFresh(state.fetchedAt, settings) || !state.usedInMixed) {
+      break;
+    }
+    k++;
+  }
+
+  if (k <= 2) {
+    return null;
+  }
+
+  const nextPn = k;
+  const alreadyFetched = cache.pageState[nextPn];
+  if (alreadyFetched) {
+    return null;
+  }
+  if (nextPn <= cache.maxCachedPn) {
+    return null;
+  }
+  return nextPn;
+}
+
+async function collectPrefetchAuthorTasks(settings: ExtensionSettings): Promise<AuthorTask[]> {
+  const authorCacheMap = await loadAuthorVideoCacheMap();
+  const tasks: AuthorTask[] = [];
+
+  for (const cache of Object.values(authorCacheMap)) {
+    const pn = resolveNextPrefetchPn(cache, settings);
+    if (!pn) {
+      continue;
+    }
+    tasks.push({
+      mid: cache.mid,
+      name: cache.name ?? String(cache.mid),
+      pn,
+      reason: 'prefetch-next-page',
+      failFast: false
+    });
+  }
+
+  tasks.sort((a, b) => a.mid - b.mid || a.pn - b.pn);
+  return tasks;
 }
 
 async function collectStaleGroupFavTasks(settings: ExtensionSettings): Promise<GroupFavTask[]> {
@@ -394,7 +525,7 @@ async function collectOldestGroupFavTasks(): Promise<GroupFavTask[]> {
 }
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
-  await refreshAuthorCache(task.mid, task.name, authorCacheMap);
+  await refreshAuthorCache(task.mid, task.name, authorCacheMap, { pn: task.pn });
 }
 
 /**
@@ -447,7 +578,10 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
     const task: AuthorTask = {
       mid: author.mid,
       name: cache?.name ?? author.name,
-      groupId: group.groupId
+      groupId: group.groupId,
+      pn: 1,
+      reason: 'first-page-refresh',
+      failFast: false
     };
 
     if (!cache) {
@@ -652,9 +786,8 @@ async function runBurstLoop(): Promise<void> {
       burstState.cooldownReason = 'intra-delay';
       pushHistory({ mid: task.mid, name: task.name, mode: 'burst', success: true, timestamp: Date.now() });
       await saveAuthorVideoCacheMap(authorCacheMap);
+      notifyBurstTaskFinished(task, { ok: true });
     } catch (error) {
-      burstState.nextAllowedAt = Date.now() + BURST_RETRY_DELAY_MS;
-      burstState.cooldownReason = 'error';
       pushHistory({
         mid: task.mid,
         name: task.name,
@@ -664,6 +797,19 @@ async function runBurstLoop(): Promise<void> {
         error: error instanceof Error ? error.message : String(error)
       });
       console.warn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
+
+      if (task.failFast) {
+        burstState.queue.shift();
+        burstState.nextAllowedAt = Date.now() + BG_REFRESH_INTRA_DELAY_MS;
+        burstState.cooldownReason = 'error';
+        notifyBurstTaskFinished(task, {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      } else {
+        burstState.nextAllowedAt = Date.now() + BURST_RETRY_DELAY_MS;
+        burstState.cooldownReason = 'error';
+      }
     } finally {
       burstState.currentTask = null;
     }
@@ -714,8 +860,9 @@ function startGroupFavLoopIfIdle(): void {
 }
 
 export function enqueueBurst(tasks: SchedulerTask[]): number {
-  const taskKeys = new Set(tasks.map((task) => String(task.mid)));
-  const added = dedupeAndEnqueue(burstState, tasks, (task) => String(task.mid), false);
+  const normalizedTasks = tasks.map(normalizeAuthorTask);
+  const taskKeys = new Set(normalizedTasks.map((task) => keyOfAuthorTask(task)));
+  const added = dedupeAndEnqueue(burstState, normalizedTasks, keyOfAuthorTask, false);
   if (taskKeys.size > 0) {
     // Burst 任务优先级高于常规作者队列，入列后清掉常规队列里的同目标，避免重复调用。
     removeAuthorTasksFromRegularQueue(taskKeys);
@@ -726,14 +873,78 @@ export function enqueueBurst(tasks: SchedulerTask[]): number {
   return added;
 }
 
+function waitForBurstTask(task: AuthorTask): Promise<{ ok: boolean; error?: string }> {
+  const key = keyOfAuthorTask(task);
+  return new Promise((resolve) => {
+    const waiters = burstTaskWaiters.get(key) ?? [];
+    waiters.push(resolve);
+    burstTaskWaiters.set(key, waiters);
+  });
+}
+
+function markBurstTaskFailFastByKeys(taskKeys: Set<string>): void {
+  if (taskKeys.size === 0) {
+    return;
+  }
+
+  if (burstState.currentTask && taskKeys.has(keyOfAuthorTask(burstState.currentTask))) {
+    burstState.currentTask.failFast = true;
+  }
+
+  for (const task of burstState.queue) {
+    if (taskKeys.has(keyOfAuthorTask(task))) {
+      task.failFast = true;
+    }
+  }
+}
+
+export async function enqueueBurstHeadAndWait(
+  tasks: SchedulerTask[]
+): Promise<{ success: Array<{ mid: number; pn: number }>; failed: Array<{ mid: number; pn: number; error: string }> }> {
+  if (tasks.length === 0) {
+    return { success: [], failed: [] };
+  }
+
+  const normalizedTasks = tasks.map((task) => ({
+    ...normalizeAuthorTask(task),
+    failFast: true,
+    reason: 'load-more-boundary' as const
+  }));
+  const taskKeys = new Set(normalizedTasks.map((task) => keyOfAuthorTask(task)));
+  markBurstTaskFailFastByKeys(taskKeys);
+
+  const waitJobs = normalizedTasks.map(async (task) => {
+    const key = keyOfAuthorTask(task);
+    const waiter = waitForBurstTask(task);
+    const added = dedupeAndEnqueue(burstState, [task], keyOfAuthorTask, true);
+    if (added > 0) {
+      removeAuthorTasksFromRegularQueue(new Set([key]));
+    }
+    startBurstLoopIfIdle();
+    const result = await waiter;
+    if (result.ok) {
+      return { ok: true as const, mid: task.mid, pn: task.pn };
+    }
+    return { ok: false as const, mid: task.mid, pn: task.pn, error: result.error ?? 'Burst 补页失败' };
+  });
+
+  const settled = await Promise.all(waitJobs);
+  const success = settled.filter((item) => item.ok).map((item) => ({ mid: item.mid, pn: item.pn }));
+  const failed = settled
+    .filter((item) => !item.ok)
+    .map((item) => ({ mid: item.mid, pn: item.pn, error: item.error }));
+  return { success, failed };
+}
+
 export function enqueuePriority(tasks: SchedulerTask[]): number {
   if (tasks.length === 0) {
     return 0;
   }
 
-  const burstKeys = buildExistingTaskKeySet(burstState, (task) => String(task.mid));
-  const filtered = tasks.filter((task) => !burstKeys.has(String(task.mid)));
-  const added = dedupeAndEnqueue(authorState, filtered, (task) => String(task.mid), true);
+  const normalizedTasks = tasks.map(normalizeAuthorTask);
+  const burstKeys = buildExistingTaskKeySet(burstState, keyOfAuthorTask);
+  const filtered = normalizedTasks.filter((task) => !burstKeys.has(keyOfAuthorTask(task)));
+  const added = dedupeAndEnqueue(authorState, filtered, keyOfAuthorTask, true);
   if (added > 0) {
     startAuthorLoopIfIdle();
   }
@@ -758,10 +969,15 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
     nextAlarmAt = await resetAlarm(ALARM_NAMES.AUTHOR_VIDEO, interval);
   }
 
-  const [noCacheTasks, staleTasks] = await Promise.all([collectNoCacheAuthorTasks(), collectStaleAuthorTasks(settings)]);
+  const [noCacheTasks, staleTasks, prefetchTasks] = await Promise.all([
+    collectNoCacheAuthorTasks(),
+    collectStaleAuthorTasks(settings),
+    collectPrefetchAuthorTasks(settings)
+  ]);
   const burstQueued = enqueueBurst(noCacheTasks);
-  authorState.currentBatchDelay = calcBatchDelay(staleTasks.length, interval, normalizeBatchSize(settings));
-  const normalQueued = dedupeAndEnqueue(authorState, staleTasks, (task) => String(task.mid), false);
+  const routineTasks = [...staleTasks, ...prefetchTasks];
+  authorState.currentBatchDelay = calcBatchDelay(routineTasks.length, interval, normalizeBatchSize(settings));
+  const normalQueued = dedupeAndEnqueue(authorState, routineTasks, keyOfAuthorTask, false);
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -786,7 +1002,7 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
   const burstQueued = enqueueBurst(noCacheTasks);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
   authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
-  const normalQueued = fillQueueToBatchSize(authorState, candidates, (task) => String(task.mid), batchSize);
+  const normalQueued = fillQueueToBatchSize(authorState, candidates, keyOfAuthorTask, batchSize);
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -938,17 +1154,27 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   const authorCurrentTask = authorState.currentTask;
-  const authorQueue = authorState.queue.map((item) => ({ mid: item.mid, name: item.name, groupId: item.groupId }));
+  const authorQueue = authorState.queue.map((item) => ({
+    mid: item.mid,
+    name: item.name,
+    groupId: item.groupId,
+    pn: item.pn,
+    reason: item.reason
+  }));
   const burstCurrentTask = burstState.currentTask
     ? {
         mid: burstState.currentTask.mid,
         name: resolveDisplayName(burstState.currentTask.name),
+        pn: burstState.currentTask.pn,
+        reason: burstState.currentTask.reason,
         groupNames: getGroupNamesForTask(burstState.currentTask.mid, burstState.currentTask.groupId)
       }
     : null;
   const burstQueue = burstState.queue.map((item) => ({
     mid: item.mid,
     name: resolveDisplayName(item.name),
+    pn: item.pn,
+    reason: item.reason,
     groupNames: getGroupNamesForTask(item.mid, item.groupId)
   }));
   const burstCooldownReason: BurstCooldownReason = burstState.nextAllowedAt > Date.now() ? burstState.cooldownReason : null;
@@ -957,7 +1183,14 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     schedulerBatchSize: normalizeBatchSize(settings),
     running: authorState.running,
     queueLength: authorState.queue.length,
-    currentTask: authorCurrentTask ? { mid: authorCurrentTask.mid, name: authorCurrentTask.name } : null,
+    currentTask: authorCurrentTask
+      ? {
+          mid: authorCurrentTask.mid,
+          name: authorCurrentTask.name,
+          pn: authorCurrentTask.pn,
+          reason: authorCurrentTask.reason
+        }
+      : null,
     batchCompleted: authorState.batchCompleted,
     batchFailed: authorState.batchFailed.length,
     lastRunAt: authorState.lastRunAt,
@@ -986,6 +1219,26 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     groupCaches,
     history
   };
+}
+
+/**
+ * 记录“时间流构造实际使用到的页码”：
+ * - 仅用于驱动后续常规预取推进；
+ * - 不触发即时 API 请求。
+ */
+export async function reportAuthorPageUsage(
+  _groupId: string,
+  usedPages: MixedUsedPageItem[]
+): Promise<void> {
+  if (usedPages.length === 0) {
+    return;
+  }
+
+  const authorCacheMap = liveAuthorCacheMap ?? await loadAuthorVideoCacheMap();
+  const changed = markAuthorPageUsage(authorCacheMap, usedPages);
+  if (changed) {
+    await saveAuthorVideoCacheMap(authorCacheMap);
+  }
 }
 
 /**

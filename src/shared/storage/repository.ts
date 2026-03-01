@@ -5,7 +5,8 @@ import type {
   GroupConfig,
   GroupFeedCache,
   GroupReadMark,
-  GroupRuntimeState
+  GroupRuntimeState,
+  VideoItem
 } from '@/shared/types';
 
 type RuntimeStateMap = Record<string, GroupRuntimeState>;
@@ -171,9 +172,93 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
     return memoryCache.authorVideo;
   }
 
-  const cacheMap = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
-  memoryCache.authorVideo = cacheMap;
-  return cacheMap;
+  const rawCacheMap = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_VIDEO_CACHE, {} as AuthorVideoCacheMap);
+  const normalized: AuthorVideoCacheMap = {};
+  const now = Date.now();
+
+  function toPositiveNumber(value: unknown, fallback: number): number {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? num : fallback;
+  }
+
+  function normalizeVideoMeta(video: VideoItem, fallbackFetchedAt: number): VideoItem {
+    const sourcePn = Math.max(1, toPositiveNumber(video.meta?.sourcePn, 1));
+    const pageFetchedAt = toPositiveNumber(video.meta?.pageFetchedAt, fallbackFetchedAt);
+    const updatedAt = toPositiveNumber(video.meta?.updatedAt, pageFetchedAt);
+    return {
+      ...video,
+      meta: {
+        updatedAt,
+        sourcePn,
+        pageFetchedAt
+      }
+    };
+  }
+
+  for (const [rawMid, rawCache] of Object.entries(rawCacheMap)) {
+    if (!rawCache || !Array.isArray(rawCache.videos)) {
+      continue;
+    }
+
+    const mid = Math.max(1, toPositiveNumber(rawCache.mid, Number(rawMid) || 0));
+    if (!mid) {
+      continue;
+    }
+
+    const lastFetchedAt = toPositiveNumber(rawCache.lastFetchedAt, now);
+    const firstPageFetchedAt = toPositiveNumber(rawCache.firstPageFetchedAt, lastFetchedAt);
+    const normalizedVideos = rawCache.videos.map((video) => normalizeVideoMeta(video, firstPageFetchedAt));
+
+    const pageState: Record<number, { fetchedAt: number; usedInMixed: boolean; lastUsedAt?: number }> = {};
+    if (rawCache.pageState && typeof rawCache.pageState === 'object') {
+      for (const [rawPn, rawState] of Object.entries(rawCache.pageState)) {
+        const pn = Math.max(1, toPositiveNumber(rawPn, 1));
+        const fetchedAt = toPositiveNumber((rawState as { fetchedAt?: number }).fetchedAt, firstPageFetchedAt);
+        const usedInMixed = Boolean((rawState as { usedInMixed?: boolean }).usedInMixed);
+        const lastUsedAtRaw = (rawState as { lastUsedAt?: number }).lastUsedAt;
+        const lastUsedAt = typeof lastUsedAtRaw === 'number' && lastUsedAtRaw > 0 ? lastUsedAtRaw : undefined;
+        pageState[pn] = { fetchedAt, usedInMixed, lastUsedAt };
+      }
+    }
+
+    if (!pageState[1]) {
+      pageState[1] = { fetchedAt: firstPageFetchedAt, usedInMixed: false };
+    }
+
+    for (const video of normalizedVideos) {
+      const pn = video.meta?.sourcePn ?? 1;
+      if (!pageState[pn]) {
+        pageState[pn] = {
+          fetchedAt: video.meta?.pageFetchedAt ?? firstPageFetchedAt,
+          usedInMixed: false
+        };
+      }
+    }
+
+    const pageNumbers = Object.keys(pageState).map((pn) => Math.max(1, Number(pn) || 1));
+    const maxCachedPn = Math.max(1, toPositiveNumber(rawCache.maxCachedPn, pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1));
+    const nextPn = Math.max(maxCachedPn + 1, toPositiveNumber(rawCache.nextPn, maxCachedPn + 1));
+    const secondPageFetchedAt =
+      rawCache.secondPageFetchedAt && rawCache.secondPageFetchedAt > 0
+        ? rawCache.secondPageFetchedAt
+        : pageState[2]?.fetchedAt;
+
+    normalized[mid] = {
+      ...rawCache,
+      mid,
+      videos: normalizedVideos,
+      pageState,
+      maxCachedPn,
+      nextPn,
+      hasMore: Boolean(rawCache.hasMore),
+      firstPageFetchedAt,
+      secondPageFetchedAt,
+      lastFetchedAt
+    };
+  }
+
+  memoryCache.authorVideo = normalized;
+  return normalized;
 }
 
 export async function saveAuthorVideoCacheMap(cacheMap: AuthorVideoCacheMap): Promise<void> {

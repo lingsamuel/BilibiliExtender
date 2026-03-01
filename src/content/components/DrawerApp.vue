@@ -76,8 +76,9 @@
         <div v-else-if="!feed || (mode === 'mixed' && feed.mixedVideos.length === 0)" class="bbe-empty">
           当前分组暂无投稿
         </div>
+        <div v-if="!errorMsg && !loading && feed && warningMsg" class="bbe-warning">{{ warningMsg }}</div>
 
-        <template v-else-if="mode === 'mixed'">
+        <template v-if="mode === 'mixed'">
           <div class="bbe-mixed-layout">
             <aside
               v-if="mixedTimelineItems.length > 0"
@@ -137,6 +138,16 @@
                 </section>
               </template>
             </div>
+          </div>
+          <div class="bbe-load-more-row">
+            <button
+              type="button"
+              class="bbe-btn"
+              :disabled="loadingMore || loading || generating || !feed?.hasMoreForMixed"
+              @click="onLoadMoreClick"
+            >
+              加载更多
+            </button>
           </div>
           <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
           <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
@@ -322,6 +333,7 @@ const activeGroupId = ref('');
 const activeEntryId = ref('');
 const feed = ref<GroupFeedResult | null>(null);
 const errorMsg = ref('');
+const warningMsg = ref('');
 const debugMode = ref(false);
 const listRef = ref<HTMLElement | null>(null);
 let summaryTimer: number | null = null;
@@ -683,6 +695,10 @@ function hasRenderableFeedData(data: GroupFeedResult | null | undefined): boolea
     return true;
   }
   return data.videosByAuthor.some((author) => author.videos.length > 0);
+}
+
+function applyFeedWarning(data: GroupFeedResult | null | undefined): void {
+  warningMsg.value = data?.warningMsg?.trim() || '';
 }
 
 const hasRenderableFeed = computed(() => hasRenderableFeedData(feed.value));
@@ -1132,6 +1148,7 @@ function startPoll(maxAttempts: number): void {
         generating.value = false;
         refreshing.value = false;
         feed.value = resp.data;
+        applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
 
@@ -1156,6 +1173,7 @@ function startPoll(maxAttempts: number): void {
       // 刷新尚未完成时，若已出现部分可展示内容，则先展示增量结果并继续轮询。
       if (hasRenderableFeedData(resp.data)) {
         feed.value = resp.data;
+        applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
       }
@@ -1200,10 +1218,12 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
       generating.value = true;
       if (hasRenderableFeedData(resp.data)) {
         feed.value = resp.data;
+        applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
       } else {
         feed.value = null;
+        applyFeedWarning(null);
       }
       await loadSummary();
       startPoll(POLL_MAX_REFRESHING);
@@ -1216,9 +1236,11 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
       const newVideos = resp.data.mixedVideos.filter((v) => !existingBvids.has(v.bvid));
       feed.value.mixedVideos.push(...newVideos);
       feed.value.hasMoreForMixed = resp.data.hasMoreForMixed;
+      feed.value.warningMsg = resp.data.warningMsg;
     } else {
       feed.value = resp.data;
     }
+    applyFeedWarning(resp.data);
 
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
@@ -1267,6 +1289,7 @@ async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<v
     }
 
     feed.value = resp.data;
+    applyFeedWarning(resp.data);
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
     await fetchClickedVideos();
@@ -1283,6 +1306,7 @@ async function openDrawer(): Promise<void> {
   clickedMap.value = {};
   followPendingMap.value = {};
   userExplicitlyChoseAll = false;
+  warningMsg.value = '';
 
   try {
     await loadSummary();
@@ -1332,6 +1356,7 @@ async function openDrawer(): Promise<void> {
 function closeDrawer(): void {
   visible.value = false;
   followPendingMap.value = {};
+  warningMsg.value = '';
 }
 
 /**
@@ -1392,6 +1417,7 @@ async function selectEntry(entryId: string): Promise<void> {
   activeGroupId.value = entryId;
   followPendingMap.value = {};
   userExplicitlyChoseAll = false;
+  warningMsg.value = '';
 
   // 从 summary 恢复记忆的 mode、已阅时间点和作者排序方式
   const summary = summaries.value.find((s) => s.groupId === entryId);
@@ -1606,6 +1632,21 @@ async function onListScroll(event: Event): Promise<void> {
   const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 48;
 
   if (!nearBottom) {
+    return;
+  }
+
+  try {
+    await loadFeed({ loadMore: true });
+  } catch (error) {
+    errorMsg.value = error instanceof Error ? error.message : '加载更多失败';
+  }
+}
+
+async function onLoadMoreClick(): Promise<void> {
+  if (mode.value !== 'mixed' || loadingMore.value || loading.value || generating.value) {
+    return;
+  }
+  if (!feed.value?.hasMoreForMixed) {
     return;
   }
 

@@ -25,14 +25,17 @@ import {
   makeSummary,
   markGroupRead,
   removeGroupState,
-  toFeedResult
+  toFeedResult,
+  type MixedBuildDiagnostics
 } from '@/background/feed-service';
 import {
   enqueueBurst,
+  enqueueBurstHeadAndWait,
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
   getStatus,
+  reportAuthorPageUsage,
   runSchedulerNow,
   setupAlarm
 } from '@/background/scheduler';
@@ -60,9 +63,11 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
 }
 
 interface MissingAuthorTaskBuckets {
-  burst: Array<{ mid: number; name: string }>;
-  priority: Array<{ mid: number; name: string }>;
+  burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }>;
+  priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }>;
 }
+
+const MAX_SYNC_BURST_ROUNDS = 12;
 
 /**
  * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”并按队列分流：
@@ -73,8 +78,8 @@ function splitMissingAuthorTasks(
   authorMids: number[],
   authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>
 ): MissingAuthorTaskBuckets {
-  const burst: Array<{ mid: number; name: string }> = [];
-  const priority: Array<{ mid: number; name: string }> = [];
+  const burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }> = [];
+  const priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }> = [];
 
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
@@ -84,7 +89,9 @@ function splitMissingAuthorTasks(
 
     const task = {
       mid,
-      name: cache?.name?.trim() || String(mid)
+      name: cache?.name?.trim() || String(mid),
+      pn: 1,
+      reason: 'first-page-refresh' as const
     };
 
     if (!cache) {
@@ -253,7 +260,7 @@ async function handleGetGroupSummary(
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
 ): Promise<ResponseMap['GET_GROUP_FEED']> {
-  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, clickedVideos] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, initialAuthorCacheMap, clickedVideos] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
@@ -269,6 +276,7 @@ async function handleGetGroupFeed(
   }
 
   const feedCache = feedCacheMap[group.groupId];
+  let runtimeMutatedByLoadMore = false;
 
   // 无缓存：首次访问，提交收藏夹优先任务，等待调度器异步生成缓存。
   if (!feedCache) {
@@ -290,7 +298,7 @@ async function handleGetGroupFeed(
   // 加载更多：仅增加目标数量，不发起 API 请求
   if (request.payload.loadMore) {
     increaseMixedTarget(group.groupId, settings, runtimeMap);
-    await saveRuntimeStateMap(runtimeMap);
+    runtimeMutatedByLoadMore = true;
   }
 
   await saveLastGroupId(group.groupId);
@@ -299,18 +307,95 @@ async function handleGetGroupFeed(
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
 
   const runtimeBefore = JSON.stringify(runtimeMap[group.groupId] ?? null);
-  const result = toFeedResult(
-    group,
-    request.payload.mode,
-    settings,
-    runtimeMap,
-    feedCacheMap,
-    authorCacheMap,
-    readMarks,
-    clickedVideos,
-    selectedReadMarkTs,
-    request.payload.byAuthorSortByLatest
-  );
+  let authorCacheMap = initialAuthorCacheMap;
+  let result: Omit<ResponseMap['GET_GROUP_FEED'], 'cacheStatus'> = {
+    ...toFeedResult(
+      group,
+      request.payload.mode,
+      settings,
+      runtimeMap,
+      feedCacheMap,
+      authorCacheMap,
+      readMarks,
+      clickedVideos,
+      selectedReadMarkTs,
+      request.payload.byAuthorSortByLatest
+    ),
+    warningMsg: undefined
+  };
+  const warningMessages: string[] = [];
+
+  if (request.payload.mode === 'mixed') {
+    for (let round = 0; round < MAX_SYNC_BURST_ROUNDS; round++) {
+      const diagnostics: MixedBuildDiagnostics = {
+        usedPages: [],
+        boundaryTasks: []
+      };
+      result = {
+        ...toFeedResult(
+          group,
+          request.payload.mode,
+          settings,
+          runtimeMap,
+          feedCacheMap,
+          authorCacheMap,
+          readMarks,
+          clickedVideos,
+          selectedReadMarkTs,
+          request.payload.byAuthorSortByLatest,
+          diagnostics
+        ),
+        warningMsg: warningMessages.length > 0 ? warningMessages.join('；') : undefined
+      };
+
+      if (diagnostics.usedPages.length > 0) {
+        await reportAuthorPageUsage(group.groupId, diagnostics.usedPages);
+      }
+
+      if (diagnostics.boundaryTasks.length === 0) {
+        break;
+      }
+
+      const burstResult = await enqueueBurstHeadAndWait(
+        diagnostics.boundaryTasks.map((task) => ({
+          ...task,
+          reason: 'load-more-boundary',
+          failFast: true
+        }))
+      );
+
+      if (burstResult.failed.length > 0) {
+        const failedNames = burstResult.failed.map((item) => `${item.mid}(p${item.pn})`);
+        warningMessages.push(`部分作者补页失败: ${failedNames.join(', ')}`);
+      }
+
+      if (burstResult.success.length === 0) {
+        break;
+      }
+
+      authorCacheMap = await getAuthorCacheSnapshot();
+    }
+    if (warningMessages.length > 0) {
+      result.warningMsg = warningMessages.join('；');
+    }
+  } else {
+    result = {
+      ...toFeedResult(
+        group,
+        request.payload.mode,
+        settings,
+        runtimeMap,
+        feedCacheMap,
+        authorCacheMap,
+        readMarks,
+        clickedVideos,
+        selectedReadMarkTs,
+        request.payload.byAuthorSortByLatest
+      ),
+      warningMsg: undefined
+    };
+  }
+
   const runtimeAfter = JSON.stringify(runtimeMap[group.groupId] ?? null);
   const runtimeChanged = runtimeBefore !== runtimeAfter;
 
@@ -318,13 +403,13 @@ async function handleGetGroupFeed(
   if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
     enqueueBurst(missingAuthorTasks.burst);
     enqueuePriority(missingAuthorTasks.priority);
-    if (runtimeChanged) {
+    if (runtimeChanged || runtimeMutatedByLoadMore) {
       await saveRuntimeStateMap(runtimeMap);
     }
     return { ...result, cacheStatus: 'generating' };
   }
 
-  if (runtimeChanged) {
+  if (runtimeChanged || runtimeMutatedByLoadMore) {
     await saveRuntimeStateMap(runtimeMap);
   }
 
