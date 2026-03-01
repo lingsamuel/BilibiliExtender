@@ -9,8 +9,10 @@ export const STORAGE_KEYS = {
   AUTHOR_VIDEO_CACHE: 'bbe:author-video-cache',
   LAST_GROUP_ID: 'bbe:last:group',
   GROUP_READ_MARKS: 'bbe:group-read-marks',
+  AUTHOR_PREFERENCES: 'bbe:author-preferences',
   LEGACY_AUTHOR_READ_MARKS: 'bbe:author-read-marks',
-  CLICKED_VIDEOS: 'bbe:clicked-videos'
+  CLICKED_VIDEOS: 'bbe:clicked-videos',
+  VIDEO_REVIEWED_OVERRIDES: 'bbe:video-reviewed-overrides'
 } as const;
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -21,6 +23,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
+  enableAllGroup: true,
   useStorageSync: true,
   debugMode: false
 };
@@ -51,4 +54,8 @@ export const EXTENSION_EVENT = {
   TOGGLE_DRAWER: 'bbe:toggle-drawer',
   OPEN_DRAWER: 'bbe:open-drawer',
   UNREAD_CHANGED: 'bbe:unread-changed'
+} as const;
+
+export const VIRTUAL_GROUP_ID = {
+  ALL: '__bbe_all__'
 } as const;

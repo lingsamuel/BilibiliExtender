@@ -1,10 +1,12 @@
 import type {
+  AuthorPreference,
   ExtensionSettings,
   GroupConfig,
   GroupFeedResult,
   GroupReadMark,
   GroupOptionsData,
   GroupSummary,
+  OverviewFilterKey,
   ViewMode
 } from '@/shared/types';
 
@@ -22,6 +24,7 @@ export type MessageRequest =
         mode: ViewMode;
         loadMore?: boolean;
         selectedReadMarkTs?: number;
+        overviewFilter?: OverviewFilterKey;
         byAuthorSortByLatest?: boolean;
       };
     }
@@ -32,6 +35,13 @@ export type MessageRequest =
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
+  | { type: 'SET_VIDEO_REVIEWED'; payload: { bvid: string; reviewed: boolean } }
+  | { type: 'GET_VIDEO_REVIEWED_OVERRIDES'; payload: { bvids: string[] } }
+  | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
+  | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
+  | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
+  | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
+  | { type: 'MARK_ALL_GROUPS_READ' }
   | { type: 'GET_SCHEDULER_STATUS' }
   | { type: 'RUN_SCHEDULER_NOW' };
 
@@ -147,6 +157,13 @@ export interface ResponseMap {
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
+  SET_VIDEO_REVIEWED: { bvid: string; reviewed: boolean };
+  GET_VIDEO_REVIEWED_OVERRIDES: { overrides: Record<string, boolean> };
+  SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };
+  SET_AUTHOR_READ_MARK: { preference: AuthorPreference };
+  CLEAR_AUTHOR_READ_MARK: { preference: AuthorPreference };
+  GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };
+  MARK_ALL_GROUPS_READ: { marks: Record<string, GroupReadMark>; readMarkTs: number };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;
   RUN_SCHEDULER_NOW: {
     accepted: true;

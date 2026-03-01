@@ -1,9 +1,13 @@
-import { DEFAULT_SETTINGS } from '@/shared/constants';
+import { DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import { getMyCreatedFolders, getUserCard, modifyUserRelation } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import {
   appendGroupReadMark,
+  clearAuthorReadMark,
   cleanOrphanClicks,
+  cleanOrphanReviewedOverrides,
+  loadAuthorPreferences,
+  loadVideoReviewedOverrides,
   loadGroupReadMarks,
   loadClickedVideos,
   loadFeedCacheMap,
@@ -12,6 +16,9 @@ import {
   loadRuntimeStateMap,
   loadSettings,
   recordVideoClick,
+  setAuthorIgnoreUnreadCount,
+  setAuthorReadMark,
+  setVideoReviewedOverride,
   saveAuthorVideoCacheMap,
   saveFeedCacheMap,
   saveGroups,
@@ -19,7 +26,7 @@ import {
   saveRuntimeStateMap,
   saveSettings
 } from '@/shared/storage/repository';
-import type { GroupConfig } from '@/shared/types';
+import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
   increaseMixedTarget,
   makeSummary,
@@ -57,6 +64,7 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
   return {
     ...group,
     alias: group.alias?.trim() || undefined,
+    excludeFromUnreadCount: group.excludeFromUnreadCount === true,
     createdAt: group.createdAt ?? now,
     updatedAt: now
   };
@@ -68,6 +76,7 @@ interface MissingAuthorTaskBuckets {
 }
 
 const MAX_SYNC_BURST_ROUNDS = 12;
+const ALL_GROUP_ID = VIRTUAL_GROUP_ID.ALL;
 
 /**
  * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”并按队列分流：
@@ -217,16 +226,20 @@ async function handleSaveSettings(
 async function handleGetGroupSummary(
   _request: Extract<MessageRequest, { type: 'GET_GROUP_SUMMARY' }>
 ): Promise<ResponseMap['GET_GROUP_SUMMARY']> {
-  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, readMarks, lastGroupId] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, authorCacheMap, readMarks, lastGroupId, authorPreferences] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
     getAuthorCacheSnapshot(),
     loadGroupReadMarks(),
-    loadLastGroupId()
+    loadLastGroupId(),
+    loadAuthorPreferences()
   ]);
-  const clickedVideos = await cleanOrphanClicks(authorCacheMap);
+  const [clickedVideos, reviewedOverrides] = await Promise.all([
+    cleanOrphanClicks(authorCacheMap),
+    cleanOrphanReviewedOverrides(authorCacheMap)
+  ]);
 
   // 纯缓存读取，不再触发 API 请求；刷新由调度器 alarm 驱动
   const { summaries: allSummaries, totalUnreadCount } = makeSummary(
@@ -236,9 +249,25 @@ async function handleGetGroupSummary(
     feedCacheMap,
     authorCacheMap,
     readMarks,
-    clickedVideos
+    clickedVideos,
+    reviewedOverrides,
+    authorPreferences
   );
   const summaries = allSummaries.filter((item) => item.enabled);
+  if (settings.enableAllGroup && summaries.length > 0) {
+    const allRuntime = runtimeMap[ALL_GROUP_ID];
+    summaries.unshift({
+      groupId: ALL_GROUP_ID,
+      title: '全部',
+      unreadCount: totalUnreadCount,
+      lastRefreshAt: allRuntime?.lastRefreshAt,
+      enabled: true,
+      savedMode: allRuntime?.savedMode,
+      savedReadMarkTs: allRuntime?.savedReadMarkTs,
+      savedOverviewFilter: allRuntime?.savedOverviewFilter,
+      savedByAuthorSortByLatest: allRuntime?.savedByAuthorSortByLatest
+    });
+  }
   await saveRuntimeStateMap(runtimeMap);
 
   return {
@@ -260,27 +289,91 @@ async function handleGetGroupSummary(
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
 ): Promise<ResponseMap['GET_GROUP_FEED']> {
-  const [groups, settings, runtimeMap, feedCacheMap, initialAuthorCacheMap, clickedVideos] = await Promise.all([
+  const [
+    groups,
+    settings,
+    runtimeMap,
+    feedCacheMap,
+    initialAuthorCacheMap,
+    clickedVideos,
+    reviewedOverrides,
+    authorPreferences
+  ] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
     getAuthorCacheSnapshot(),
-    loadClickedVideos()
+    loadClickedVideos(),
+    loadVideoReviewedOverrides(),
+    loadAuthorPreferences()
   ]);
 
-  const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
+  const isAllGroup = request.payload.groupId === ALL_GROUP_ID;
+  const missingFavGroupIds: string[] = [];
+  let mergedFeedCacheMap = feedCacheMap;
+  let group: GroupConfig | undefined;
 
+  if (isAllGroup) {
+    if (!settings.enableAllGroup) {
+      throw new Error('“全部”分组已关闭');
+    }
+
+    const allAuthorMids = new Set<number>();
+    for (const item of groups) {
+      if (!item.enabled) {
+        continue;
+      }
+      const cache = feedCacheMap[item.groupId];
+      if (!cache) {
+        missingFavGroupIds.push(item.groupId);
+        continue;
+      }
+      for (const mid of cache.authorMids) {
+        allAuthorMids.add(mid);
+      }
+    }
+
+    if (missingFavGroupIds.length > 0) {
+      enqueuePriorityGroup(missingFavGroupIds);
+    }
+
+    group = {
+      groupId: ALL_GROUP_ID,
+      mediaId: 0,
+      mediaTitle: '全部',
+      alias: '全部',
+      enabled: true,
+      excludeFromUnreadCount: false,
+      createdAt: 0,
+      updatedAt: Date.now()
+    };
+    mergedFeedCacheMap = {
+      ...feedCacheMap,
+      [ALL_GROUP_ID]: {
+        groupId: ALL_GROUP_ID,
+        authorMids: Array.from(allAuthorMids),
+        updatedAt: Date.now()
+      }
+    };
+  } else {
+    group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
+    if (!group) {
+      throw new Error('分组不存在或已禁用');
+    }
+  }
   if (!group) {
     throw new Error('分组不存在或已禁用');
   }
 
-  const feedCache = feedCacheMap[group.groupId];
+  const feedCache = mergedFeedCacheMap[group.groupId];
   let runtimeMutatedByLoadMore = false;
 
   // 无缓存：首次访问，提交收藏夹优先任务，等待调度器异步生成缓存。
   if (!feedCache) {
-    enqueuePriorityGroup([group.groupId]);
+    if (!isAllGroup) {
+      enqueuePriorityGroup([group.groupId]);
+    }
 
     return {
       groupId: group.groupId,
@@ -305,6 +398,7 @@ async function handleGetGroupFeed(
 
   const readMarks = await loadGroupReadMarks();
   const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
+  const overviewFilter = request.payload.overviewFilter ?? 'none';
 
   const runtimeBefore = JSON.stringify(runtimeMap[group.groupId] ?? null);
   let authorCacheMap = initialAuthorCacheMap;
@@ -314,11 +408,14 @@ async function handleGetGroupFeed(
       request.payload.mode,
       settings,
       runtimeMap,
-      feedCacheMap,
+      mergedFeedCacheMap,
       authorCacheMap,
       readMarks,
       clickedVideos,
+      reviewedOverrides,
+      authorPreferences,
       selectedReadMarkTs,
+      overviewFilter,
       request.payload.byAuthorSortByLatest
     ),
     warningMsg: undefined
@@ -334,17 +431,20 @@ async function handleGetGroupFeed(
       result = {
         ...toFeedResult(
           group,
-          request.payload.mode,
-          settings,
-          runtimeMap,
-          feedCacheMap,
-          authorCacheMap,
-          readMarks,
-          clickedVideos,
-          selectedReadMarkTs,
-          request.payload.byAuthorSortByLatest,
-          diagnostics
-        ),
+        request.payload.mode,
+        settings,
+        runtimeMap,
+        mergedFeedCacheMap,
+        authorCacheMap,
+        readMarks,
+        clickedVideos,
+        reviewedOverrides,
+        authorPreferences,
+        selectedReadMarkTs,
+        overviewFilter,
+        request.payload.byAuthorSortByLatest,
+        diagnostics
+      ),
         warningMsg: warningMessages.length > 0 ? warningMessages.join('；') : undefined
       };
 
@@ -385,11 +485,14 @@ async function handleGetGroupFeed(
         request.payload.mode,
         settings,
         runtimeMap,
-        feedCacheMap,
+        mergedFeedCacheMap,
         authorCacheMap,
         readMarks,
         clickedVideos,
+        reviewedOverrides,
+        authorPreferences,
         selectedReadMarkTs,
+        overviewFilter,
         request.payload.byAuthorSortByLatest
       ),
       warningMsg: undefined
@@ -403,6 +506,13 @@ async function handleGetGroupFeed(
   if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
     enqueueBurst(missingAuthorTasks.burst);
     enqueuePriority(missingAuthorTasks.priority);
+    if (runtimeChanged || runtimeMutatedByLoadMore) {
+      await saveRuntimeStateMap(runtimeMap);
+    }
+    return { ...result, cacheStatus: 'generating' };
+  }
+
+  if (isAllGroup && missingFavGroupIds.length > 0) {
     if (runtimeChanged || runtimeMutatedByLoadMore) {
       await saveRuntimeStateMap(runtimeMap);
     }
@@ -434,6 +544,25 @@ async function handleMarkGroupReadMark(
 ): Promise<ResponseMap['MARK_GROUP_READ_MARK']> {
   const marks = await appendGroupReadMark(request.payload.groupId, request.payload.readMarkTs);
   return { marks };
+}
+
+async function handleMarkAllGroupsRead(): Promise<ResponseMap['MARK_ALL_GROUPS_READ']> {
+  const groups = await loadGroups();
+  const enabledGroups = groups.filter((item) => item.enabled);
+  const readMarkTs = Math.floor(Date.now() / 1000);
+  const mergedMarks: Record<string, GroupReadMark> = {};
+
+  for (const group of enabledGroups) {
+    const marks = await appendGroupReadMark(group.groupId, readMarkTs);
+    if (marks[group.groupId]) {
+      mergedMarks[group.groupId] = marks[group.groupId];
+    }
+  }
+
+  return {
+    marks: mergedMarks,
+    readMarkTs
+  };
 }
 
 async function handleGetGroupReadMarks(
@@ -535,6 +664,65 @@ async function handleGetClickedVideos(
   return { clicked };
 }
 
+async function handleSetVideoReviewed(
+  request: Extract<MessageRequest, { type: 'SET_VIDEO_REVIEWED' }>
+): Promise<ResponseMap['SET_VIDEO_REVIEWED']> {
+  await setVideoReviewedOverride(request.payload.bvid, request.payload.reviewed);
+  return {
+    bvid: request.payload.bvid,
+    reviewed: request.payload.reviewed
+  };
+}
+
+async function handleGetVideoReviewedOverrides(
+  request: Extract<MessageRequest, { type: 'GET_VIDEO_REVIEWED_OVERRIDES' }>
+): Promise<ResponseMap['GET_VIDEO_REVIEWED_OVERRIDES']> {
+  const all = await loadVideoReviewedOverrides();
+  const overrides: Record<string, boolean> = {};
+
+  for (const bvid of request.payload.bvids) {
+    if (Object.prototype.hasOwnProperty.call(all, bvid)) {
+      overrides[bvid] = all[bvid] === true;
+    }
+  }
+
+  return { overrides };
+}
+
+async function handleSetAuthorIgnoreUnread(
+  request: Extract<MessageRequest, { type: 'SET_AUTHOR_IGNORE_UNREAD' }>
+): Promise<ResponseMap['SET_AUTHOR_IGNORE_UNREAD']> {
+  const preference = await setAuthorIgnoreUnreadCount(request.payload.mid, request.payload.ignoreUnreadCount);
+  return { preference };
+}
+
+async function handleSetAuthorReadMark(
+  request: Extract<MessageRequest, { type: 'SET_AUTHOR_READ_MARK' }>
+): Promise<ResponseMap['SET_AUTHOR_READ_MARK']> {
+  const preference = await setAuthorReadMark(request.payload.mid, request.payload.readMarkTs);
+  return { preference };
+}
+
+async function handleClearAuthorReadMark(
+  request: Extract<MessageRequest, { type: 'CLEAR_AUTHOR_READ_MARK' }>
+): Promise<ResponseMap['CLEAR_AUTHOR_READ_MARK']> {
+  const preference = await clearAuthorReadMark(request.payload.mid);
+  return { preference };
+}
+
+async function handleGetAuthorPreferences(
+  request: Extract<MessageRequest, { type: 'GET_AUTHOR_PREFERENCES' }>
+): Promise<ResponseMap['GET_AUTHOR_PREFERENCES']> {
+  const all = await loadAuthorPreferences();
+  const preferences: Record<number, (typeof all)[number]> = {};
+  for (const mid of request.payload.mids) {
+    if (all[mid]) {
+      preferences[mid] = all[mid];
+    }
+  }
+  return { preferences };
+}
+
 /**
  * 手动刷新：优先提交“收藏夹刷新任务”。
  * 收藏夹任务完成后会自动衔接作者任务，前台通过轮询 GET_GROUP_FEED 等待缓存就绪。
@@ -543,6 +731,15 @@ async function handleManualRefresh(
   request: Extract<MessageRequest, { type: 'MANUAL_REFRESH' }>
 ): Promise<ResponseMap['MANUAL_REFRESH']> {
   const groups = await loadGroups();
+
+  if (request.payload.groupId === ALL_GROUP_ID) {
+    const enabledGroupIds = groups.filter((item) => item.enabled).map((item) => item.groupId);
+    if (enabledGroupIds.length === 0) {
+      throw new Error('当前没有可刷新的启用分组');
+    }
+    enqueuePriorityGroup(enabledGroupIds);
+    return { accepted: true };
+  }
 
   const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
   if (!group) {
@@ -582,6 +779,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleMarkGroupRead(request));
     case 'MARK_GROUP_READ_MARK':
       return ok(await handleMarkGroupReadMark(request));
+    case 'MARK_ALL_GROUPS_READ':
+      return ok(await handleMarkAllGroupsRead());
     case 'FOLLOW_AUTHOR':
       return ok(await handleFollowAuthor(request));
     case 'GET_GROUP_READ_MARKS':
@@ -590,6 +789,18 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleRecordVideoClick(request));
     case 'GET_CLICKED_VIDEOS':
       return ok(await handleGetClickedVideos(request));
+    case 'SET_VIDEO_REVIEWED':
+      return ok(await handleSetVideoReviewed(request));
+    case 'GET_VIDEO_REVIEWED_OVERRIDES':
+      return ok(await handleGetVideoReviewedOverrides(request));
+    case 'SET_AUTHOR_IGNORE_UNREAD':
+      return ok(await handleSetAuthorIgnoreUnread(request));
+    case 'SET_AUTHOR_READ_MARK':
+      return ok(await handleSetAuthorReadMark(request));
+    case 'CLEAR_AUTHOR_READ_MARK':
+      return ok(await handleClearAuthorReadMark(request));
+    case 'GET_AUTHOR_PREFERENCES':
+      return ok(await handleGetAuthorPreferences(request));
     case 'MANUAL_REFRESH':
       return ok(await handleManualRefresh(request));
     case 'GET_SCHEDULER_STATUS':
@@ -605,7 +816,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   const settings = await loadSettings();
   const merged = { ...DEFAULT_SETTINGS, ...settings };
   await saveSettings(merged);
-  await cleanOrphanClicks();
+  await Promise.all([cleanOrphanClicks(), cleanOrphanReviewedOverrides()]);
   await setupAlarm(merged);
 });
 

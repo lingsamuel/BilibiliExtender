@@ -1,4 +1,5 @@
 export type ViewMode = 'mixed' | 'byAuthor';
+export type OverviewFilterKey = 'none' | 'd14' | 'd30' | 'n10' | 'n30';
 
 export interface GroupConfig {
   groupId: string;
@@ -6,6 +7,8 @@ export interface GroupConfig {
   mediaTitle: string;
   alias?: string;
   enabled: boolean;
+  // 勾选后该分组不参与 unread 计数（分组红点固定为 0）。
+  excludeFromUnreadCount?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -18,6 +21,8 @@ export interface ExtensionSettings {
   timelineMixedMaxCount: number;
   extraOlderVideoCount: number;
   defaultReadMarkDays: number;
+  // 控制是否在侧栏展示默认“全部”聚合分组。
+  enableAllGroup: boolean;
   useStorageSync: boolean;
   debugMode: boolean;
 }
@@ -31,6 +36,8 @@ export interface GroupRuntimeState {
   // 记忆用户上次选择的视图模式和已阅时间点
   savedMode?: ViewMode;
   savedReadMarkTs?: number;
+  // 记忆“概览过滤”选项，仅影响展示，不参与 unread 计算。
+  savedOverviewFilter?: OverviewFilterKey;
   // 记忆“按作者”模式下是否按最新更新时间倒序
   savedByAuthorSortByLatest?: boolean;
 }
@@ -62,6 +69,12 @@ export interface AuthorFeed {
   authorFace?: string;
   follower?: number;
   following?: boolean;
+  // 作者级“不计数 unread count”开关（跨组共享）。
+  ignoreUnreadCount?: boolean;
+  // 当前作者是否存在“非默认值”的作者级已阅时间点。
+  hasAuthorReadMarkOverride?: boolean;
+  // 当前作者用于分割线与过滤的有效边界（秒级时间戳，0 表示无边界）。
+  effectiveReadBoundaryTs?: number;
   videos: VideoItem[];
   // 当前筛选结果是否“仅由已阅前额外视频构成”（没有已阅基线之后的新视频）
   hasOnlyExtraOlderVideos?: boolean;
@@ -94,6 +107,7 @@ export interface GroupSummary {
   enabled: boolean;
   savedMode?: ViewMode;
   savedReadMarkTs?: number;
+  savedOverviewFilter?: OverviewFilterKey;
   savedByAuthorSortByLatest?: boolean;
 }
 
@@ -140,6 +154,15 @@ export interface GroupReadMark {
   // 最多保留 10 条，按时间倒序排列（最新在前）
   // 每条记录为 Unix 时间戳（秒），表示该时间点及之前的视频已阅
   timestamps: number[];
+}
+
+export interface AuthorPreference {
+  mid: number;
+  // 该作者视频是否不参与 unread 计数（跨组共享）。
+  ignoreUnreadCount?: boolean;
+  // 作者级已阅时间点（秒级，跨组共享）；设置后绝对覆盖分组基线。
+  readMarkTs?: number;
+  updatedAt?: number;
 }
 
 export interface GroupOptionsData {

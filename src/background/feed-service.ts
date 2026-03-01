@@ -1,6 +1,7 @@
 import { MIXED_LOAD_INCREMENT } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import type {
+  AuthorPreference,
   AuthorFeed,
   AuthorVideoCache,
   ExtensionSettings,
@@ -9,6 +10,7 @@ import type {
   GroupFeedResult,
   GroupReadMark,
   GroupRuntimeState,
+  OverviewFilterKey,
   VideoItem,
   ViewMode
 } from '@/shared/types';
@@ -18,6 +20,8 @@ export type FeedCacheMap = Record<string, GroupFeedCache>;
 export type AuthorCacheMap = Record<number, AuthorVideoCache>;
 type ReadMarkMap = Record<string, GroupReadMark>;
 type ClickedVideoMap = Record<string, number>;
+type ReviewedOverrideMap = Record<string, boolean>;
+type AuthorPreferenceMap = Record<number, AuthorPreference>;
 const DEFAULT_BY_AUTHOR_SORT_BY_LATEST = true;
 
 function getGroupTitle(group: GroupConfig): string {
@@ -328,6 +332,19 @@ function resolveGroupUnreadBaselineTs(selectedReadMarkTs: number, graceReadMarkT
   return 0;
 }
 
+function resolveAuthorUnreadBaselineTs(
+  mid: number,
+  groupBaselineTs: number,
+  authorPreferences: AuthorPreferenceMap
+): number {
+  const pref = authorPreferences[mid];
+  if (pref?.readMarkTs && pref.readMarkTs > 0) {
+    // 作者级已阅时间点优先级绝对高于分组基线（与大小无关）。
+    return pref.readMarkTs;
+  }
+  return groupBaselineTs;
+}
+
 function getLocalDayStartSeconds(seconds: number): number {
   const date = new Date(seconds * 1000);
   return Math.floor(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1000);
@@ -362,7 +379,14 @@ function resolveMixedVisibleLowerBoundTs(selectedReadMarkTs: number, graceReadMa
   return readDayStart;
 }
 
-function isVideoViewed(video: VideoItem, clickedVideos: ClickedVideoMap): boolean {
+function isVideoReviewed(
+  video: VideoItem,
+  clickedVideos: ClickedVideoMap,
+  reviewedOverrides: ReviewedOverrideMap
+): boolean {
+  if (Object.prototype.hasOwnProperty.call(reviewedOverrides, video.bvid)) {
+    return reviewedOverrides[video.bvid] === true;
+  }
   // “已查看”与卡片展示规则保持一致：
   // 1) 点击记录命中；或 2) playback_position >= 10。
   return clickedVideos[video.bvid] !== undefined || (video.playbackPosiiton ?? 0) >= 10;
@@ -372,29 +396,41 @@ function isVideoViewed(video: VideoItem, clickedVideos: ClickedVideoMap): boolea
  * 计算单个分组在指定已阅时间点下的未读数量（按 bvid 去重）。
  */
 function calcGroupUnreadCount(
+  group: GroupConfig,
   authorMids: number[],
   authorCacheMap: AuthorCacheMap,
   selectedReadMarkTs: number,
   graceReadMarkTs: number,
-  clickedVideos: ClickedVideoMap
+  clickedVideos: ClickedVideoMap,
+  reviewedOverrides: ReviewedOverrideMap,
+  authorPreferences: AuthorPreferenceMap
 ): number {
-  if (selectedReadMarkTs === 0) {
+  if (group.excludeFromUnreadCount) {
     return 0;
   }
 
-  const baseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
+  const groupBaseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
 
   const seenBvids = new Set<string>();
   let unreadCount = 0;
 
   for (const mid of authorMids) {
+    const pref = authorPreferences[mid];
+    if (pref?.ignoreUnreadCount) {
+      continue;
+    }
+    if (selectedReadMarkTs === 0 && !(pref?.readMarkTs && pref.readMarkTs > 0)) {
+      // 分组选择“全部”时仅统计存在作者级基线覆盖的作者。
+      continue;
+    }
+    const baseline = resolveAuthorUnreadBaselineTs(mid, groupBaseline, authorPreferences);
     const videos = authorCacheMap[mid]?.videos ?? [];
     for (const video of videos) {
       if (seenBvids.has(video.bvid)) {
         continue;
       }
       seenBvids.add(video.bvid);
-      if (video.pubdate > baseline && !isVideoViewed(video, clickedVideos)) {
+      if (video.pubdate > baseline && !isVideoReviewed(video, clickedVideos, reviewedOverrides)) {
         unreadCount++;
       }
     }
@@ -412,6 +448,28 @@ function aggregateMixedVideos(authorMids: number[], authorCacheMap: AuthorCacheM
     const cache = authorCacheMap[mid];
     if (!cache) continue;
     for (const video of cache.videos) {
+      const prev = map.get(video.bvid);
+      if (!prev) {
+        map.set(video.bvid, video);
+      } else {
+        map.set(video.bvid, pickPreferVideo(prev, video));
+      }
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => b.pubdate - a.pubdate);
+}
+
+function aggregateMixedVideosByOverviewFilter(
+  authorMids: number[],
+  authorCacheMap: AuthorCacheMap,
+  overviewFilter: OverviewFilterKey
+): VideoItem[] {
+  const map = new Map<string, VideoItem>();
+  for (const mid of authorMids) {
+    const cache = authorCacheMap[mid];
+    if (!cache) continue;
+    const scoped = applyOverviewFilterForAuthor(cache.videos, overviewFilter);
+    for (const video of scoped) {
       const prev = map.get(video.bvid);
       if (!prev) {
         map.set(video.bvid, video);
@@ -480,13 +538,18 @@ function calcGlobalUnreadCount(
   authorCacheMap: AuthorCacheMap,
   readMarks: ReadMarkMap,
   graceReadMarkTs: number,
-  clickedVideos: ClickedVideoMap
+  clickedVideos: ClickedVideoMap,
+  reviewedOverrides: ReviewedOverrideMap,
+  authorPreferences: AuthorPreferenceMap
 ): number {
   const authorBaselineMap = new Map<number, number>();
   const authorInNonAllGroups = new Set<number>();
 
   for (const group of groups) {
     if (!group.enabled) {
+      continue;
+    }
+    if (group.excludeFromUnreadCount) {
       continue;
     }
 
@@ -499,14 +562,21 @@ function calcGlobalUnreadCount(
     const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
     const selectedTs = resolveGroupReadMarkTs(runtime?.savedReadMarkTs, readMarkTimestamps);
 
-    // “全部”分组只影响自身红点，不参与全局作者基线聚合。
-    if (selectedTs === 0) {
-      continue;
-    }
-
     for (const mid of feedCache.authorMids) {
+      const pref = authorPreferences[mid];
+      if (pref?.ignoreUnreadCount) {
+        continue;
+      }
+      if (selectedTs === 0 && !(pref?.readMarkTs && pref.readMarkTs > 0)) {
+        // 分组选择“全部”时，仅由作者级已阅覆盖提供全局基线。
+        continue;
+      }
       authorInNonAllGroups.add(mid);
-      const baseline = resolveGroupUnreadBaselineTs(selectedTs, graceReadMarkTs);
+      const baseline = resolveAuthorUnreadBaselineTs(
+        mid,
+        resolveGroupUnreadBaselineTs(selectedTs, graceReadMarkTs),
+        authorPreferences
+      );
       const prev = authorBaselineMap.get(mid);
       if (prev === undefined || baseline > prev) {
         authorBaselineMap.set(mid, baseline);
@@ -522,7 +592,7 @@ function calcGlobalUnreadCount(
     }
     const videos = authorCacheMap[mid]?.videos ?? [];
     for (const video of videos) {
-      if (video.pubdate > baseline && !isVideoViewed(video, clickedVideos)) {
+      if (video.pubdate > baseline && !isVideoReviewed(video, clickedVideos, reviewedOverrides)) {
         unreadBvids.add(video.bvid);
       }
     }
@@ -531,42 +601,76 @@ function calcGlobalUnreadCount(
   return unreadBvids.size;
 }
 
-/**
- * 按已阅时间点过滤某位作者的视频列表。
- * selectedTs: 用户选中的已阅时间点（0 表示"全部"，不过滤）。
- * graceTs: 无真实已阅记录时的 grace 默认时间点。
- */
-function filterVideosByReadMark(
-  videos: VideoItem[],
-  selectedTs: number,
-  extraCount: number,
-  graceTs: number
-): VideoItem[] {
-  if (selectedTs === 0) {
+function resolveOverviewDays(overviewFilter: OverviewFilterKey): number | null {
+  if (overviewFilter === 'd14') return 14;
+  if (overviewFilter === 'd30') return 30;
+  return null;
+}
+
+function resolveOverviewPerAuthorCount(overviewFilter: OverviewFilterKey): number | null {
+  if (overviewFilter === 'n10') return 10;
+  if (overviewFilter === 'n30') return 30;
+  return null;
+}
+
+function applyOverviewFilterForAuthor(videos: VideoItem[], overviewFilter: OverviewFilterKey): VideoItem[] {
+  if (overviewFilter === 'none') {
     return videos;
   }
 
-  const baseline = resolveGroupUnreadBaselineTs(selectedTs, graceTs);
+  const perAuthorCount = resolveOverviewPerAuthorCount(overviewFilter);
+  if (perAuthorCount !== null) {
+    return videos.slice(0, perAuthorCount);
+  }
+
+  const days = resolveOverviewDays(overviewFilter);
+  if (days !== null) {
+    const lowerBound = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
+    return videos.filter((video) => video.pubdate >= lowerBound);
+  }
+
+  return videos;
+}
+
+function filterAuthorVideosByTracking(videos: VideoItem[], baseline: number, extraCount: number): VideoItem[] {
   if (baseline <= 0) {
     return videos;
   }
-
   const newVideos = videos.filter((v) => v.pubdate >= baseline);
   const olderVideos = videos.filter((v) => v.pubdate < baseline).slice(0, extraCount);
   return [...newVideos, ...olderVideos];
 }
 
-function filterMixedVideosByReadMark(videos: VideoItem[], selectedTs: number, graceTs: number): VideoItem[] {
+function resolveAuthorMixedLowerBoundTs(
+  mid: number,
+  selectedTs: number,
+  graceTs: number,
+  authorPreferences: AuthorPreferenceMap
+): number {
+  const pref = authorPreferences[mid];
+  if (pref?.readMarkTs && pref.readMarkTs > 0) {
+    return pref.readMarkTs;
+  }
+  return resolveMixedVisibleLowerBoundTs(selectedTs, graceTs);
+}
+
+function filterMixedVideosByTracking(
+  videos: VideoItem[],
+  selectedTs: number,
+  graceTs: number,
+  authorPreferences: AuthorPreferenceMap
+): VideoItem[] {
   if (selectedTs === 0) {
     return videos;
   }
 
-  const lowerBound = resolveMixedVisibleLowerBoundTs(selectedTs, graceTs);
-  if (lowerBound <= 0) {
-    return videos;
-  }
-
-  return videos.filter((video) => video.pubdate >= lowerBound);
+  return videos.filter((video) => {
+    const lowerBound = resolveAuthorMixedLowerBoundTs(video.authorMid, selectedTs, graceTs, authorPreferences);
+    if (lowerBound <= 0) {
+      return true;
+    }
+    return video.pubdate >= lowerBound;
+  });
 }
 
 function getLatestPubdate(videos: VideoItem[]): number | null {
@@ -674,7 +778,10 @@ export function toFeedResult(
   authorCacheMap: AuthorCacheMap,
   readMarks: ReadMarkMap,
   clickedVideos: ClickedVideoMap,
+  reviewedOverrides: ReviewedOverrideMap,
+  authorPreferences: AuthorPreferenceMap,
   selectedReadMarkTs: number,
+  overviewFilter: OverviewFilterKey,
   byAuthorSortByLatest?: boolean,
   diagnostics?: MixedBuildDiagnostics
 ): GroupFeedResult {
@@ -699,17 +806,18 @@ export function toFeedResult(
   }
   const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
   const graceReadMarkTs = getGraceReadMarkTs(settings);
+  const trackingGroupBaselineTs = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
 
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
     const allVideos = authorCacheMap[mid]?.videos ?? [];
-    const videos = filterVideosByReadMark(
-      allVideos,
-      selectedReadMarkTs,
-      settings.extraOlderVideoCount,
-      graceReadMarkTs
-    );
-    const baseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
+    const pref = authorPreferences[mid];
+    const hasAuthorReadMarkOverride = Boolean(pref?.readMarkTs && pref.readMarkTs > 0);
+    const authorBoundaryTs = resolveAuthorUnreadBaselineTs(mid, trackingGroupBaselineTs, authorPreferences);
+    const videos =
+      overviewFilter === 'none'
+        ? filterAuthorVideosByTracking(allVideos, authorBoundaryTs, settings.extraOlderVideoCount)
+        : applyOverviewFilterForAuthor(allVideos, overviewFilter);
     const meta = authorMetaMap.get(mid);
 
     // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
@@ -719,12 +827,15 @@ export function toFeedResult(
       authorFace: meta?.face,
       follower: meta?.follower,
       following: meta?.following,
+      ignoreUnreadCount: pref?.ignoreUnreadCount === true,
+      hasAuthorReadMarkOverride,
+      effectiveReadBoundaryTs: overviewFilter === 'none' ? authorBoundaryTs : 0,
       videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),
       hasOnlyExtraOlderVideos:
-        selectedReadMarkTs !== 0 &&
-        baseline > 0 &&
+        overviewFilter === 'none' &&
+        authorBoundaryTs > 0 &&
         videos.length > 0 &&
-        videos.every((video) => video.pubdate < baseline),
+        videos.every((video) => video.pubdate < authorBoundaryTs),
       latestPubdate: getLatestPubdate(allVideos) ?? undefined
     };
   });
@@ -736,9 +847,14 @@ export function toFeedResult(
   const injectAuthorMeta = (videos: VideoItem[]): VideoItem[] =>
     videos.map((video) => injectAuthorMetaIntoVideo(video, authorMetaMap.get(video.authorMid)));
 
-  const mixedAllVideos = aggregateMixedVideos(authorMids, authorCacheMap);
+  const mixedAllVideos =
+    overviewFilter === 'none'
+      ? aggregateMixedVideos(authorMids, authorCacheMap)
+      : aggregateMixedVideosByOverviewFilter(authorMids, authorCacheMap, overviewFilter);
   let mixedVideos = injectAuthorMeta(
-    filterMixedVideosByReadMark(mixedAllVideos, selectedReadMarkTs, graceReadMarkTs)
+    overviewFilter === 'none'
+      ? filterMixedVideosByTracking(mixedAllVideos, selectedReadMarkTs, graceReadMarkTs, authorPreferences)
+      : mixedAllVideos
   );
 
   // 时间流读取遵循 runtime 目标数量，避免一次返回过多数据导致渲染与消息传输变慢。
@@ -764,6 +880,9 @@ export function toFeedResult(
 
     const boundaryTaskMap = new Map<string, MixedBoundaryTask>();
     for (const mid of authorMids) {
+      if (overviewFilter !== 'none') {
+        continue;
+      }
       const cache = authorCacheMap[mid];
       if (!cache || !cache.hasMore) {
         continue;
@@ -773,7 +892,10 @@ export function toFeedResult(
         continue;
       }
 
-      const filteredByReadMark = filterMixedVideosByReadMark(cache.videos, selectedReadMarkTs, graceReadMarkTs);
+      const filteredByReadMark =
+        overviewFilter === 'none'
+          ? filterMixedVideosByTracking(cache.videos, selectedReadMarkTs, graceReadMarkTs, authorPreferences)
+          : applyOverviewFilterForAuthor(cache.videos, overviewFilter);
       if (filteredByReadMark.length === 0) {
         continue;
       }
@@ -796,15 +918,19 @@ export function toFeedResult(
   }
 
   runtime.unreadCount = calcGroupUnreadCount(
+    group,
     authorMids,
     authorCacheMap,
     selectedReadMarkTs,
     graceReadMarkTs,
-    clickedVideos
+    clickedVideos,
+    reviewedOverrides,
+    authorPreferences
   );
 
   runtime.savedMode = mode;
   runtime.savedReadMarkTs = selectedReadMarkTs;
+  runtime.savedOverviewFilter = overviewFilter;
   runtime.savedByAuthorSortByLatest = byAuthorSortEnabled;
 
   const hasMoreForMixed = mixedTotalBeforeLimit > mixedVideos.length || authorMids.some((mid) => authorCacheMap[mid]?.hasMore);
@@ -843,7 +969,9 @@ export function makeSummary(
   feedCacheMap: FeedCacheMap,
   authorCacheMap: AuthorCacheMap,
   readMarks: ReadMarkMap,
-  clickedVideos: ClickedVideoMap
+  clickedVideos: ClickedVideoMap,
+  reviewedOverrides: ReviewedOverrideMap,
+  authorPreferences: AuthorPreferenceMap
 ): {
   summaries: Array<{
     groupId: string;
@@ -853,6 +981,7 @@ export function makeSummary(
     enabled: boolean;
     savedMode?: ViewMode;
     savedReadMarkTs?: number;
+    savedOverviewFilter?: OverviewFilterKey;
     savedByAuthorSortByLatest?: boolean;
   }>;
   totalUnreadCount: number;
@@ -867,11 +996,14 @@ export function makeSummary(
       const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
       const selectedTs = resolveGroupReadMarkTs(runtime.savedReadMarkTs, readMarkTimestamps);
       unreadCount = calcGroupUnreadCount(
+        group,
         feedCache.authorMids,
         authorCacheMap,
         selectedTs,
         graceReadMarkTs,
-        clickedVideos
+        clickedVideos,
+        reviewedOverrides,
+        authorPreferences
       );
     }
     runtime.unreadCount = unreadCount;
@@ -884,6 +1016,7 @@ export function makeSummary(
       enabled: group.enabled,
       savedMode: runtime.savedMode,
       savedReadMarkTs: runtime.savedReadMarkTs,
+      savedOverviewFilter: runtime.savedOverviewFilter,
       savedByAuthorSortByLatest: runtime.savedByAuthorSortByLatest
     };
   });
@@ -895,7 +1028,9 @@ export function makeSummary(
     authorCacheMap,
     readMarks,
     graceReadMarkTs,
-    clickedVideos
+    clickedVideos,
+    reviewedOverrides,
+    authorPreferences
   );
 
   return {

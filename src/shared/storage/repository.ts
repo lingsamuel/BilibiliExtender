@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
 import type {
+  AuthorPreference,
   AuthorVideoCache,
   ExtensionSettings,
   GroupConfig,
@@ -12,6 +13,7 @@ import type {
 type RuntimeStateMap = Record<string, GroupRuntimeState>;
 type FeedCacheMap = Record<string, GroupFeedCache>;
 type AuthorVideoCacheMap = Record<number, AuthorVideoCache>;
+type AuthorPreferenceMap = Record<number, AuthorPreference>;
 
 /**
  * 进程内缓存：
@@ -28,6 +30,8 @@ const memoryCache: {
   hasLastGroupId: boolean;
   groupReadMarks?: Record<string, GroupReadMark>;
   clickedVideos?: Record<string, number>;
+  videoReviewedOverrides?: Record<string, boolean>;
+  authorPreferences?: AuthorPreferenceMap;
 } = {
   hasLastGroupId: false
 };
@@ -285,6 +289,7 @@ export async function saveLastGroupId(groupId: string): Promise<void> {
 
 type ReadMarkMap = Record<string, GroupReadMark>;
 type ClickedVideoMap = Record<string, number>;
+type VideoReviewedOverrideMap = Record<string, boolean>;
 
 let legacyAuthorReadMarksDropped = false;
 
@@ -354,6 +359,108 @@ export async function recordVideoClick(bvid: string): Promise<void> {
   await saveClickedVideos(map);
 }
 
+export async function loadVideoReviewedOverrides(): Promise<VideoReviewedOverrideMap> {
+  if (memoryCache.videoReviewedOverrides) {
+    return memoryCache.videoReviewedOverrides;
+  }
+
+  const map = await storageGet(
+    chrome.storage.local,
+    STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES,
+    {} as VideoReviewedOverrideMap
+  );
+  memoryCache.videoReviewedOverrides = map;
+  return map;
+}
+
+export async function saveVideoReviewedOverrides(map: VideoReviewedOverrideMap): Promise<void> {
+  memoryCache.videoReviewedOverrides = map;
+  await storageSet(chrome.storage.local, STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES, map);
+}
+
+export async function setVideoReviewedOverride(bvid: string, reviewed: boolean): Promise<void> {
+  const map = await loadVideoReviewedOverrides();
+  map[bvid] = reviewed;
+  await saveVideoReviewedOverrides(map);
+}
+
+export async function loadAuthorPreferences(): Promise<AuthorPreferenceMap> {
+  if (memoryCache.authorPreferences) {
+    return memoryCache.authorPreferences;
+  }
+
+  const map = await storageGet(chrome.storage.local, STORAGE_KEYS.AUTHOR_PREFERENCES, {} as AuthorPreferenceMap);
+  memoryCache.authorPreferences = map;
+  return map;
+}
+
+export async function saveAuthorPreferences(map: AuthorPreferenceMap): Promise<void> {
+  memoryCache.authorPreferences = map;
+  await storageSet(chrome.storage.local, STORAGE_KEYS.AUTHOR_PREFERENCES, map);
+}
+
+function normalizeAuthorPreference(mid: number, prev?: AuthorPreference): AuthorPreference {
+  return {
+    mid,
+    ignoreUnreadCount: prev?.ignoreUnreadCount,
+    readMarkTs: prev?.readMarkTs,
+    updatedAt: prev?.updatedAt
+  };
+}
+
+export async function setAuthorIgnoreUnreadCount(mid: number, ignoreUnreadCount: boolean): Promise<AuthorPreference> {
+  const map = await loadAuthorPreferences();
+  const prev = normalizeAuthorPreference(mid, map[mid]);
+  const next: AuthorPreference = {
+    ...prev,
+    ignoreUnreadCount,
+    updatedAt: Date.now()
+  };
+
+  if (!next.ignoreUnreadCount && !next.readMarkTs) {
+    delete map[mid];
+    await saveAuthorPreferences(map);
+    return { mid };
+  }
+
+  map[mid] = next;
+  await saveAuthorPreferences(map);
+  return next;
+}
+
+export async function setAuthorReadMark(mid: number, readMarkTs: number): Promise<AuthorPreference> {
+  const map = await loadAuthorPreferences();
+  const prev = normalizeAuthorPreference(mid, map[mid]);
+  const next: AuthorPreference = {
+    ...prev,
+    readMarkTs: Math.floor(readMarkTs),
+    updatedAt: Date.now()
+  };
+  map[mid] = next;
+  await saveAuthorPreferences(map);
+  return next;
+}
+
+export async function clearAuthorReadMark(mid: number): Promise<AuthorPreference> {
+  const map = await loadAuthorPreferences();
+  const prev = normalizeAuthorPreference(mid, map[mid]);
+  const next: AuthorPreference = {
+    ...prev,
+    readMarkTs: undefined,
+    updatedAt: Date.now()
+  };
+
+  if (!next.ignoreUnreadCount) {
+    delete map[mid];
+    await saveAuthorPreferences(map);
+    return { mid, ignoreUnreadCount: false };
+  }
+
+  map[mid] = next;
+  await saveAuthorPreferences(map);
+  return next;
+}
+
 /**
  * 清理“孤儿点击记录”：
  * 仅当某个 bvid 已不在任意作者缓存中时，才删除对应点击记录。
@@ -388,9 +495,43 @@ export async function cleanOrphanClicks(authorVideoCacheMap?: AuthorVideoCacheMa
 }
 
 /**
+ * 清理“孤儿已阅覆盖”：
+ * 仅当某个 bvid 已不在任意作者缓存中时，才删除覆盖记录。
+ */
+export async function cleanOrphanReviewedOverrides(
+  authorVideoCacheMap?: AuthorVideoCacheMap
+): Promise<VideoReviewedOverrideMap> {
+  const [map, cacheMap] = await Promise.all([
+    loadVideoReviewedOverrides(),
+    authorVideoCacheMap ? Promise.resolve(authorVideoCacheMap) : loadAuthorVideoCacheMap()
+  ]);
+  const activeBvids = new Set<string>();
+
+  for (const cache of Object.values(cacheMap)) {
+    for (const video of cache.videos) {
+      activeBvids.add(video.bvid);
+    }
+  }
+
+  let changed = false;
+  for (const bvid of Object.keys(map)) {
+    if (!activeBvids.has(bvid)) {
+      delete map[bvid];
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await saveVideoReviewedOverrides(map);
+  }
+
+  return map;
+}
+
+/**
  * 兼容旧调用方的别名：
  * 旧逻辑为“按时间过期”，现统一切换为“按缓存生命周期清理”。
  */
 export async function cleanExpiredClicks(): Promise<void> {
-  await cleanOrphanClicks();
+  await Promise.all([cleanOrphanClicks(), cleanOrphanReviewedOverrides()]);
 }

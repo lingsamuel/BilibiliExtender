@@ -28,6 +28,7 @@
       <div>别名</div>
       <div>作者数</div>
       <div>启用</div>
+      <div>不计数</div>
       <div>操作</div>
     </div>
     <div v-if="groups.length === 0" class="bbe-sub">暂无分组</div>
@@ -48,6 +49,12 @@
         <label>
           <input type="checkbox" v-model="group.enabled" @change="saveGroup(group)" />
           启用
+        </label>
+      </div>
+      <div>
+        <label>
+          <input type="checkbox" v-model="group.excludeFromUnreadCount" @change="saveGroup(group)" />
+          忽略
         </label>
       </div>
       <div>
@@ -116,6 +123,15 @@
     </div>
     <div class="bbe-setting-row">
       <div>
+        显示“全部”聚合分组
+        <div class="bbe-setting-hint">关闭后侧栏将隐藏默认“全部”分组入口</div>
+      </div>
+      <label>
+        <input v-model="settings.enableAllGroup" type="checkbox" /> 启用
+      </label>
+    </div>
+    <div class="bbe-setting-row">
+      <div>
         使用同步存储（storage.sync）
         <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
       </div>
@@ -154,7 +170,7 @@ const emit = defineEmits<{
 const folders = ref<FavoriteFolder[]>([]);
 const groups = ref<GroupConfig[]>([]);
 // 保存各分组的原始快照，用于脏检查
-const groupSnapshots = ref<Record<string, { alias?: string; enabled: boolean }>>({})
+const groupSnapshots = ref<Record<string, { alias?: string; enabled: boolean; excludeFromUnreadCount: boolean }>>({})
 const settings = ref<ExtensionSettings>({
   refreshIntervalMinutes: 30,
   backgroundRefreshIntervalMinutes: 10,
@@ -163,6 +179,7 @@ const settings = ref<ExtensionSettings>({
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   defaultReadMarkDays: 7,
+  enableAllGroup: true,
   useStorageSync: true,
   debugMode: false
 });
@@ -231,7 +248,8 @@ async function createGroup(): Promise<void> {
           mediaId,
           mediaTitle: folder.title,
           alias: newAlias.value.trim() || undefined,
-          enabled: true
+          enabled: true,
+          excludeFromUnreadCount: false
         }
       }
     });
@@ -250,9 +268,13 @@ async function createGroup(): Promise<void> {
 }
 
 function snapshotGroups(): void {
-  const map: Record<string, { alias?: string; enabled: boolean }> = {};
+  const map: Record<string, { alias?: string; enabled: boolean; excludeFromUnreadCount: boolean }> = {};
   for (const g of groups.value) {
-    map[g.groupId] = { alias: g.alias, enabled: g.enabled };
+    map[g.groupId] = {
+      alias: g.alias,
+      enabled: g.enabled,
+      excludeFromUnreadCount: g.excludeFromUnreadCount === true
+    };
   }
   groupSnapshots.value = map;
 }
@@ -261,7 +283,11 @@ function snapshotGroups(): void {
 function isGroupDirty(group: GroupConfig): boolean {
   const snap = groupSnapshots.value[group.groupId];
   if (!snap) return true;
-  return snap.alias !== group.alias || snap.enabled !== group.enabled;
+  return (
+    snap.alias !== group.alias ||
+    snap.enabled !== group.enabled ||
+    snap.excludeFromUnreadCount !== (group.excludeFromUnreadCount === true)
+  );
 }
 
 async function saveGroup(group: GroupConfig): Promise<void> {
@@ -337,7 +363,8 @@ async function saveSettingsOnly(): Promise<void> {
     schedulerBatchSize: Math.min(50, Math.max(1, Number(settings.value.schedulerBatchSize) || 10)),
     timelineMixedMaxCount: Math.min(500, Math.max(10, Number(settings.value.timelineMixedMaxCount) || 50)),
     extraOlderVideoCount: Math.min(20, Math.max(0, Number(settings.value.extraOlderVideoCount) || 1)),
-    defaultReadMarkDays: Math.min(90, Math.max(0, Number(settings.value.defaultReadMarkDays) || 7))
+    defaultReadMarkDays: Math.min(90, Math.max(0, Number(settings.value.defaultReadMarkDays) || 7)),
+    enableAllGroup: settings.value.enableAllGroup === true
   };
   try {
     const resp = await sendMessage({
