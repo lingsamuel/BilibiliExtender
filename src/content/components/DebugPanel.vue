@@ -1,88 +1,106 @@
 <template>
-  <section class="bbe-panel bbe-debug-panel">
-    <h2 class="bbe-panel-title">常规更新队列</h2>
-    <div class="bbe-row" style="margin-bottom: 10px">
-      <button class="bbe-btn primary" :disabled="runNowLoading" @click="runNow">
-        {{ runNowLoading ? '触发中...' : '立刻发起调度' }}
-      </button>
-      <span v-if="runNowMsg" class="bbe-setting-hint">{{ runNowMsg }}</span>
-    </div>
-    <div class="bbe-debug-grid">
-      <span>状态</span>
-      <span>{{ status?.running ? '运行中' : '空闲' }}</span>
-      <span>当前任务</span>
-      <span>{{ status?.currentTask ? `${status.currentTask.name} (${status.currentTask.mid}, p${status.currentTask.pn ?? 1})` : '无' }}</span>
-      <span>队列长度</span>
-      <span>{{ status?.queueLength ?? 0 }}</span>
-      <span>批次进度</span>
-      <span>{{ status?.batchCompleted ?? 0 }} / {{ status?.schedulerBatchSize ?? 10 }}</span>
-      <span>失败任务</span>
-      <span>{{ status?.batchFailed ?? 0 }}</span>
-      <span>上次调度</span>
-      <span>{{ lastRunText }}</span>
-      <span>下次刷新</span>
-      <span>{{ nextAlarmText }}</span>
-    </div>
-
-    <h3 v-if="status && status.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
-    <div v-if="status && status.queue.length > 0" class="bbe-debug-queue">
-      <div v-for="(task, i) in status.queue" :key="`${task.mid}-${task.pn ?? 1}-${i}`" class="bbe-debug-queue-item">
-        {{ i + 1 }}. {{ task.name }} ({{ task.mid }}, p{{ task.pn ?? 1 }})
+  <div class="bbe-debug-status-layout">
+    <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
+      <h2 class="bbe-panel-title">常规更新队列</h2>
+      <div class="bbe-row" style="margin-bottom: 10px">
+        <button class="bbe-btn primary" :disabled="runNowLoading" @click="runNow">
+          {{ runNowLoading ? '触发中...' : '立刻发起调度' }}
+        </button>
+        <span v-if="runNowMsg" class="bbe-setting-hint">{{ runNowMsg }}</span>
       </div>
-    </div>
-  </section>
-
-  <section class="bbe-panel bbe-debug-panel">
-    <h2 class="bbe-panel-title">Burst 状态</h2>
-    <div class="bbe-debug-grid">
-      <span>状态</span>
-      <span>{{ status?.burst.running ? '运行中' : '空闲' }}</span>
-      <span>当前任务</span>
-      <span>{{ burstCurrentTaskText }}</span>
-      <span>队列长度</span>
-      <span>{{ status?.burst.queueLength ?? 0 }}</span>
-      <span>上次执行</span>
-      <span>{{ burstLastRunText }}</span>
-      <span>下一次可执行</span>
-      <span>{{ burstNextAllowedText }}</span>
-      <span>冷却状态</span>
-      <span>{{ burstCooldownText }}</span>
-    </div>
-
-    <h3 v-if="status && status.burst.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
-    <div v-if="status && status.burst.queue.length > 0" class="bbe-debug-queue">
-      <div v-for="(task, i) in status.burst.queue" :key="`${task.mid}-${i}`" class="bbe-debug-queue-item">
-        {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }} / p{{ task.pn ?? 1 }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+      <div class="bbe-debug-grid">
+        <span>状态</span>
+        <span>{{ status?.running ? '运行中' : '空闲' }}</span>
+        <span>当前任务</span>
+        <span>{{ status?.currentTask ? `${status.currentTask.name} (${status.currentTask.mid}, p${status.currentTask.pn ?? 1})` : '无' }}</span>
+        <span>队列长度</span>
+        <span>{{ status?.queueLength ?? 0 }}</span>
+        <span>批次进度</span>
+        <span>{{ status?.batchCompleted ?? 0 }} / {{ status?.schedulerBatchSize ?? 10 }}</span>
+        <span>失败任务</span>
+        <span>{{ status?.batchFailed ?? 0 }}</span>
+        <span>上次调度</span>
+        <span>{{ lastRunText }}</span>
+        <span>下次刷新</span>
+        <span>{{ nextAlarmText }}</span>
       </div>
-    </div>
-  </section>
 
-  <section class="bbe-panel bbe-debug-panel">
-    <h2 class="bbe-panel-title">收藏夹通道状态</h2>
-    <div class="bbe-debug-grid">
-      <span>状态</span>
-      <span>{{ status?.groupChannel.running ? '运行中' : '空闲' }}</span>
-      <span>当前任务</span>
-      <span>{{ status?.groupChannel.currentTask ? status.groupChannel.currentTask.groupId : '无' }}</span>
-      <span>队列长度</span>
-      <span>{{ status?.groupChannel.queueLength ?? 0 }}</span>
-      <span>批次进度</span>
-      <span>{{ status?.groupChannel.batchCompleted ?? 0 }} / {{ status?.schedulerBatchSize ?? 10 }}</span>
-      <span>失败任务</span>
-      <span>{{ status?.groupChannel.batchFailed ?? 0 }}</span>
-      <span>上次调度</span>
-      <span>{{ groupLastRunText }}</span>
-      <span>下次刷新</span>
-      <span>{{ groupNextAlarmText }}</span>
-    </div>
-
-    <h3 v-if="status && status.groupChannel.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
-    <div v-if="status && status.groupChannel.queue.length > 0" class="bbe-debug-queue">
-      <div v-for="(task, i) in status.groupChannel.queue" :key="`${task.groupId}-${i}`" class="bbe-debug-queue-item">
-        {{ i + 1 }}. {{ task.groupId }}
+      <h3 v-if="status && status.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
+      <div v-if="status && status.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.queue" :key="`${task.mid}-${task.pn ?? 1}-${i}`" class="bbe-debug-queue-item">
+          {{ i + 1 }}. {{ task.name }} ({{ task.mid }}, p{{ task.pn ?? 1 }})
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
+
+    <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
+      <h2 class="bbe-panel-title">Burst 状态</h2>
+      <div class="bbe-debug-grid">
+        <span>状态</span>
+        <span>{{ status?.burst.running ? '运行中' : '空闲' }}</span>
+        <span>当前任务</span>
+        <span>{{ burstCurrentTaskText }}</span>
+        <span>队列长度</span>
+        <span>{{ status?.burst.queueLength ?? 0 }}</span>
+        <span>上次执行</span>
+        <span>{{ burstLastRunText }}</span>
+        <span>下一次可执行</span>
+        <span>{{ burstNextAllowedText }}</span>
+        <span>冷却状态</span>
+        <span>{{ burstCooldownText }}</span>
+      </div>
+
+      <h3 v-if="status && status.burst.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
+      <div v-if="status && status.burst.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.burst.queue" :key="`${task.mid}-${i}`" class="bbe-debug-queue-item">
+          {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }} / p{{ task.pn ?? 1 }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+        </div>
+      </div>
+    </section>
+
+    <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
+      <h2 class="bbe-panel-title">收藏夹通道状态</h2>
+      <div class="bbe-debug-grid">
+        <span>状态</span>
+        <span>{{ status?.groupChannel.running ? '运行中' : '空闲' }}</span>
+        <span>当前任务</span>
+        <span>{{ status?.groupChannel.currentTask ? status.groupChannel.currentTask.groupId : '无' }}</span>
+        <span>队列长度</span>
+        <span>{{ status?.groupChannel.queueLength ?? 0 }}</span>
+        <span>批次进度</span>
+        <span>{{ status?.groupChannel.batchCompleted ?? 0 }} / {{ status?.schedulerBatchSize ?? 10 }}</span>
+        <span>失败任务</span>
+        <span>{{ status?.groupChannel.batchFailed ?? 0 }}</span>
+        <span>上次调度</span>
+        <span>{{ groupLastRunText }}</span>
+        <span>下次刷新</span>
+        <span>{{ groupNextAlarmText }}</span>
+      </div>
+
+      <h3 v-if="status && status.groupChannel.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
+      <div v-if="status && status.groupChannel.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.groupChannel.queue" :key="`${task.groupId}-${i}`" class="bbe-debug-queue-item">
+          {{ i + 1 }}. {{ task.groupId }}
+        </div>
+      </div>
+    </section>
+
+    <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
+      <h2 class="bbe-panel-title">全局冷却状态</h2>
+      <div class="bbe-debug-grid">
+        <span>状态</span>
+        <span>{{ globalCooldownStatusText }}</span>
+        <span>原因</span>
+        <span>{{ globalCooldownReasonText }}</span>
+        <span>下次可执行</span>
+        <span>{{ globalCooldownNextAllowedText }}</span>
+        <span>剩余时间</span>
+        <span>{{ globalCooldownRemainText }}</span>
+        <span>最近触发</span>
+        <span>{{ globalCooldownLastTriggeredText }}</span>
+      </div>
+    </section>
+  </div>
 
   <section class="bbe-panel bbe-debug-panel">
     <h2 class="bbe-panel-title">分组缓存</h2>
@@ -132,16 +150,20 @@
   <section class="bbe-panel bbe-debug-panel">
     <h2 class="bbe-panel-title">调度历史 ({{ status?.history.length ?? 0 }})</h2>
     <div v-if="!status || status.history.length === 0" class="bbe-sub">暂无记录</div>
-    <div v-else class="bbe-debug-table">
+    <div v-else class="bbe-debug-table bbe-debug-table-history">
       <div class="bbe-debug-table-header">
-        <span>作者</span>
+        <span>目标</span>
+        <span>通道</span>
         <span>模式</span>
+        <span>Reason</span>
         <span>时间</span>
         <span>结果</span>
       </div>
       <div v-for="(h, i) in status.history" :key="i" class="bbe-debug-table-row" :class="{ 'bbe-debug-fail': !h.success }">
         <span>{{ h.name }}</span>
+        <span>{{ formatHistoryChannel(h.channel) }}</span>
         <span>{{ h.mode === 'burst' ? 'Burst' : '常规' }}</span>
+        <span :title="`${h.trigger}${h.taskReason ? ` / ${h.taskReason}` : ''}`">{{ formatHistoryReason(h) }}</span>
         <span>{{ formatTime(h.timestamp) }}</span>
         <span>{{ h.success ? '成功' : h.error || '失败' }}</span>
       </div>
@@ -152,7 +174,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { sendMessage } from '@/shared/messages';
-import type { SchedulerStatusResponse } from '@/shared/messages';
+import type {
+  SchedulerStatusResponse,
+  SchedulerTaskReason,
+  SchedulerTaskTrigger
+} from '@/shared/messages';
 import { formatRelativeMinutes } from '@/shared/utils/format';
 
 const status = ref<SchedulerStatusResponse | null>(null);
@@ -214,6 +240,42 @@ const burstCooldownText = computed(() => {
   return `间隔冷却中（剩余 ${secs} 秒）`;
 });
 
+const globalCooldownStatusText = computed(() => {
+  if (status.value?.globalCooldown.active) {
+    return '冷却中';
+  }
+  return status.value?.globalCooldown.lastTriggeredAt ? '空闲（曾触发）' : '空闲';
+});
+
+const globalCooldownReasonText = computed(() => {
+  const reason = status.value?.globalCooldown.reason;
+  if (!reason) return '无';
+  return reason === 'wbi-ratelimit' ? 'wbi-ratelimit' : reason;
+});
+
+const globalCooldownNextAllowedText = computed(() => {
+  const nextAllowedAt = status.value?.globalCooldown.nextAllowedAt ?? 0;
+  if (!nextAllowedAt) return '无';
+  if (nextAllowedAt <= Date.now()) {
+    return `${formatTime(nextAllowedAt)}（已结束）`;
+  }
+  return formatAlarmText(nextAllowedAt);
+});
+
+const globalCooldownRemainText = computed(() => {
+  const cooldown = status.value?.globalCooldown;
+  if (!cooldown?.active) return '0 秒';
+  const diff = cooldown.nextAllowedAt - Date.now();
+  if (diff <= 0) return '0 秒';
+  return `${Math.ceil(diff / 1000)} 秒`;
+});
+
+const globalCooldownLastTriggeredText = computed(() => {
+  const ts = status.value?.globalCooldown.lastTriggeredAt;
+  if (!ts) return '从未';
+  return formatRelativeMinutes(ts);
+});
+
 function formatTime(ms: number): string {
   const d = new Date(ms);
   const hh = `${d.getHours()}`.padStart(2, '0');
@@ -235,6 +297,35 @@ function formatBurstTaskLabel(name: string | undefined, mid: number): string {
     return `MID ${mid}`;
   }
   return normalized;
+}
+
+function formatHistoryChannel(channel: 'author-video' | 'group-fav'): string {
+  return channel === 'group-fav' ? 'group-fav' : 'author-video';
+}
+
+function formatHistoryReason(item: {
+  trigger: SchedulerTaskTrigger;
+  taskReason: SchedulerTaskReason;
+  channel: 'author-video' | 'group-fav';
+  mid?: number;
+  groupId?: string;
+  pn?: number;
+}): string {
+  const params: string[] = [];
+  if (item.channel === 'group-fav') {
+    if (item.groupId) {
+      params.push(`groupId=${item.groupId}`);
+    }
+  } else {
+    if (typeof item.mid === 'number') {
+      params.push(`mid=${item.mid}`);
+    }
+    if (typeof item.pn === 'number') {
+      params.push(`pn=${item.pn}`);
+    }
+  }
+  const paramText = params.length > 0 ? `(${params.join(',')})` : '';
+  return `${item.trigger}${paramText} / ${item.taskReason}`;
 }
 
 async function fetchStatus(): Promise<void> {

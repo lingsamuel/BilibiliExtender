@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Extender",
-  "version": "0.2.65",
+  "version": "0.2.67",
   "description": "按收藏夹分组查看作者投稿动态",
   "permissions": ["storage", "unlimitedStorage", "alarms"],
   "host_permissions": ["https://*.bilibili.com/*"],
@@ -13,7 +13,8 @@
     {
       "matches": [
         "https://www.bilibili.com/*",
-        "https://space.bilibili.com/*"
+        "https://space.bilibili.com/*",
+        "https://search.bilibili.com/*"
       ],
       "js": ["content.js"],
       "css": ["assets/style.css"],
@@ -24,7 +25,11 @@
   "web_accessible_resources": [
     {
       "resources": ["assets/*"],
-      "matches": ["https://www.bilibili.com/*", "https://space.bilibili.com/*"]
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://space.bilibili.com/*",
+        "https://search.bilibili.com/*"
+      ]
     }
   ]
 }

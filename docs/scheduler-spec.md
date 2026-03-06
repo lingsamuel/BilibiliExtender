@@ -96,7 +96,14 @@ interface AuthorVideoTask extends SchedulerTaskBase {
 执行：
 1. `pn=1`：刷新首页并更新 `firstPageFetchedAt`；保留历史 `pn>=2` 数据供后续 best-effort 使用。
 2. `pn>=2`：预取或按需补页并更新 `maxCachedPn/nextPn/hasMore`。
-3. 同一 `bvid` 在跨页重复时，按如下规则合并：
+3. 作者投稿接口的分页元信息（`page.count/page.ps`）必须缓存为 `totalCount/apiPageSize`，并用于推导页上限：
+   - `maxPageByCount = max(1, ceil(totalCount / apiPageSize))`（仅在 `totalCount>0 && apiPageSize>0` 时成立）；
+   - 已知 `maxPageByCount` 时，`hasMore` 以 `maxCachedPn < maxPageByCount` 为准，不再依赖单次请求的 `hasMore`。
+4. 越界页保护（关键）：
+   - 当请求页 `pn > maxPageByCount` 时，判定为越界页请求；
+   - 越界页请求不得抬高 `maxCachedPn`，也不得把 `hasMore` 直接写成 `false`；
+   - `nextPn` 仍按“当前真实 `maxCachedPn + 1`”推导，避免跳页后把缓存状态锁死。
+5. 同一 `bvid` 在跨页重复时，按如下规则合并：
    - 优先选择 `video.meta.updatedAt` 更新的数据；
    - 若 `meta.updatedAt` 相同，选择来源页 `fetchedAt` 更新的数据。
 
@@ -154,10 +161,14 @@ interface GroupFavTask extends SchedulerTaskBase {
 - 分组有缓存且作者缓存完整时：返回 `cacheStatus: 'ready'`。
 - 时间流目标片段构造（`1-50`、`51-70`、`71-90`...）时：
   1. 先尝试使用现有可用缓存构造（只保证首页，第二页可能缺失）。
-  2. 若构造触及某作者“当前缓存最旧一条”且 `hasMore=true`，立即向 Burst 队列**队首**插入该作者下一页任务（包含缺失第二页）。
+  2. 若构造触及某作者“当前缓存最旧一条”且判定仍有潜在可见增量，立即向 Burst 队列**队首**插入该作者下一页任务（包含缺失第二页）。
+     - 潜在可见增量判定同时满足：
+       - 未跨过当前时间流可见下界（跨过后继续翻页不会产出当前筛选可见数据）；
+       - 且作者仍有更多页（优先使用 `maxPageByCount` 口径，未知时回退 `hasMore`）。
   3. 前台等待这批 Burst 任务完成后重构；单轮每作者只补 1 页。
   4. 若任务失败，返回错误信息并以现有缓存 best-effort 构造，不因错误中止返回。
   5. 构造成功后，按作者回报“本次实际使用到的最大页码 K”（仅统计实际参与目标页组构造的数据页），供常规预取判定是否推进到 `K+1`。
+  6. `hasMoreForMixed` 的判定必须与第 2 条保持同口径，避免出现“按钮可点但无增量”或“仍有增量却提前显示无更多”。
 
 #### 3.4.2 MANUAL_REFRESH
 
@@ -400,13 +411,31 @@ interface SchedulerStatusResponse {
     }>;
   };
   history: Array<{
-    mid: number;
+    // 通道标识：作者通道或收藏夹通道
+    channel: 'author-video' | 'group-fav';
+    // 作者任务为 mid，收藏夹任务为 groupId
+    mid?: number;
+    groupId?: string;
+    pn?: number;
     name: string;
     success: boolean;
     timestamp: number;
     error?: string;
     // 新增：区分常规与 Burst 执行来源
     mode: 'regular' | 'burst';
+    // 任务语义（执行的是什么任务）
+    taskReason: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary' | 'group-fav-refresh';
+    // 触发来源（是谁触发了这次任务）
+    trigger:
+      | 'alarm-routine'
+      | 'debug-run-now'
+      | 'manual-refresh'
+      | 'group-created-auto-refresh'
+      | 'get-group-feed-missing-fav-cache'
+      | 'get-group-feed-missing-author-cache'
+      | 'get-group-feed-boundary'
+      | 'ensure-author-page'
+      | 'group-fav-chain';
   }>;
 }
 ```
@@ -417,6 +446,12 @@ interface SchedulerStatusResponse {
 3. Burst 队列详情按执行顺序展示“分组名 + 作者名”；仅当作者名缺失时回退显示 `MID`。
 4. 当 `cooldownReason === 'error'` 且 `nextAllowedAt > now` 时，展示“错误冷却中（剩余 X 秒）”。
 5. 调度历史增加 `mode` 列，显示 `regular` / `burst`。
+6. 调度历史增加 `Reason` 列，显示 `trigger`（触发来源）并附带关键参数（如 `mid` / `pn` / `groupId`）；必要时可附带 `taskReason` 作为补充说明。
+7. “常规更新队列 / Burst 状态 / 收藏夹通道状态”三个状态面板使用统一容器：
+   - 容器采用 `display: flex; flex-wrap: wrap;`
+   - 子面板采用弹性宽度并自动换行，尽量填满一行剩余空间；
+   - 在窄宽度下自动折到下一行，避免每个面板固定独占一整行。
+8. 调度历史需持久化到本地存储，避免 Service Worker 被回收或切换面板后历史记录丢失。
 
 ## 5. 文件变更清单
 

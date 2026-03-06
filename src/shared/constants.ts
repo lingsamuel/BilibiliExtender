@@ -12,7 +12,8 @@ export const STORAGE_KEYS = {
   AUTHOR_PREFERENCES: 'bbe:author-preferences',
   LEGACY_AUTHOR_READ_MARKS: 'bbe:author-read-marks',
   CLICKED_VIDEOS: 'bbe:clicked-videos',
-  VIDEO_REVIEWED_OVERRIDES: 'bbe:video-reviewed-overrides'
+  VIDEO_REVIEWED_OVERRIDES: 'bbe:video-reviewed-overrides',
+  SCHEDULER_HISTORY: 'bbe:scheduler:history'
 } as const;
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {

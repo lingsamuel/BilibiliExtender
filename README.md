@@ -7,7 +7,7 @@
 - 按分组展示收藏夹内作者的投稿更新
 
 ## 当前功能
-- 站点注入入口：`www.bilibili.com`、`space.bilibili.com`
+- 站点注入入口：`www.bilibili.com`、`space.bilibili.com`、`search.bilibili.com`
 - 右侧抽屉面板：分组切换、红点、手动刷新
 - 双视图：
   - 时间流（混合模式，支持滚动加载更多）

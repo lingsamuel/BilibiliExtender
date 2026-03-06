@@ -53,6 +53,19 @@ export type MessageResponse<T = unknown> = {
   error?: string;
 };
 
+export type SchedulerAuthorTaskReason = 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+export type SchedulerTaskReason = SchedulerAuthorTaskReason | 'group-fav-refresh';
+export type SchedulerTaskTrigger =
+  | 'alarm-routine'
+  | 'debug-run-now'
+  | 'manual-refresh'
+  | 'group-created-auto-refresh'
+  | 'get-group-feed-missing-fav-cache'
+  | 'get-group-feed-missing-author-cache'
+  | 'get-group-feed-boundary'
+  | 'ensure-author-page'
+  | 'group-fav-chain';
+
 export interface SchedulerStatusResponse {
   schedulerBatchSize: number;
   running: boolean;
@@ -61,7 +74,7 @@ export interface SchedulerStatusResponse {
     mid: number;
     name: string;
     pn?: number;
-    reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+    reason?: SchedulerAuthorTaskReason;
   } | null;
   batchCompleted: number;
   batchFailed: number;
@@ -72,7 +85,7 @@ export interface SchedulerStatusResponse {
     name: string;
     groupId?: string;
     pn?: number;
-    reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+    reason?: SchedulerAuthorTaskReason;
   }>;
   groupChannel: {
     running: boolean;
@@ -91,7 +104,7 @@ export interface SchedulerStatusResponse {
       mid: number;
       name?: string;
       pn?: number;
-      reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+      reason?: SchedulerAuthorTaskReason;
       groupNames: string[];
     } | null;
     nextAllowedAt: number;
@@ -101,9 +114,15 @@ export interface SchedulerStatusResponse {
       mid: number;
       name?: string;
       pn?: number;
-      reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+      reason?: SchedulerAuthorTaskReason;
       groupNames: string[];
     }>;
+  };
+  globalCooldown: {
+    active: boolean;
+    nextAllowedAt: number;
+    reason: 'wbi-ratelimit' | null;
+    lastTriggeredAt?: number;
   };
   // 已缓存的作者摘要
   authorCaches: Array<{
@@ -123,12 +142,17 @@ export interface SchedulerStatusResponse {
   }>;
   // 最近的调度历史（最新在前，最多保留 50 条）
   history: Array<{
-    mid: number;
+    channel: 'author-video' | 'group-fav';
+    mid?: number;
+    groupId?: string;
+    pn?: number;
     name: string;
     success: boolean;
     timestamp: number;
     error?: string;
     mode: 'regular' | 'burst';
+    taskReason: SchedulerTaskReason;
+    trigger: SchedulerTaskTrigger;
   }>;
 }
 

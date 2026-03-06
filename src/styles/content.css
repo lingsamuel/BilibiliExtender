@@ -1135,6 +1135,17 @@ body.bbe-page-scroll-lock {
   font-size: 13px;
 }
 
+.bbe-debug-status-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.bbe-debug-status-card {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+
 .bbe-debug-grid {
   display: grid;
   grid-template-columns: 100px 1fr;
@@ -1215,6 +1226,11 @@ body.bbe-page-scroll-lock {
 
 .bbe-debug-table-authors .bbe-debug-table-row {
   align-items: start;
+}
+
+.bbe-debug-table-history .bbe-debug-table-header,
+.bbe-debug-table-history .bbe-debug-table-row {
+  grid-template-columns: minmax(90px, 1.2fr) 88px 64px minmax(170px, 1.6fr) 80px minmax(100px, 1.2fr);
 }
 
 .bbe-debug-group-list {

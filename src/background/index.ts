@@ -29,6 +29,7 @@ import {
 } from '@/shared/storage/repository';
 import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
+  hasAuthorMorePages,
   increaseMixedTarget,
   makeSummary,
   markGroupRead,
@@ -72,8 +73,8 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
 }
 
 interface MissingAuthorTaskBuckets {
-  burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }>;
-  priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }>;
+  burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
+  priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
 }
 
 const MAX_SYNC_BURST_ROUNDS = 12;
@@ -88,8 +89,8 @@ function splitMissingAuthorTasks(
   authorMids: number[],
   authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>
 ): MissingAuthorTaskBuckets {
-  const burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }> = [];
-  const priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh' }> = [];
+  const burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
+  const priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
 
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
@@ -101,7 +102,8 @@ function splitMissingAuthorTasks(
       mid,
       name: cache?.name?.trim() || String(mid),
       pn: 1,
-      reason: 'first-page-refresh' as const
+      reason: 'first-page-refresh' as const,
+      trigger: 'get-group-feed-missing-author-cache' as const
     };
 
     if (!cache) {
@@ -183,7 +185,7 @@ async function handleUpsertGroup(
 
   // 新增分组后立即触发一次该分组刷新，确保尽快生成首份缓存。
   if (index < 0) {
-    enqueuePriorityGroup([incoming.groupId]);
+    enqueuePriorityGroup([incoming.groupId], 'group-created-auto-refresh');
   }
 
   return { groups };
@@ -336,7 +338,7 @@ async function handleGetGroupFeed(
     }
 
     if (missingFavGroupIds.length > 0) {
-      enqueuePriorityGroup(missingFavGroupIds);
+      enqueuePriorityGroup(missingFavGroupIds, 'get-group-feed-missing-fav-cache');
     }
 
     group = {
@@ -373,7 +375,7 @@ async function handleGetGroupFeed(
   // 无缓存：首次访问，提交收藏夹优先任务，等待调度器异步生成缓存。
   if (!feedCache) {
     if (!isAllGroup) {
-      enqueuePriorityGroup([group.groupId]);
+      enqueuePriorityGroup([group.groupId], 'get-group-feed-missing-fav-cache');
     }
 
     return {
@@ -462,6 +464,7 @@ async function handleGetGroupFeed(
         diagnostics.boundaryTasks.map((task) => ({
           ...task,
           reason: 'load-more-boundary',
+          trigger: 'get-group-feed-boundary',
           failFast: true
         }))
       );
@@ -732,7 +735,7 @@ async function handleEnsureAuthorPage(
 
   // 只补目标页：前台按页号直接跳转时，使用 Burst 队首同步等待该页完成，避免“级联拉满中间页”。
   if (!cache || !cache.pageState[pn]) {
-    if (cache && cache.hasMore === false && pn > cache.maxCachedPn) {
+    if (cache && !hasAuthorMorePages(cache) && pn > cache.maxCachedPn) {
       return {
         mid,
         pn,
@@ -750,6 +753,7 @@ async function handleEnsureAuthorPage(
         name,
         pn,
         reason: 'load-more-boundary',
+        trigger: 'ensure-author-page',
         failFast: true
       }
     ]);
@@ -771,7 +775,7 @@ async function handleEnsureAuthorPage(
     mid,
     pn,
     maxCachedPn: cache.maxCachedPn,
-    hasMore: cache.hasMore === true,
+    hasMore: hasAuthorMorePages(cache),
     totalCount: cache.totalCount,
     pageSize: cache.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE
   };
@@ -804,7 +808,7 @@ async function handleManualRefresh(
     if (enabledGroupIds.length === 0) {
       throw new Error('当前没有可刷新的启用分组');
     }
-    enqueuePriorityGroup(enabledGroupIds);
+    enqueuePriorityGroup(enabledGroupIds, 'manual-refresh');
     return { accepted: true };
   }
 
@@ -813,7 +817,7 @@ async function handleManualRefresh(
     throw new Error('分组不存在或已禁用');
   }
 
-  enqueuePriorityGroup([group.groupId]);
+  enqueuePriorityGroup([group.groupId], 'manual-refresh');
 
   return { accepted: true };
 }

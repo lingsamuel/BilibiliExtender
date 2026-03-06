@@ -8,16 +8,24 @@ import {
   loadAuthorVideoCacheMap,
   loadFeedCacheMap,
   loadGroups,
+  loadSchedulerHistory,
   loadSettings,
   saveAuthorVideoCacheMap,
   saveFeedCacheMap,
-  saveGroups
+  saveGroups,
+  saveSchedulerHistory
 } from '@/shared/storage/repository';
 import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, GroupConfig } from '@/shared/types';
-import type { SchedulerStatusResponse } from '@/shared/messages';
+import type {
+  SchedulerAuthorTaskReason,
+  SchedulerStatusResponse,
+  SchedulerTaskReason,
+  SchedulerTaskTrigger
+} from '@/shared/messages';
 import {
   buildAuthorListFromFav,
+  hasAuthorMorePages,
   isAuthorCacheExpired,
   markAuthorPageUsage,
   refreshAuthorCache,
@@ -25,34 +33,49 @@ import {
   type MixedUsedPageItem
 } from '@/background/feed-service';
 import { getMyCreatedFolders } from '@/shared/api/bilibili';
+import { WbiExpiredError } from '@/shared/utils/wbi';
 
 export interface SchedulerTask {
   mid: number;
   name: string;
   groupId?: string;
   pn?: number;
-  reason?: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+  reason?: SchedulerAuthorTaskReason;
+  trigger?: SchedulerTaskTrigger;
   // 仅用于“前台同步等待”的补页任务：失败后不重试，直接回传错误。
   failFast?: boolean;
 }
 
 interface GroupFavTask {
   groupId: string;
+  trigger: SchedulerTaskTrigger;
 }
 
 const MAX_HISTORY = 50;
 const BURST_RETRY_DELAY_MS = 60_000;
+const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
 
-type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'reason' | 'failFast'>> & Pick<SchedulerTask, 'groupId'>;
+type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'reason' | 'failFast' | 'trigger'>> & Pick<SchedulerTask, 'groupId'>;
 type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
 interface HistoryEntry {
-  mid: number;
+  channel: 'author-video' | 'group-fav';
+  mid?: number;
+  groupId?: string;
+  pn?: number;
   name: string;
   mode: 'regular' | 'burst';
   success: boolean;
   timestamp: number;
+  taskReason: SchedulerTaskReason;
+  trigger: SchedulerTaskTrigger;
   error?: string;
+}
+
+interface GlobalCooldownState {
+  nextAllowedAt: number;
+  reason: 'wbi-ratelimit' | null;
+  lastTriggeredAt?: number;
 }
 
 interface ChannelState<TTask> {
@@ -102,6 +125,13 @@ const authorState = createChannelState<AuthorTask>();
 const groupFavState = createChannelState<GroupFavTask>();
 const burstState = createBurstState();
 const history: HistoryEntry[] = [];
+let historyHydrated = false;
+let historyPersistTimer: ReturnType<typeof setTimeout> | null = null;
+// 全局风控冷却门：命中 WBI 重试失败后，所有通道统一暂停请求一段时间。
+const globalCooldownState: GlobalCooldownState = {
+  nextAllowedAt: 0,
+  reason: null
+};
 
 let pendingAuthorRoutineAfterBurst = false;
 let pendingGroupFavRoutineAfterBurst = false;
@@ -109,9 +139,34 @@ let pendingGroupFavRoutineAfterBurst = false;
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
 const burstTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
+void ensureHistoryHydrated();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isWbiRatelimitError(error: unknown): error is WbiExpiredError {
+  return error instanceof WbiExpiredError;
+}
+
+function triggerGlobalWbiCooldown(): void {
+  const now = Date.now();
+  globalCooldownState.nextAllowedAt = now + GLOBAL_WBI_RETRY_DELAY_MS;
+  globalCooldownState.reason = 'wbi-ratelimit';
+  globalCooldownState.lastTriggeredAt = now;
+}
+
+/**
+ * 请求发起前统一经过全局冷却门，避免多通道在风控窗口内继续冲击 API。
+ */
+async function waitForGlobalCooldownIfNeeded(): Promise<void> {
+  while (true) {
+    const waitMs = globalCooldownState.nextAllowedAt - Date.now();
+    if (waitMs <= 0) {
+      return;
+    }
+    await sleep(waitMs);
+  }
 }
 
 function notifyBurstTaskFinished(task: AuthorTask, result: { ok: boolean; error?: string }): void {
@@ -126,11 +181,39 @@ function notifyBurstTaskFinished(task: AuthorTask, result: { ok: boolean; error?
   }
 }
 
+async function ensureHistoryHydrated(): Promise<void> {
+  if (historyHydrated) {
+    return;
+  }
+  historyHydrated = true;
+  try {
+    const persisted = await loadSchedulerHistory();
+    if (persisted.length > 0) {
+      history.splice(0, history.length, ...persisted.slice(0, MAX_HISTORY));
+    }
+  } catch (error) {
+    console.warn('[BBE] 读取调度历史失败:', error);
+  }
+}
+
+function schedulePersistHistory(): void {
+  if (historyPersistTimer) {
+    return;
+  }
+  historyPersistTimer = setTimeout(() => {
+    historyPersistTimer = null;
+    void saveSchedulerHistory(history).catch((error) => {
+      console.warn('[BBE] 保存调度历史失败:', error);
+    });
+  }, 200);
+}
+
 function pushHistory(entry: HistoryEntry): void {
   history.unshift(entry);
   if (history.length > MAX_HISTORY) {
     history.length = MAX_HISTORY;
   }
+  schedulePersistHistory();
 }
 
 function getGroupTitle(group: GroupConfig): string {
@@ -148,6 +231,7 @@ function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
     groupId: task.groupId,
     pn: Math.max(1, Number(task.pn) || 1),
     reason: task.reason ?? 'first-page-refresh',
+    trigger: task.trigger ?? 'alarm-routine',
     failFast: task.failFast === true
   };
 }
@@ -292,7 +376,10 @@ async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<n
   return alarm?.scheduledTime;
 }
 
-async function collectStaleAuthorTasks(settings: ExtensionSettings): Promise<AuthorTask[]> {
+async function collectStaleAuthorTasks(
+  settings: ExtensionSettings,
+  trigger: SchedulerTaskTrigger
+): Promise<AuthorTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -333,11 +420,12 @@ async function collectStaleAuthorTasks(settings: ExtensionSettings): Promise<Aut
     name,
     pn: 1,
     reason: 'first-page-refresh',
+    trigger,
     failFast: false
   }));
 }
 
-async function collectNoCacheAuthorTasks(): Promise<AuthorTask[]> {
+async function collectNoCacheAuthorTasks(trigger: SchedulerTaskTrigger): Promise<AuthorTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -365,11 +453,12 @@ async function collectNoCacheAuthorTasks(): Promise<AuthorTask[]> {
       name: String(mid),
       pn: 1,
       reason: 'first-page-refresh',
+      trigger,
       failFast: false
     }));
 }
 
-async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
+async function collectOldestAuthorTasks(trigger: SchedulerTaskTrigger): Promise<AuthorTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -407,6 +496,7 @@ async function collectOldestAuthorTasks(): Promise<AuthorTask[]> {
     name,
     pn: 1,
     reason: 'first-page-refresh',
+    trigger,
     failFast: false
   }));
 }
@@ -425,12 +515,14 @@ function resolveNextPrefetchPn(
   cache: {
     pageState: Record<number, { fetchedAt: number; usedInMixed: boolean }>;
     hasMore: boolean;
+    totalCount?: number;
+    apiPageSize?: number;
     firstPageFetchedAt: number;
     maxCachedPn: number;
   },
   settings: ExtensionSettings
 ): number | null {
-  if (!cache.hasMore) {
+  if (!hasAuthorMorePages(cache)) {
     return null;
   }
 
@@ -467,7 +559,10 @@ function resolveNextPrefetchPn(
   return nextPn;
 }
 
-async function collectPrefetchAuthorTasks(settings: ExtensionSettings): Promise<AuthorTask[]> {
+async function collectPrefetchAuthorTasks(
+  settings: ExtensionSettings,
+  trigger: SchedulerTaskTrigger
+): Promise<AuthorTask[]> {
   const authorCacheMap = await loadAuthorVideoCacheMap();
   const tasks: AuthorTask[] = [];
 
@@ -481,6 +576,7 @@ async function collectPrefetchAuthorTasks(settings: ExtensionSettings): Promise<
       name: cache.name ?? String(cache.mid),
       pn,
       reason: 'prefetch-next-page',
+      trigger,
       failFast: false
     });
   }
@@ -489,7 +585,10 @@ async function collectPrefetchAuthorTasks(settings: ExtensionSettings): Promise<
   return tasks;
 }
 
-async function collectStaleGroupFavTasks(settings: ExtensionSettings): Promise<GroupFavTask[]> {
+async function collectStaleGroupFavTasks(
+  settings: ExtensionSettings,
+  trigger: SchedulerTaskTrigger
+): Promise<GroupFavTask[]> {
   const [groups, feedCacheMap] = await Promise.all([loadGroups(), loadFeedCacheMap()]);
   const intervalMs = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10) * 60 * 1000;
   const now = Date.now();
@@ -508,10 +607,10 @@ async function collectStaleGroupFavTasks(settings: ExtensionSettings): Promise<G
   }
 
   stale.sort((a, b) => a.updatedAt - b.updatedAt);
-  return stale.map((item) => ({ groupId: item.groupId }));
+  return stale.map((item) => ({ groupId: item.groupId, trigger }));
 }
 
-async function collectOldestGroupFavTasks(): Promise<GroupFavTask[]> {
+async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promise<GroupFavTask[]> {
   const [groups, feedCacheMap] = await Promise.all([loadGroups(), loadFeedCacheMap()]);
   const oldest: Array<{ groupId: string; updatedAt: number }> = [];
 
@@ -522,7 +621,7 @@ async function collectOldestGroupFavTasks(): Promise<GroupFavTask[]> {
   }
 
   oldest.sort((a, b) => a.updatedAt - b.updatedAt);
-  return oldest.map((item) => ({ groupId: item.groupId }));
+  return oldest.map((item) => ({ groupId: item.groupId, trigger }));
 }
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
@@ -582,6 +681,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       groupId: group.groupId,
       pn: 1,
       reason: 'first-page-refresh',
+      trigger: 'group-fav-chain',
       failFast: false
     };
 
@@ -616,21 +716,46 @@ async function runAuthorLoop(): Promise<void> {
       break;
     }
 
+    await waitForGlobalCooldownIfNeeded();
+    if (isBurstActive()) {
+      break;
+    }
+    if (authorState.queue.length === 0) {
+      break;
+    }
+
     const task = authorState.queue.shift()!;
     authorState.currentTask = task;
 
     try {
       await runAuthorTask(task, authorCacheMap);
       authorState.batchCompleted++;
-      pushHistory({ mid: task.mid, name: task.name, mode: 'regular', success: true, timestamp: Date.now() });
+      pushHistory({
+        channel: 'author-video',
+        mid: task.mid,
+        pn: task.pn,
+        name: task.name,
+        mode: 'regular',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: task.reason,
+        trigger: task.trigger
+      });
     } catch (error) {
       authorState.batchFailed.push(task);
+      if (isWbiRatelimitError(error)) {
+        triggerGlobalWbiCooldown();
+      }
       pushHistory({
+        channel: 'author-video',
         mid: task.mid,
+        pn: task.pn,
         name: task.name,
         mode: 'regular',
         success: false,
         timestamp: Date.now(),
+        taskReason: task.reason,
+        trigger: task.trigger,
         error: error instanceof Error ? error.message : String(error)
       });
       console.warn('[BBE] 作者任务刷新失败 mid:', task.mid, error);
@@ -689,14 +814,47 @@ async function runGroupFavLoop(): Promise<void> {
       break;
     }
 
+    await waitForGlobalCooldownIfNeeded();
+    if (isBurstActive()) {
+      break;
+    }
+    if (groupFavState.queue.length === 0) {
+      break;
+    }
+
     const task = groupFavState.queue.shift()!;
     groupFavState.currentTask = task;
+    const groupDisplayName = task.groupId;
 
     try {
       await runGroupFavTask(task);
       groupFavState.batchCompleted++;
+      pushHistory({
+        channel: 'group-fav',
+        groupId: task.groupId,
+        name: groupDisplayName,
+        mode: 'regular',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: 'group-fav-refresh',
+        trigger: task.trigger
+      });
     } catch (error) {
       groupFavState.batchFailed.push(task);
+      if (isWbiRatelimitError(error)) {
+        triggerGlobalWbiCooldown();
+      }
+      pushHistory({
+        channel: 'group-fav',
+        groupId: task.groupId,
+        name: groupDisplayName,
+        mode: 'regular',
+        success: false,
+        timestamp: Date.now(),
+        taskReason: 'group-fav-refresh',
+        trigger: task.trigger,
+        error: error instanceof Error ? error.message : String(error)
+      });
       console.warn('[BBE] 收藏夹任务刷新失败 groupId:', task.groupId, error);
     }
 
@@ -768,7 +926,7 @@ async function runBurstLoop(): Promise<void> {
   liveAuthorCacheMap = authorCacheMap;
 
   while (burstState.queue.length > 0) {
-    const waitMs = burstState.nextAllowedAt - Date.now();
+    const waitMs = Math.max(burstState.nextAllowedAt, globalCooldownState.nextAllowedAt) - Date.now();
     if (waitMs > 0) {
       await sleep(waitMs);
     }
@@ -785,16 +943,33 @@ async function runBurstLoop(): Promise<void> {
       burstState.queue.shift();
       burstState.nextAllowedAt = Date.now() + BG_REFRESH_INTRA_DELAY_MS;
       burstState.cooldownReason = 'intra-delay';
-      pushHistory({ mid: task.mid, name: task.name, mode: 'burst', success: true, timestamp: Date.now() });
+      pushHistory({
+        channel: 'author-video',
+        mid: task.mid,
+        pn: task.pn,
+        name: task.name,
+        mode: 'burst',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: task.reason,
+        trigger: task.trigger
+      });
       await saveAuthorVideoCacheMap(authorCacheMap);
       notifyBurstTaskFinished(task, { ok: true });
     } catch (error) {
+      if (isWbiRatelimitError(error)) {
+        triggerGlobalWbiCooldown();
+      }
       pushHistory({
+        channel: 'author-video',
         mid: task.mid,
+        pn: task.pn,
         name: task.name,
         mode: 'burst',
         success: false,
         timestamp: Date.now(),
+        taskReason: task.reason,
+        trigger: task.trigger,
         error: error instanceof Error ? error.message : String(error)
       });
       console.warn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
@@ -952,8 +1127,8 @@ export function enqueuePriority(tasks: SchedulerTask[]): number {
   return added;
 }
 
-export function enqueuePriorityGroup(groupIds: string[]): number {
-  const tasks: GroupFavTask[] = groupIds.map((groupId) => ({ groupId }));
+export function enqueuePriorityGroup(groupIds: string[], trigger: SchedulerTaskTrigger = 'manual-refresh'): number {
+  const tasks: GroupFavTask[] = groupIds.map((groupId) => ({ groupId, trigger }));
   const added = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, true);
   if (added > 0) {
     startGroupFavLoopIfIdle();
@@ -971,9 +1146,9 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
   }
 
   const [noCacheTasks, staleTasks, prefetchTasks] = await Promise.all([
-    collectNoCacheAuthorTasks(),
-    collectStaleAuthorTasks(settings),
-    collectPrefetchAuthorTasks(settings)
+    collectNoCacheAuthorTasks('alarm-routine'),
+    collectStaleAuthorTasks(settings, 'alarm-routine'),
+    collectPrefetchAuthorTasks(settings, 'alarm-routine')
   ]);
   const burstQueued = enqueueBurst(noCacheTasks);
   const routineTasks = [...staleTasks, ...prefetchTasks];
@@ -999,7 +1174,10 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
     nextAlarmAt = await resetAlarm(ALARM_NAMES.AUTHOR_VIDEO, interval);
   }
 
-  const [noCacheTasks, candidates] = await Promise.all([collectNoCacheAuthorTasks(), collectOldestAuthorTasks()]);
+  const [noCacheTasks, candidates] = await Promise.all([
+    collectNoCacheAuthorTasks('debug-run-now'),
+    collectOldestAuthorTasks('debug-run-now')
+  ]);
   const burstQueued = enqueueBurst(noCacheTasks);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
   authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
@@ -1023,7 +1201,7 @@ async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean })
     nextAlarmAt = await resetAlarm(ALARM_NAMES.GROUP_FAV, interval);
   }
 
-  const tasks = await collectStaleGroupFavTasks(settings);
+  const tasks = await collectStaleGroupFavTasks(settings, 'alarm-routine');
   groupFavState.currentBatchDelay = calcBatchDelay(tasks.length, interval, normalizeBatchSize(settings));
   const queued = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, false);
   startGroupFavLoopIfIdle();
@@ -1046,7 +1224,7 @@ async function triggerGroupFavRoutineNow(options?: { resetAlarmSchedule: boolean
     nextAlarmAt = await resetAlarm(ALARM_NAMES.GROUP_FAV, interval);
   }
 
-  const candidates = await collectOldestGroupFavTasks();
+  const candidates = await collectOldestGroupFavTasks('debug-run-now');
   const targetTotal = Math.max(batchSize, groupFavState.queue.length);
   groupFavState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
   const queued = fillQueueToBatchSize(groupFavState, candidates, (task) => task.groupId, batchSize);
@@ -1102,6 +1280,7 @@ export async function runSchedulerNow(): Promise<{
  * 顶层作者字段仅表示“常规更新队列”；Burst 明细在 burst 字段单独展示。
  */
 export async function getStatus(): Promise<SchedulerStatusResponse> {
+  await ensureHistoryHydrated();
   const [settings, authorCacheMap, feedCacheMap, groups, authorAlarm, groupFavAlarm] = await Promise.all([
     loadSettings(),
     liveAuthorCacheMap ?? loadAuthorVideoCacheMap(),
@@ -1179,6 +1358,10 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     groupNames: getGroupNamesForTask(item.mid, item.groupId)
   }));
   const burstCooldownReason: BurstCooldownReason = burstState.nextAllowedAt > Date.now() ? burstState.cooldownReason : null;
+  const globalCooldownActive = globalCooldownState.nextAllowedAt > Date.now();
+  const globalCooldownReason = globalCooldownActive || globalCooldownState.lastTriggeredAt
+    ? 'wbi-ratelimit'
+    : null;
 
   return {
     schedulerBatchSize: normalizeBatchSize(settings),
@@ -1215,6 +1398,12 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
       cooldownReason: burstCooldownReason,
       lastRunAt: burstState.lastRunAt,
       queue: burstQueue
+    },
+    globalCooldown: {
+      active: globalCooldownActive,
+      nextAllowedAt: globalCooldownState.nextAllowedAt,
+      reason: globalCooldownReason,
+      lastTriggeredAt: globalCooldownState.lastTriggeredAt
     },
     authorCaches,
     groupCaches,

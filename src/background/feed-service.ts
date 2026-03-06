@@ -109,6 +109,35 @@ function resolveMaxSourcePn(videos: VideoItem[]): number {
   return maxPn;
 }
 
+/**
+ * 根据投稿接口返回的总量信息推导最大分页号。
+ * 返回 null 表示当前缓存没有可用的总量口径（需回退到旧 hasMore）。
+ */
+function resolveMaxPageByCount(totalCount: number | undefined, pageSize: number | undefined): number | null {
+  if (totalCount === undefined || pageSize === undefined) {
+    return null;
+  }
+
+  const safeTotal = Math.max(0, Math.floor(totalCount));
+  const safePageSize = Math.max(1, Math.floor(pageSize));
+  return Math.max(1, Math.ceil(safeTotal / safePageSize));
+}
+
+/**
+ * 作者是否仍可能存在下一页：
+ * - 优先使用 totalCount/apiPageSize 推导（可自愈旧 hasMore 脏值）；
+ * - 缺失总量信息时再回退到缓存 hasMore。
+ */
+export function hasAuthorMorePages(
+  cache: Pick<AuthorVideoCache, 'maxCachedPn' | 'hasMore' | 'totalCount' | 'apiPageSize'>
+): boolean {
+  const maxPageByCount = resolveMaxPageByCount(cache.totalCount, cache.apiPageSize);
+  if (maxPageByCount !== null) {
+    return cache.maxCachedPn < maxPageByCount;
+  }
+  return cache.hasMore === true;
+}
+
 function isNumericName(value: string | undefined): boolean {
   return !!value && /^\d+$/.test(value.trim());
 }
@@ -155,8 +184,18 @@ export async function refreshAuthorCache(
   const pn = Math.max(1, options?.pn ?? 1);
   const pageFetchedAt = Date.now();
   const { videos, hasMore, totalCount, pageSize } = await getUploaderVideos(mid, pn, AUTHOR_VIDEOS_PAGE_SIZE);
-  const videosWithMeta = videos.map((video) => withVideoMeta(video, pn, pageFetchedAt));
-  const merged = existing ? mergeVideos(existing.videos, videosWithMeta) : videosWithMeta;
+  const nextTotalCount = Number.isFinite(totalCount) && totalCount >= 0
+    ? Math.floor(totalCount)
+    : existing?.totalCount;
+  const nextApiPageSize = Number.isFinite(pageSize) && pageSize > 0
+    ? Math.floor(pageSize)
+    : existing?.apiPageSize;
+  const maxPageByCount = resolveMaxPageByCount(nextTotalCount, nextApiPageSize);
+  const isOutOfRangeByCount = maxPageByCount !== null && pn > maxPageByCount;
+
+  // 越界页请求不参与合并，避免把异常深页当成真实缓存页写入状态机。
+  const effectiveVideos = isOutOfRangeByCount ? [] : videos.map((video) => withVideoMeta(video, pn, pageFetchedAt));
+  const merged = existing ? mergeVideos(existing.videos, effectiveVideos) : effectiveVideos;
 
   const existingHasCardSnapshot = hasCardSnapshot(existing);
   let cardName: string | undefined;
@@ -196,12 +235,14 @@ export async function refreshAuthorCache(
   const nextPageState: AuthorVideoCache['pageState'] = {
     ...(existing?.pageState ?? {})
   };
-  const prevPageState = nextPageState[pn];
-  nextPageState[pn] = {
-    fetchedAt: pageFetchedAt,
-    usedInMixed: prevPageState?.usedInMixed ?? false,
-    lastUsedAt: prevPageState?.lastUsedAt
-  };
+  if (!isOutOfRangeByCount) {
+    const prevPageState = nextPageState[pn];
+    nextPageState[pn] = {
+      fetchedAt: pageFetchedAt,
+      usedInMixed: prevPageState?.usedInMixed ?? false,
+      lastUsedAt: prevPageState?.lastUsedAt
+    };
+  }
   if (!nextPageState[1]) {
     nextPageState[1] = {
       fetchedAt: existing?.firstPageFetchedAt || existing?.lastFetchedAt || pageFetchedAt,
@@ -210,17 +251,19 @@ export async function refreshAuthorCache(
   }
 
   const inferredMaxCachedPn = Math.max(
-    pn,
+    1,
     resolveMaxSourcePn(merged),
     ...Object.keys(nextPageState).map((rawPn) => Math.max(1, Number(rawPn) || 1))
   );
   // 统一由“当前已缓存最深页 + 1”推导下一页，避免历史 nextPn 脏值导致跳到异常深页。
   const nextPn = Math.max(2, inferredMaxCachedPn + 1);
-  const nextHasMore = pn < inferredMaxCachedPn ? Boolean(existing?.hasMore) : hasMore;
+  const nextHasMore = maxPageByCount !== null
+    ? inferredMaxCachedPn < maxPageByCount
+    : (pn < inferredMaxCachedPn ? (existing ? hasAuthorMorePages(existing) : hasMore) : hasMore);
   const firstPageFetchedAt = pn === 1
     ? pageFetchedAt
     : (existing?.firstPageFetchedAt || nextPageState[1]?.fetchedAt || pageFetchedAt);
-  const secondPageFetchedAt = pn === 2
+  const secondPageFetchedAt = pn === 2 && !isOutOfRangeByCount
     ? pageFetchedAt
     : (existing?.secondPageFetchedAt || nextPageState[2]?.fetchedAt);
 
@@ -236,8 +279,8 @@ export async function refreshAuthorCache(
     maxCachedPn: inferredMaxCachedPn,
     nextPn,
     hasMore: nextHasMore,
-    totalCount,
-    apiPageSize: pageSize,
+    totalCount: nextTotalCount,
+    apiPageSize: nextApiPageSize,
     firstPageFetchedAt,
     secondPageFetchedAt,
     lastFetchedAt: pageFetchedAt
@@ -646,6 +689,50 @@ function applyOverviewFilterForAuthor(videos: VideoItem[], overviewFilter: Overv
   return videos;
 }
 
+function hasAuthorPotentialMoreForMixed(
+  mid: number,
+  authorCacheMap: AuthorCacheMap,
+  selectedTs: number,
+  graceTs: number,
+  overviewFilter: OverviewFilterKey,
+  authorPreferences: AuthorPreferenceMap
+): boolean {
+  const cache = authorCacheMap[mid];
+  if (!cache || !hasAuthorMorePages(cache)) {
+    return false;
+  }
+
+  if (overviewFilter === 'none') {
+    const lowerBound = resolveAuthorMixedLowerBoundTs(mid, selectedTs, graceTs, authorPreferences);
+    if (lowerBound <= 0) {
+      return true;
+    }
+    const oldestCached = cache.videos[cache.videos.length - 1];
+    if (!oldestCached) {
+      return true;
+    }
+    // 已经把缓存拉到可见下界之外时，继续翻页不会再贡献当前时间流可见数据。
+    return oldestCached.pubdate >= lowerBound;
+  }
+
+  const overviewDays = resolveOverviewDays(overviewFilter);
+  if (overviewDays !== null) {
+    const lowerBound = Math.floor(Date.now() / 1000) - overviewDays * 24 * 60 * 60;
+    const oldestCached = cache.videos[cache.videos.length - 1];
+    if (!oldestCached) {
+      return true;
+    }
+    return oldestCached.pubdate >= lowerBound;
+  }
+
+  const perAuthorCount = resolveOverviewPerAuthorCount(overviewFilter);
+  if (perAuthorCount !== null) {
+    return cache.videos.length < perAuthorCount;
+  }
+
+  return true;
+}
+
 function filterAuthorVideosByTracking(videos: VideoItem[], baseline: number, extraCount: number): VideoItem[] {
   if (baseline <= 0) {
     return videos;
@@ -849,7 +936,7 @@ export function toFeedResult(
       cachedPagePns: Array.from(
         new Set(allVideos.map((video) => Math.max(1, Number(video.meta?.sourcePn) || 1)))
       ).sort((a, b) => a - b),
-      hasMorePages: authorCacheMap[mid]?.hasMore === true,
+      hasMorePages: authorCacheMap[mid] ? hasAuthorMorePages(authorCacheMap[mid]) : false,
       totalVideoCount: authorCacheMap[mid]?.totalCount,
       apiPageSize: authorCacheMap[mid]?.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE,
       videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),
@@ -906,7 +993,7 @@ export function toFeedResult(
         continue;
       }
       const cache = authorCacheMap[mid];
-      if (!cache || !cache.hasMore) {
+      if (!cache || !hasAuthorMorePages(cache)) {
         continue;
       }
       const selectedSet = selectedMapByAuthor.get(mid);
@@ -921,6 +1008,14 @@ export function toFeedResult(
       if (filteredByReadMark.length === 0) {
         continue;
       }
+
+      const mixedLowerBound = resolveAuthorMixedLowerBoundTs(mid, selectedReadMarkTs, graceReadMarkTs, authorPreferences);
+      const oldestCached = cache.videos[cache.videos.length - 1];
+      // 已经跨过时间流可见下界时，不再向更旧分页推进，避免在已阅过滤场景下无限深翻页。
+      if (mixedLowerBound > 0 && oldestCached && oldestCached.pubdate < mixedLowerBound) {
+        continue;
+      }
+
       const oldest = filteredByReadMark[filteredByReadMark.length - 1];
       if (!selectedSet.has(oldest.bvid)) {
         continue;
@@ -956,7 +1051,15 @@ export function toFeedResult(
   runtime.savedOverviewFilter = overviewFilter;
   runtime.savedByAuthorSortByLatest = byAuthorSortEnabled;
 
-  const hasMoreForMixed = mixedTotalBeforeLimit > mixedVideos.length || authorMids.some((mid) => authorCacheMap[mid]?.hasMore);
+  const hasMoreForMixed = mixedTotalBeforeLimit > mixedVideos.length
+    || authorMids.some((mid) => hasAuthorPotentialMoreForMixed(
+      mid,
+      authorCacheMap,
+      selectedReadMarkTs,
+      graceReadMarkTs,
+      overviewFilter,
+      authorPreferences
+    ));
 
   const result: GroupFeedResult = {
     groupId: group.groupId,
