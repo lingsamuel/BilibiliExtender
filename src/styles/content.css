@@ -205,6 +205,26 @@ body.bbe-page-scroll-lock {
   min-width: 0;
 }
 
+.bbe-mixed-grid {
+  --bbe-mixed-grid-gap: 10px;
+  overflow: visible;
+}
+
+.bbe-mixed-grid-item {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
+
+.bbe-mixed-grid-item > .bbe-card {
+  width: 100%;
+}
+
+.bbe-mixed-grid .bbe-read-boundary-row {
+  grid-column: 1 / -1;
+  margin: 2px 0 12px;
+}
+
 .bbe-by-author-layout {
   display: grid;
   grid-template-columns: 190px 1fr;
@@ -304,6 +324,46 @@ body.bbe-page-scroll-lock {
   font-size: 12px;
   line-height: 1.3;
   white-space: nowrap;
+}
+
+.bbe-mixed-read-boundary {
+  position: absolute;
+  left: calc(var(--bbe-mixed-grid-gap) * -0.5 - 12px);
+  top: 16%;
+  width: 24px;
+  height: 68%;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.bbe-mixed-read-boundary::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 100%;
+  border-radius: 999px;
+  background: rgb(var(--bbe-theme-color-rgb) / 0%);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.bbe-mixed-read-boundary:hover::before {
+  background: rgb(var(--bbe-theme-color-rgb) / 35%);
+}
+
+.bbe-mixed-read-boundary:focus-visible {
+  outline: none;
+}
+
+.bbe-mixed-read-boundary:focus-visible::before {
+  background: rgb(var(--bbe-theme-color-rgb) / 45%);
+  box-shadow: 0 0 0 2px rgb(var(--bbe-theme-color-rgb) / 25%);
 }
 
 .bbe-timeline {

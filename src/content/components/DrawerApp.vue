@@ -125,26 +125,35 @@
 
             <div ref="mixedSectionsRef" class="bbe-mixed-sections">
               <template v-for="day in mixedDayGroupsWithDivider" :key="day.dayKey">
-                <div v-if="day.showReadBoundaryBefore" class="bbe-read-boundary-row" aria-label="上次看到这里">
-                  <span class="bbe-read-boundary-line" />
-                  <span class="bbe-read-boundary-text">上次看到这里↓</span>
-                  <span class="bbe-read-boundary-line" />
-                </div>
                 <section
                   :ref="(el) => bindMixedDaySection(day.dayKey, el)"
                   class="bbe-mixed-day-section"
                 >
-                  <div class="bbe-grid">
-                    <VideoCard
-                      v-for="video in day.videos"
-                      :key="video.bvid"
-                      :video="video"
-                      :clicked="clickedMap[video.bvid] !== undefined"
-                      :reviewed="isVideoReviewed(video)"
-                      :dimmed="shouldDimMixedVideo(video)"
-                      @click="onVideoClick"
-                      @toggle-reviewed="onToggleVideoReviewed"
-                    />
+                  <div class="bbe-grid bbe-mixed-grid">
+                    <template v-for="item in day.videos" :key="item.video.bvid">
+                      <div v-if="item.showReadBoundaryBefore" class="bbe-read-boundary-row" aria-label="上次看到这里">
+                        <span class="bbe-read-boundary-line" />
+                        <span class="bbe-read-boundary-text">上次看到这里↓</span>
+                        <span class="bbe-read-boundary-line" />
+                      </div>
+                      <div class="bbe-mixed-grid-item">
+                        <button
+                          v-if="item.globalIndex > 0"
+                          type="button"
+                          class="bbe-mixed-read-boundary"
+                          title="将该分界设置为分组已阅时间"
+                          @click.stop="setMixedReadMarkFromBoundaryIndex(item.globalIndex)"
+                        />
+                        <VideoCard
+                          :video="item.video"
+                          :clicked="clickedMap[item.video.bvid] !== undefined"
+                          :reviewed="isVideoReviewed(item.video)"
+                          :dimmed="shouldDimMixedVideo(item.video)"
+                          @click="onVideoClick"
+                          @toggle-reviewed="onToggleVideoReviewed"
+                        />
+                      </div>
+                    </template>
                   </div>
                 </section>
               </template>
@@ -353,8 +362,7 @@ import {
   buildMixedDayGroups,
   buildTimelineWindow,
   getDayKeyFromSeconds,
-  getNextDayStartSecondsFromDayKey,
-  isLocalDayStartSeconds
+  getNextDayStartSecondsFromDayKey
 } from '@/content/utils/timeline';
 import SettingsPanel from '@/shared/components/SettingsPanel.vue';
 
@@ -488,11 +496,16 @@ interface ByAuthorNavItem {
   authorFace?: string;
 }
 
+interface MixedVideoWithBoundary {
+  video: VideoItem;
+  globalIndex: number;
+  showReadBoundaryBefore: boolean;
+}
+
 interface MixedDayGroupWithDivider {
   dayKey: string;
   label: string;
-  videos: GroupFeedResult['mixedVideos'];
-  showReadBoundaryBefore: boolean;
+  videos: MixedVideoWithBoundary[];
 }
 
 function buildTrackingFilterKey(ts: number): string {
@@ -562,30 +575,50 @@ const effectiveReadBoundaryTs = computed(() => {
   return selectedReadMarkTs.value > 0 ? selectedReadMarkTs.value : 0;
 });
 
-const activeTimelineDayKey = computed<string | null>(() => {
+/**
+ * 在可见时间流里定位“上次看到这里”横向分割线的插入点：
+ * 命中第一条严格早于已阅时间点的视频，并在其前方插入分割线。
+ */
+const mixedReadBoundaryVideoIndex = computed<number>(() => {
   const boundaryTs = effectiveReadBoundaryTs.value;
-  if (boundaryTs <= 0 || !isLocalDayStartSeconds(boundaryTs)) {
-    return null;
+  const videos = feed.value?.mixedVideos ?? [];
+  if (boundaryTs <= 0 || videos.length === 0) {
+    return -1;
   }
-  // 以“边界前一秒”反推已阅所属日期，确保 dayKey 与“D+1 零点边界”语义一致。
-  return getDayKeyFromSeconds(boundaryTs - 1);
+  for (let index = 0; index < videos.length; index++) {
+    if (videos[index].pubdate < boundaryTs) {
+      return index;
+    }
+  }
+  return -1;
 });
 
-function shouldShowMixedReadBoundaryBefore(dayBoundary: number): boolean {
-  const boundaryTs = effectiveReadBoundaryTs.value;
-  if (boundaryTs <= 0) {
-    return false;
+const activeTimelineDayKey = computed<string | null>(() => {
+  const boundaryIndex = mixedReadBoundaryVideoIndex.value;
+  const videos = feed.value?.mixedVideos ?? [];
+  if (boundaryIndex < 0 || boundaryIndex >= videos.length) {
+    return null;
   }
-  return boundaryTs === dayBoundary;
-}
+  return getDayKeyFromSeconds(videos[boundaryIndex].pubdate);
+});
 
 const mixedDayGroupsWithDivider = computed<MixedDayGroupWithDivider[]>(() => {
+  let globalIndex = 0;
+  const boundaryIndex = mixedReadBoundaryVideoIndex.value;
   return mixedDayGroups.value.map((day) => {
-    const dayBoundary = getNextDayStartSecondsFromDayKey(day.dayKey);
-    // 时间流分隔符只在“刚好命中日边界”时显示，避免把任意时刻强行映射到错误日期。
+    const videos = day.videos.map((video) => {
+      const index = globalIndex;
+      globalIndex += 1;
+      return {
+        video,
+        globalIndex: index,
+        showReadBoundaryBefore: index === boundaryIndex
+      };
+    });
     return {
-      ...day,
-      showReadBoundaryBefore: dayBoundary !== null && shouldShowMixedReadBoundaryBefore(dayBoundary)
+      dayKey: day.dayKey,
+      label: day.label,
+      videos
     };
   });
 });
@@ -2011,17 +2044,38 @@ async function markCurrentGroupRead(): Promise<void> {
 }
 
 async function markReadToMixedDay(dayKey: string): Promise<void> {
-  // 点击已激活日期时不做任何更新，避免重复写入同一边界。
-  if (activeTimelineDayKey.value === dayKey) {
-    return;
-  }
-
-  if (!activeGroupId.value) {
-    return;
-  }
-
   const readMarkTs = getNextDayStartSecondsFromDayKey(dayKey);
-  if (!readMarkTs || readMarkTs <= 0) {
+  if (!readMarkTs || readMarkTs <= 0 || selectedReadMarkTs.value === readMarkTs) {
+    return;
+  }
+  await setGroupReadMarkByTs(readMarkTs, '设置按日已阅失败');
+}
+
+function resolveMixedReadMarkTsByBoundaryIndex(boundaryIndex: number): number {
+  const videos = feed.value?.mixedVideos ?? [];
+  if (boundaryIndex <= 0 || boundaryIndex >= videos.length) {
+    return 0;
+  }
+  const newerTs = videos[boundaryIndex - 1]?.pubdate ?? 0;
+  const olderTs = videos[boundaryIndex]?.pubdate ?? 0;
+  if (newerTs <= 0 || olderTs <= 0) {
+    return 0;
+  }
+
+  // 将边界稳定落在“newer 与 older”之间，保证“上次看到这里”位置可复现。
+  if (olderTs >= newerTs) {
+    return newerTs;
+  }
+  return Math.min(newerTs, olderTs + 1);
+}
+
+async function setMixedReadMarkFromBoundaryIndex(boundaryIndex: number): Promise<void> {
+  const readMarkTs = resolveMixedReadMarkTsByBoundaryIndex(boundaryIndex);
+  await setGroupReadMarkByTs(readMarkTs, '设置时间流已阅失败');
+}
+
+async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: string): Promise<void> {
+  if (!activeGroupId.value || readMarkTs <= 0) {
     return;
   }
 
@@ -2034,14 +2088,14 @@ async function markReadToMixedDay(dayKey: string): Promise<void> {
       }
     });
     if (!resp.ok) {
-      throw new Error(resp.error ?? '设置按日已阅失败');
+      throw new Error(resp.error ?? fallbackErrorMessage);
     }
     selectedReadMarkTs.value = readMarkTs;
     userExplicitlyChoseAll = false;
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '设置按日已阅失败';
+    errorMsg.value = error instanceof Error ? error.message : fallbackErrorMessage;
   }
 }
 

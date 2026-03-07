@@ -402,21 +402,11 @@ function resolveAuthorUnreadBaselineTs(
   return groupBaselineTs;
 }
 
-function getLocalDayStartSeconds(seconds: number): number {
-  const date = new Date(seconds * 1000);
-  return Math.floor(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1000);
-}
-
-function isLocalDayStartSeconds(seconds: number): boolean {
-  const date = new Date(seconds * 1000);
-  return date.getHours() === 0 && date.getMinutes() === 0 && date.getSeconds() === 0;
-}
-
 /**
  * 时间流模式的可见下界：
- * - 默认按已阅边界过滤；
- * - “圆点对勾（日边界）”场景至少保留 D 日内容；
- * - 若该日边界仍在 N 天窗口内，则扩展为显示完整 N 天窗口，保证时间轴连续性。
+ * - 不再按已阅时间做“硬截断”；
+ * - 至少保留 defaultReadMarkDays 对应的 grace 窗口；
+ * - 当用户显式选择了更早的已阅点时，向更旧数据延展。
  */
 function resolveMixedVisibleLowerBoundTs(selectedReadMarkTs: number, graceReadMarkTs: number): number {
   const baseline = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
@@ -424,16 +414,11 @@ function resolveMixedVisibleLowerBoundTs(selectedReadMarkTs: number, graceReadMa
     return baseline;
   }
 
-  if (!isLocalDayStartSeconds(selectedReadMarkTs)) {
-    return baseline;
+  if (graceReadMarkTs > 0) {
+    return Math.min(baseline, graceReadMarkTs);
   }
 
-  const readDayStart = getLocalDayStartSeconds(selectedReadMarkTs - 1);
-  if (graceReadMarkTs > 0 && selectedReadMarkTs >= graceReadMarkTs) {
-    return Math.min(readDayStart, graceReadMarkTs);
-  }
-
-  return readDayStart;
+  return baseline;
 }
 
 function isVideoReviewed(
@@ -759,8 +744,12 @@ function resolveAuthorMixedLowerBoundTs(
   authorPreferences: AuthorPreferenceMap
 ): number {
   const pref = authorPreferences[mid];
-  if (pref?.readMarkTs && pref.readMarkTs > 0) {
-    return pref.readMarkTs;
+  const authorReadMarkTs = pref?.readMarkTs && pref.readMarkTs > 0 ? pref.readMarkTs : 0;
+  if (authorReadMarkTs > 0) {
+    if (graceTs > 0) {
+      return Math.min(authorReadMarkTs, graceTs);
+    }
+    return authorReadMarkTs;
   }
   return resolveMixedVisibleLowerBoundTs(selectedTs, graceTs);
 }
