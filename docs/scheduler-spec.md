@@ -4,13 +4,14 @@
 
 ### 1.1 问题
 
-当前实现只覆盖作者视频缓存刷新，收藏夹内容（标题、作者列表）缺少同等级别的定时缓存更新。导致分组配置建立后，收藏夹后续变更无法稳定同步到分组缓存。
+当前实现覆盖作者视频缓存刷新与收藏夹缓存刷新，但“用户交互动作（如一键点赞）”缺少同等级别的受控调度，容易在批量操作时触发风控。
 
 ### 1.2 目标
 
 将后台调度器抽象为通用组件，支持多任务通道并行存在、独立限流与独立 alarm：
 - 通道 A：作者视频缓存刷新（`author-video`）
 - 通道 B：收藏夹缓存刷新（`group-fav`）
+- 通道 C：交互点赞任务（`like-action`）
 
 前台行为统一为“读缓存 + 提交任务”，不直接发起重型 API 刷新请求。
 
@@ -134,6 +135,31 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 说明：该通道与 `author-video` 通道独立限流，不共享 ratelimit。
 
+#### 3.2.3 点赞动作通道（`like-action`）
+
+任务结构：
+
+```ts
+interface LikeActionTask extends SchedulerTaskBase {
+  key: `like:${string}`; // like:{bvid}
+  bvid: string;
+  aid: number;
+  authorMid: number;
+  source: 'author-batch-like';
+  trigger: 'manual-click';
+}
+```
+
+来源：
+- 优先：前台点击作者“一键点赞”后，将该作者当前可见视频列表转为点赞任务并入列。
+
+执行：
+1. 串行执行视频点赞 API（`archive/like`，`like=1`）。
+2. 单任务失败不中断后续任务；失败明细写入批次结果。
+3. 队列去重键为 `bvid`，避免重复点赞同一视频。
+4. 任务间固定间隔（默认 `1000ms`）。
+5. 批次结束向前台返回成功/失败汇总，用于 toast 展示。
+
 ### 3.3 Alarm 与间隔设置
 
 新增/调整设置项：
@@ -201,7 +227,7 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 ### 3.5 常规模式批次与限速规则（关键约束）
 
-以下规则在“非 Burst 执行窗口”内生效，`author-video` 与 `group-fav` 两个通道都适用，且互相独立执行：
+以下规则在“非 Burst 执行窗口”内生效，`author-video`、`group-fav`、`like-action` 三个通道都适用，且互相独立执行：
 
 1. 任务串行：同一通道内一次只执行一个任务。
 2. 批次上限：每批最多 `schedulerBatchSize` 个任务（默认 `10`）。
@@ -341,7 +367,7 @@ interface RunSchedulerNowResponse {
   accepted: true;
   triggeredAt: number;
   channels: Array<{
-    name: 'author-video' | 'group-fav';
+    name: 'author-video' | 'group-fav' | 'like-action';
     queued: number;
     nextAlarmAt?: number;
   }>;
@@ -368,7 +394,7 @@ interface ReportAuthorPageUsageResponse {
 interface SchedulerStatusResponse {
   schedulerBatchSize: number;
   channels: Array<{
-    name: 'author-video' | 'group-fav';
+    name: 'author-video' | 'group-fav' | 'like-action';
     running: boolean;
     queueLength: number;
     currentTask: Record<string, unknown> | null;
@@ -412,10 +438,12 @@ interface SchedulerStatusResponse {
   };
   history: Array<{
     // 通道标识：作者通道或收藏夹通道
-    channel: 'author-video' | 'group-fav';
-    // 作者任务为 mid，收藏夹任务为 groupId
+    channel: 'author-video' | 'group-fav' | 'like-action';
+    // 作者任务为 mid，收藏夹任务为 groupId，点赞任务为 bvid/aid
     mid?: number;
     groupId?: string;
+    bvid?: string;
+    aid?: number;
     pn?: number;
     name: string;
     success: boolean;
@@ -424,7 +452,12 @@ interface SchedulerStatusResponse {
     // 新增：区分常规与 Burst 执行来源
     mode: 'regular' | 'burst';
     // 任务语义（执行的是什么任务）
-    taskReason: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary' | 'group-fav-refresh';
+    taskReason:
+      | 'first-page-refresh'
+      | 'prefetch-next-page'
+      | 'load-more-boundary'
+      | 'group-fav-refresh'
+      | 'author-batch-like';
     // 触发来源（是谁触发了这次任务）
     trigger:
       | 'alarm-routine'
@@ -447,7 +480,7 @@ interface SchedulerStatusResponse {
 4. 当 `cooldownReason === 'error'` 且 `nextAllowedAt > now` 时，展示“错误冷却中（剩余 X 秒）”。
 5. 调度历史增加 `mode` 列，显示 `regular` / `burst`。
 6. 调度历史增加 `Reason` 列，显示 `trigger`（触发来源）并附带关键参数（如 `mid` / `pn` / `groupId`）；必要时可附带 `taskReason` 作为补充说明。
-7. “常规更新队列 / Burst 状态 / 收藏夹通道状态”三个状态面板使用统一容器：
+7. “常规更新队列 / Burst 状态 / 收藏夹通道状态 / 点赞通道状态”统一使用弹性布局容器：
    - 容器采用 `display: flex; flex-wrap: wrap;`
    - 子面板采用弹性宽度并自动换行，尽量填满一行剩余空间；
    - 在窄宽度下自动折到下一行，避免每个面板固定独占一整行。
@@ -460,6 +493,7 @@ interface SchedulerStatusResponse {
 - `src/background/scheduler/core.ts`：通用调度器内核。
 - `src/background/scheduler/channels/author-video.ts`：作者视频通道。
 - `src/background/scheduler/channels/group-fav.ts`：收藏夹缓存通道。
+- `src/background/scheduler/channels/like-action.ts`：点赞动作通道。
 
 ### 5.2 修改
 
@@ -477,6 +511,7 @@ interface SchedulerStatusResponse {
   - 分组行新增“立即刷新”按钮。
 - `src/shared/messages.ts`：新增 `RUN_SCHEDULER_NOW` 消息类型与响应，调试状态返回 `schedulerBatchSize`。
 - `src/content/components/DebugPanel.vue`：新增“立刻发起调度”按钮并展示重置后的下次触发时间。
+- `src/content/components/DrawerApp.vue`：作者标题新增“一键点赞”入口并接入点赞调度。
 
 ## 6. 与主 Spec 的关系
 
