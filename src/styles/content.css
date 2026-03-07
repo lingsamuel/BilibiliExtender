@@ -747,6 +747,29 @@ body.bbe-page-scroll-lock {
   flex-shrink: 0;
 }
 
+.bbe-author-like-btn {
+  border: 1px solid #ffc3d8;
+  border-radius: 999px;
+  background: #fff7fa;
+  color: #d24778;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bbe-author-like-btn:hover {
+  border-color: #ff9ec2;
+  background: #ffedf3;
+}
+
+.bbe-author-like-btn.loading {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .bbe-author-grid {
   overflow: visible;
   --bbe-author-grid-gap: 10px;

@@ -230,6 +230,15 @@
                       >
                         {{ getFollowButtonText(author) }}
                       </button>
+                      <button
+                        type="button"
+                        class="bbe-author-like-btn"
+                        :class="{ loading: isAuthorLikePending(author.authorMid) }"
+                        :disabled="isAuthorLikePending(author.authorMid)"
+                        @click="batchLikeAuthorVisibleVideos(author)"
+                      >
+                        {{ isAuthorLikePending(author.authorMid) ? '点赞中...' : '一键点赞' }}
+                      </button>
                     </div>
                     <div class="bbe-author-title-actions">
                       <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">
@@ -470,6 +479,7 @@ const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
 const reviewedOverrideMap = ref<Record<string, boolean>>({});
 const followPendingMap = ref<Record<number, boolean>>({});
+const authorLikePendingMap = ref<Record<number, boolean>>({});
 const byAuthorPageMap = ref<Record<number, number>>({});
 const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
 const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
@@ -925,6 +935,10 @@ function isFollowPending(mid: number): boolean {
   return followPendingMap.value[mid] === true;
 }
 
+function isAuthorLikePending(mid: number): boolean {
+  return authorLikePendingMap.value[mid] === true;
+}
+
 function formatFollowerWan(follower: number | undefined): string {
   if (typeof follower !== 'number' || Number.isNaN(follower) || follower < 0) {
     return '--';
@@ -1078,6 +1092,54 @@ async function toggleAuthorFollow(author: AuthorFeed): Promise<void> {
     const nextMap = { ...followPendingMap.value };
     delete nextMap[mid];
     followPendingMap.value = nextMap;
+  }
+}
+
+async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
+  const authorMid = author.authorMid;
+  if (!authorMid || isAuthorLikePending(authorMid)) {
+    return;
+  }
+
+  const csrf = getCsrfFromCookie();
+  if (!csrf) {
+    showErrorToast('未获取到 CSRF，请确认当前页面登录态有效');
+    return;
+  }
+
+  const videos = getAuthorVisibleVideos(author);
+  if (videos.length === 0) {
+    showErrorToast('当前没有可点赞的视频');
+    return;
+  }
+
+  authorLikePendingMap.value = { ...authorLikePendingMap.value, [authorMid]: true };
+  try {
+    const resp = await sendMessage({
+      type: 'BATCH_LIKE_VIDEOS',
+      payload: {
+        authorMid,
+        videos: videos.map((video) => ({
+          aid: video.aid,
+          bvid: video.bvid
+        })),
+        csrf
+      }
+    });
+
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '一键点赞失败');
+    }
+
+    if (resp.data.failedCount > 0) {
+      showErrorToast(`一键点赞完成：成功 ${resp.data.successCount}，失败 ${resp.data.failedCount}`);
+    }
+  } catch (error) {
+    showErrorToast(error instanceof Error ? error.message : '一键点赞失败');
+  } finally {
+    const next = { ...authorLikePendingMap.value };
+    delete next[authorMid];
+    authorLikePendingMap.value = next;
   }
 }
 
@@ -1831,6 +1893,7 @@ async function openDrawer(): Promise<void> {
 function closeDrawer(): void {
   visible.value = false;
   followPendingMap.value = {};
+  authorLikePendingMap.value = {};
   resetAuthorPaginationState();
   warningMsg.value = '';
 }
@@ -1892,6 +1955,7 @@ async function selectEntry(entryId: string): Promise<void> {
 
   activeGroupId.value = entryId;
   followPendingMap.value = {};
+  authorLikePendingMap.value = {};
   resetAuthorPaginationState();
   userExplicitlyChoseAll = false;
   warningMsg.value = '';

@@ -48,6 +48,7 @@ import {
   runSchedulerNow,
   setupAlarm
 } from '@/background/scheduler';
+import { enqueueLikeBatchAndWait } from '@/background/like-scheduler';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -707,6 +708,41 @@ async function handleCoinVideo(
   };
 }
 
+/**
+ * 作者级批量点赞：按当前前台可见视频入队，后台串行执行并汇总结果。
+ */
+async function handleBatchLikeVideos(
+  request: Extract<MessageRequest, { type: 'BATCH_LIKE_VIDEOS' }>
+): Promise<ResponseMap['BATCH_LIKE_VIDEOS']> {
+  const authorMid = Math.max(1, Number(request.payload.authorMid) || 0);
+  if (!authorMid) {
+    throw new Error('作者参数不完整');
+  }
+  const csrf = request.payload.csrf?.trim();
+  if (!csrf) {
+    throw new Error('点赞参数不完整');
+  }
+
+  const videos = (request.payload.videos ?? [])
+    .map((video) => ({
+      aid: Math.max(0, Math.floor(Number(video.aid) || 0)),
+      bvid: video.bvid?.trim() || ''
+    }))
+    .filter((video) => video.aid > 0 && video.bvid);
+
+  if (videos.length === 0) {
+    return {
+      authorMid,
+      total: 0,
+      successCount: 0,
+      failedCount: 0,
+      failedBvids: []
+    };
+  }
+
+  return enqueueLikeBatchAndWait(authorMid, videos, csrf);
+}
+
 async function handleRecordVideoClick(
   request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
 ): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
@@ -913,6 +949,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleLikeVideo(request));
     case 'COIN_VIDEO':
       return ok(await handleCoinVideo(request));
+    case 'BATCH_LIKE_VIDEOS':
+      return ok(await handleBatchLikeVideos(request));
     case 'GET_GROUP_READ_MARKS':
       return ok(await handleGetGroupReadMarks(request));
     case 'RECORD_VIDEO_CLICK':
