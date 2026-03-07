@@ -628,6 +628,23 @@ body.bbe-page-scroll-lock {
   line-height: 1.3;
 }
 
+.bbe-tag-liked {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  background: rgb(var(--bbe-theme-color-rgb) / 88%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgb(var(--bbe-theme-color-rgb) / 45%);
+}
+
 .bbe-progress-bar {
   position: absolute;
   bottom: 0;

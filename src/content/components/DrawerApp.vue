@@ -152,6 +152,7 @@
                         <VideoCard
                           :video="item.video"
                           :clicked="clickedMap[item.video.bvid] !== undefined"
+                          :liked="likedMap[item.video.bvid] === true"
                           :reviewed="isVideoReviewed(item.video)"
                           :dimmed="shouldDimMixedVideo(item.video)"
                           @click="onVideoClick"
@@ -291,6 +292,7 @@
                     <VideoCard
                       :video="video"
                       :clicked="clickedMap[video.bvid] !== undefined"
+                      :liked="likedMap[video.bvid] === true"
                       :reviewed="isVideoReviewed(video)"
                       @click="onVideoClick"
                       @toggle-reviewed="onToggleVideoReviewed"
@@ -478,6 +480,7 @@ const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
 const reviewedOverrideMap = ref<Record<string, boolean>>({});
+const likedMap = ref<Record<string, boolean>>({});
 const followPendingMap = ref<Record<number, boolean>>({});
 const authorLikePendingMap = ref<Record<number, boolean>>({});
 const byAuthorPageMap = ref<Record<number, number>>({});
@@ -1134,6 +1137,15 @@ async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
     if (resp.data.failedCount > 0) {
       showErrorToast(`一键点赞完成：成功 ${resp.data.successCount}，失败 ${resp.data.failedCount}`);
     }
+
+    const failedBvids = new Set(resp.data.failedBvids);
+    const nextLikedMap = { ...likedMap.value };
+    for (const video of videos) {
+      if (!failedBvids.has(video.bvid)) {
+        nextLikedMap[video.bvid] = true;
+      }
+    }
+    likedMap.value = nextLikedMap;
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '一键点赞失败');
   } finally {
@@ -1252,17 +1264,48 @@ function collectAllBvids(): string[] {
   return Array.from(bvids);
 }
 
+function collectAllVideosForLikeState(): Array<{ aid: number; bvid: string }> {
+  if (!feed.value) {
+    return [];
+  }
+  const dedup = new Map<string, { aid: number; bvid: string }>();
+
+  const collect = (video: VideoItem): void => {
+    if (!video.bvid || !video.aid || dedup.has(video.bvid)) {
+      return;
+    }
+    dedup.set(video.bvid, {
+      aid: video.aid,
+      bvid: video.bvid
+    });
+  };
+
+  for (const video of feed.value.mixedVideos) {
+    collect(video);
+  }
+  for (const author of feed.value.videosByAuthor) {
+    for (const video of author.videos) {
+      collect(video);
+    }
+  }
+
+  return Array.from(dedup.values());
+}
+
 async function fetchClickedVideos(): Promise<void> {
   const bvids = collectAllBvids();
+  const videos = collectAllVideosForLikeState();
   if (bvids.length === 0) {
     clickedMap.value = {};
     reviewedOverrideMap.value = {};
+    likedMap.value = {};
     return;
   }
 
-  const [clickedResp, reviewedResp] = await Promise.all([
+  const [clickedResp, reviewedResp, likedResp] = await Promise.all([
     sendMessage({ type: 'GET_CLICKED_VIDEOS', payload: { bvids } }),
-    sendMessage({ type: 'GET_VIDEO_REVIEWED_OVERRIDES', payload: { bvids } })
+    sendMessage({ type: 'GET_VIDEO_REVIEWED_OVERRIDES', payload: { bvids } }),
+    sendMessage({ type: 'GET_VIDEOS_LIKE_STATE', payload: { videos } })
   ]);
 
   if (clickedResp.ok && clickedResp.data) {
@@ -1270,6 +1313,9 @@ async function fetchClickedVideos(): Promise<void> {
   }
   if (reviewedResp.ok && reviewedResp.data) {
     reviewedOverrideMap.value = reviewedResp.data.overrides;
+  }
+  if (likedResp.ok && likedResp.data) {
+    likedMap.value = likedResp.data.likedMap;
   }
 }
 
@@ -1838,7 +1884,9 @@ async function openDrawer(): Promise<void> {
   visible.value = true;
   clickedMap.value = {};
   reviewedOverrideMap.value = {};
+  likedMap.value = {};
   followPendingMap.value = {};
+  authorLikePendingMap.value = {};
   resetAuthorPaginationState();
   userExplicitlyChoseAll = false;
   warningMsg.value = '';
@@ -1892,6 +1940,7 @@ async function openDrawer(): Promise<void> {
 
 function closeDrawer(): void {
   visible.value = false;
+  likedMap.value = {};
   followPendingMap.value = {};
   authorLikePendingMap.value = {};
   resetAuthorPaginationState();

@@ -36,6 +36,7 @@ export type MessageRequest =
   | { type: 'LIKE_VIDEO'; payload: { aid?: number; bvid?: string; like: boolean; csrf: string } }
   | { type: 'COIN_VIDEO'; payload: { aid?: number; bvid?: string; multiply: number; selectLike?: boolean; csrf: string } }
   | { type: 'BATCH_LIKE_VIDEOS'; payload: { authorMid: number; videos: Array<{ aid: number; bvid: string }>; csrf: string } }
+  | { type: 'GET_VIDEOS_LIKE_STATE'; payload: { videos: Array<{ aid: number; bvid: string }> } }
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
@@ -201,6 +202,9 @@ export interface ResponseMap {
     successCount: number;
     failedCount: number;
     failedBvids: string[];
+  };
+  GET_VIDEOS_LIKE_STATE: {
+    likedMap: Record<string, boolean>;
   };
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };

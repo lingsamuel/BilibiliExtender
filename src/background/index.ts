@@ -1,5 +1,12 @@
 import { AUTHOR_VIDEOS_PAGE_SIZE, DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
-import { coinVideo, getMyCreatedFolders, getUserCard, likeVideo, modifyUserRelation } from '@/shared/api/bilibili';
+import {
+  coinVideo,
+  getMyCreatedFolders,
+  getUserCard,
+  getVideoRecentLikeState,
+  likeVideo,
+  modifyUserRelation
+} from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import {
@@ -743,6 +750,39 @@ async function handleBatchLikeVideos(
   return enqueueLikeBatchAndWait(authorMid, videos, csrf);
 }
 
+/**
+ * 批量读取视频近期点赞状态。
+ * 单条查询失败时忽略该条，不阻断整体结果返回。
+ */
+async function handleGetVideosLikeState(
+  request: Extract<MessageRequest, { type: 'GET_VIDEOS_LIKE_STATE' }>
+): Promise<ResponseMap['GET_VIDEOS_LIKE_STATE']> {
+  const likedMap: Record<string, boolean> = {};
+  const dedup = new Map<string, { aid: number; bvid: string }>();
+
+  for (const video of request.payload.videos ?? []) {
+    const aid = Math.max(0, Math.floor(Number(video.aid) || 0));
+    const bvid = video.bvid?.trim() || '';
+    if (!aid || !bvid || dedup.has(bvid)) {
+      continue;
+    }
+    dedup.set(bvid, { aid, bvid });
+  }
+
+  for (const video of dedup.values()) {
+    try {
+      likedMap[video.bvid] = await getVideoRecentLikeState({
+        aid: video.aid,
+        bvid: video.bvid
+      });
+    } catch {
+      // 单条失败静默降级
+    }
+  }
+
+  return { likedMap };
+}
+
 async function handleRecordVideoClick(
   request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
 ): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
@@ -951,6 +991,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleCoinVideo(request));
     case 'BATCH_LIKE_VIDEOS':
       return ok(await handleBatchLikeVideos(request));
+    case 'GET_VIDEOS_LIKE_STATE':
+      return ok(await handleGetVideosLikeState(request));
     case 'GET_GROUP_READ_MARKS':
       return ok(await handleGetGroupReadMarks(request));
     case 'RECORD_VIDEO_CLICK':

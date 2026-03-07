@@ -10,6 +10,7 @@
     >
       <div class="bbe-card-cover">
         <img :src="video.cover" :alt="video.title" />
+        <span v-if="liked === true" class="bbe-tag-liked" aria-label="已点赞">👍</span>
         <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
         <div v-if="playbackPercent > 0" class="bbe-progress-bar">
           <div class="bbe-progress-fill" :style="{ width: playbackPercent + '%' }" />
@@ -65,6 +66,7 @@ import { formatPubdate } from '@/shared/utils/format';
 const props = defineProps<{
   video: VideoItem;
   clicked?: boolean;
+  liked?: boolean;
   reviewed?: boolean;
   dimmed?: boolean;
 }>();
