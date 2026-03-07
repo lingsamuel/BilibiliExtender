@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Bilibili Extender",
-  "version": "0.2.67",
+  "name": "惊蛰：哔哩哔哩关注功能扩展",
+  "version": "0.2.69",
   "description": "按收藏夹分组查看作者投稿动态",
+  "icons": {
+    "128": "icons/icon.png"
+  },
   "permissions": ["storage", "unlimitedStorage", "alarms"],
   "host_permissions": ["https://*.bilibili.com/*"],
   "background": {

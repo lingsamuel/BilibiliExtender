@@ -1,4 +1,4 @@
-# Bilibili Extender
+# 惊蛰：哔哩哔哩关注功能扩展
 
 一个面向 Chrome/Edge，并支持 Firefox 本地调试的 Bilibili 扩展：
 - 用用户当前登录态请求 Bilibili 接口
