@@ -800,8 +800,10 @@ body.bbe-page-scroll-lock {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   margin-top: 8px;
+  width: 100%;
 }
 
 .bbe-author-pagination-btns {
