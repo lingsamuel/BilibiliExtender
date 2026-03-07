@@ -2062,7 +2062,15 @@ function resolveMixedReadMarkTsByBoundaryIndex(boundaryIndex: number): number {
     return 0;
   }
 
-  // 将边界稳定落在“newer 与 older”之间，保证“上次看到这里”位置可复现。
+  // 分组已阅会被后端归一化到“分钟精度（秒归零）”，因此这里要优先选择“older 所在分钟的下一分钟”。
+  // 这样在多数场景下可确保最终落库值满足：newerTs >= readMarkTs > olderTs，
+  // 从而让“上次看到这里”横线稳定落在用户点击的两张卡片之间。
+  const nextMinuteBoundary = Math.floor(olderTs / 60) * 60 + 60;
+  if (nextMinuteBoundary <= newerTs) {
+    return nextMinuteBoundary;
+  }
+
+  // 当两条视频处于同一分钟（不存在可用分钟边界）时，退化为旧策略。
   if (olderTs >= newerTs) {
     return newerTs;
   }
