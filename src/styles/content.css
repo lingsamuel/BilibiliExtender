@@ -445,6 +445,15 @@ body.bbe-page-scroll-lock {
   height: 100%;
 }
 
+.bbe-card.is-dimmed {
+  opacity: 0.56;
+  transition: opacity 0.2s ease;
+}
+
+.bbe-card.is-dimmed:hover {
+  opacity: 1;
+}
+
 .bbe-card-cover img {
   width: 100%;
   aspect-ratio: 16/10;

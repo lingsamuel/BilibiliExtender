@@ -1,5 +1,5 @@
 <template>
-  <article class="bbe-card">
+  <article class="bbe-card" :class="{ 'is-dimmed': dimmed }">
     <a
       class="bbe-card-cover-link"
       :href="videoUrl"
@@ -66,6 +66,7 @@ const props = defineProps<{
   video: VideoItem;
   clicked?: boolean;
   reviewed?: boolean;
+  dimmed?: boolean;
 }>();
 
 const emit = defineEmits<{

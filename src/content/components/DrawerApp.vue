@@ -141,6 +141,7 @@
                       :video="video"
                       :clicked="clickedMap[video.bvid] !== undefined"
                       :reviewed="isVideoReviewed(video)"
+                      :dimmed="shouldDimMixedVideo(video)"
                       @click="onVideoClick"
                       @toggle-reviewed="onToggleVideoReviewed"
                     />
@@ -1939,6 +1940,35 @@ const byAuthorBoundaryIndexMap = computed<Record<number, number>>(() => {
 
 function isAuthorBoundaryIndex(author: AuthorFeed, index: number): boolean {
   return byAuthorBoundaryIndexMap.value[author.authorMid] === index;
+}
+
+const mixedAuthorReadMarkBoundaryMap = computed<Record<number, number>>(() => {
+  if (!feed.value) {
+    return {};
+  }
+  const result: Record<number, number> = {};
+  for (const author of feed.value.videosByAuthor) {
+    if (author.hasAuthorReadMarkOverride !== true) {
+      continue;
+    }
+    const boundaryTs = author.effectiveReadBoundaryTs ?? 0;
+    if (boundaryTs > 0) {
+      result[author.authorMid] = boundaryTs;
+    }
+  }
+  return result;
+});
+
+/**
+ * 时间流下命中“作者级逻辑已阅”的视频卡片默认半透明。
+ * hover 时由样式恢复为不透明，避免影响快速扫读。
+ */
+function shouldDimMixedVideo(video: VideoItem): boolean {
+  if (mode.value !== 'mixed') {
+    return false;
+  }
+  const boundaryTs = mixedAuthorReadMarkBoundaryMap.value[video.authorMid];
+  return typeof boundaryTs === 'number' && boundaryTs > 0 && video.pubdate <= boundaryTs;
 }
 
 async function markCurrentGroupRead(): Promise<void> {
