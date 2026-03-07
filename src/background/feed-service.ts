@@ -519,13 +519,14 @@ function aggregateMixedVideos(authorMids: number[], authorCacheMap: AuthorCacheM
 function aggregateMixedVideosByOverviewFilter(
   authorMids: number[],
   authorCacheMap: AuthorCacheMap,
-  overviewFilter: OverviewFilterKey
+  overviewFilter: OverviewFilterKey,
+  defaultReadMarkDays: number
 ): VideoItem[] {
   const map = new Map<string, VideoItem>();
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
     if (!cache) continue;
-    const scoped = applyOverviewFilterForAuthor(cache.videos, overviewFilter);
+    const scoped = applyOverviewFilterForAuthor(cache.videos, overviewFilter, defaultReadMarkDays);
     for (const video of scoped) {
       const prev = map.get(video.bvid);
       if (!prev) {
@@ -658,7 +659,11 @@ function calcGlobalUnreadCount(
   return unreadBvids.size;
 }
 
-function resolveOverviewDays(overviewFilter: OverviewFilterKey): number | null {
+function resolveOverviewDays(overviewFilter: OverviewFilterKey, defaultReadMarkDays: number): number | null {
+  if (overviewFilter === 'gd') {
+    const safeDays = Math.max(0, Math.floor(defaultReadMarkDays));
+    return safeDays > 0 ? safeDays : null;
+  }
   if (overviewFilter === 'd14') return 14;
   if (overviewFilter === 'd30') return 30;
   return null;
@@ -670,8 +675,12 @@ function resolveOverviewPerAuthorCount(overviewFilter: OverviewFilterKey): numbe
   return null;
 }
 
-function applyOverviewFilterForAuthor(videos: VideoItem[], overviewFilter: OverviewFilterKey): VideoItem[] {
-  if (overviewFilter === 'none') {
+function applyOverviewFilterForAuthor(
+  videos: VideoItem[],
+  overviewFilter: OverviewFilterKey,
+  defaultReadMarkDays: number
+): VideoItem[] {
+  if (overviewFilter === 'none' || overviewFilter === 'all') {
     return videos;
   }
 
@@ -680,7 +689,7 @@ function applyOverviewFilterForAuthor(videos: VideoItem[], overviewFilter: Overv
     return videos.slice(0, perAuthorCount);
   }
 
-  const days = resolveOverviewDays(overviewFilter);
+  const days = resolveOverviewDays(overviewFilter, defaultReadMarkDays);
   if (days !== null) {
     const lowerBound = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
     return videos.filter((video) => video.pubdate >= lowerBound);
@@ -695,6 +704,7 @@ function hasAuthorPotentialMoreForMixed(
   selectedTs: number,
   graceTs: number,
   overviewFilter: OverviewFilterKey,
+  defaultReadMarkDays: number,
   authorPreferences: AuthorPreferenceMap
 ): boolean {
   const cache = authorCacheMap[mid];
@@ -715,7 +725,7 @@ function hasAuthorPotentialMoreForMixed(
     return oldestCached.pubdate >= lowerBound;
   }
 
-  const overviewDays = resolveOverviewDays(overviewFilter);
+  const overviewDays = resolveOverviewDays(overviewFilter, defaultReadMarkDays);
   if (overviewDays !== null) {
     const lowerBound = Math.floor(Date.now() / 1000) - overviewDays * 24 * 60 * 60;
     const oldestCached = cache.videos[cache.videos.length - 1];
@@ -908,6 +918,7 @@ export function toFeedResult(
   const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
   const graceReadMarkTs = getGraceReadMarkTs(settings);
   const trackingGroupBaselineTs = resolveGroupUnreadBaselineTs(selectedReadMarkTs, graceReadMarkTs);
+  const effectiveOverviewFilter: OverviewFilterKey = mode === 'overview' ? overviewFilter : 'none';
 
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
@@ -916,9 +927,9 @@ export function toFeedResult(
     const hasAuthorReadMarkOverride = Boolean(pref?.readMarkTs && pref.readMarkTs > 0);
     const authorBoundaryTs = resolveAuthorUnreadBaselineTs(mid, trackingGroupBaselineTs, authorPreferences);
     const videos =
-      overviewFilter === 'none'
+      effectiveOverviewFilter === 'none'
         ? filterAuthorVideosByTracking(allVideos, authorBoundaryTs, settings.extraOlderVideoCount)
-        : applyOverviewFilterForAuthor(allVideos, overviewFilter);
+        : applyOverviewFilterForAuthor(allVideos, effectiveOverviewFilter, settings.defaultReadMarkDays);
     const meta = authorMetaMap.get(mid);
 
     // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
@@ -941,7 +952,7 @@ export function toFeedResult(
       apiPageSize: authorCacheMap[mid]?.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE,
       videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),
       hasOnlyExtraOlderVideos:
-        overviewFilter === 'none' &&
+        effectiveOverviewFilter === 'none' &&
         authorBoundaryTs > 0 &&
         videos.length > 0 &&
         videos.every((video) => video.pubdate < authorBoundaryTs),
@@ -957,11 +968,16 @@ export function toFeedResult(
     videos.map((video) => injectAuthorMetaIntoVideo(video, authorMetaMap.get(video.authorMid)));
 
   const mixedAllVideos =
-    overviewFilter === 'none'
+    effectiveOverviewFilter === 'none'
       ? aggregateMixedVideos(authorMids, authorCacheMap)
-      : aggregateMixedVideosByOverviewFilter(authorMids, authorCacheMap, overviewFilter);
+      : aggregateMixedVideosByOverviewFilter(
+          authorMids,
+          authorCacheMap,
+          effectiveOverviewFilter,
+          settings.defaultReadMarkDays
+        );
   let mixedVideos = injectAuthorMeta(
-    overviewFilter === 'none'
+    effectiveOverviewFilter === 'none'
       ? filterMixedVideosByTracking(mixedAllVideos, selectedReadMarkTs, graceReadMarkTs, authorPreferences)
       : mixedAllVideos
   );
@@ -989,7 +1005,7 @@ export function toFeedResult(
 
     const boundaryTaskMap = new Map<string, MixedBoundaryTask>();
     for (const mid of authorMids) {
-      if (overviewFilter !== 'none') {
+      if (effectiveOverviewFilter !== 'none') {
         continue;
       }
       const cache = authorCacheMap[mid];
@@ -1002,9 +1018,9 @@ export function toFeedResult(
       }
 
       const filteredByReadMark =
-        overviewFilter === 'none'
+        effectiveOverviewFilter === 'none'
           ? filterMixedVideosByTracking(cache.videos, selectedReadMarkTs, graceReadMarkTs, authorPreferences)
-          : applyOverviewFilterForAuthor(cache.videos, overviewFilter);
+          : applyOverviewFilterForAuthor(cache.videos, effectiveOverviewFilter, settings.defaultReadMarkDays);
       if (filteredByReadMark.length === 0) {
         continue;
       }
@@ -1057,7 +1073,8 @@ export function toFeedResult(
       authorCacheMap,
       selectedReadMarkTs,
       graceReadMarkTs,
-      overviewFilter,
+      effectiveOverviewFilter,
+      settings.defaultReadMarkDays,
       authorPreferences
     ));
 

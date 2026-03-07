@@ -1,5 +1,5 @@
-export type ViewMode = 'mixed' | 'byAuthor';
-export type OverviewFilterKey = 'none' | 'd14' | 'd30' | 'n10' | 'n30';
+export type ViewMode = 'mixed' | 'byAuthor' | 'overview';
+export type OverviewFilterKey = 'none' | 'all' | 'gd' | 'd14' | 'd30' | 'n10' | 'n30';
 
 export interface GroupConfig {
   groupId: string;
