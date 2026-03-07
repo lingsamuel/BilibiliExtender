@@ -335,10 +335,17 @@ export async function modifyUserRelation(
   csrf: string
 ): Promise<void> {
   const act = follow ? 1 : 2;
+  // 关注接口在 Web 端需要携带 extend_content（实体类型 + 目标 uid），
+  // 否则在部分账号/风控场景下可能被拦截。
+  const extendContent = JSON.stringify({
+    entity: 'user',
+    entity_id: fid
+  });
   await postApi<Record<string, never>>('/x/relation/modify', {
     fid,
     act,
     re_src: 11,
+    extend_content: extendContent,
     csrf
   });
 }
