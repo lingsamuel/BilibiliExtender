@@ -149,11 +149,11 @@
               </template>
             </div>
           </div>
-          <div v-if="!loading && !loadingMore && !generating" class="bbe-load-more-row">
+          <div v-if="!loading && !loadingMore && !generating && feed?.hasMoreForMixed" class="bbe-load-more-row">
             <button
               type="button"
               class="bbe-btn"
-              :disabled="loadingMore || loading || generating || !feed?.hasMoreForMixed"
+              :disabled="loadingMore || loading || generating"
               @click="onLoadMoreClick"
             >
               加载更多
