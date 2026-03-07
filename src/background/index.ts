@@ -559,7 +559,7 @@ async function handleMarkGroupReadMark(
 async function handleMarkAllGroupsRead(): Promise<ResponseMap['MARK_ALL_GROUPS_READ']> {
   const groups = await loadGroups();
   const enabledGroups = groups.filter((item) => item.enabled);
-  const readMarkTs = Math.floor(Date.now() / 1000);
+  const readMarkTs = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
   const mergedMarks: Record<string, GroupReadMark> = {};
 
   for (const group of enabledGroups) {

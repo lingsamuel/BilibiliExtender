@@ -346,7 +346,9 @@ export async function saveGroupReadMarks(marks: ReadMarkMap): Promise<void> {
  */
 export async function appendGroupReadMark(groupId: string, readMarkTs?: number): Promise<ReadMarkMap> {
   const marks = await loadGroupReadMarks();
-  const ts = Math.floor(readMarkTs ?? Date.now() / 1000);
+  const rawTs = Math.floor(readMarkTs ?? Date.now() / 1000);
+  // 统一归一化到分钟精度（秒归零），避免同一分钟内产生多个时间点。
+  const ts = Math.floor(rawTs / 60) * 60;
 
   if (!marks[groupId]) {
     marks[groupId] = { groupId, timestamps: [] };
