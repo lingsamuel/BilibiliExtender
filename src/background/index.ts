@@ -1,5 +1,5 @@
 import { AUTHOR_VIDEOS_PAGE_SIZE, DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
-import { getMyCreatedFolders, getUserCard, modifyUserRelation } from '@/shared/api/bilibili';
+import { coinVideo, getMyCreatedFolders, getUserCard, likeVideo, modifyUserRelation } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import {
@@ -114,6 +114,18 @@ function splitMissingAuthorTasks(
   }
 
   return { burst, priority };
+}
+
+function normalizeVideoTarget(payload: { aid?: number; bvid?: string }): { aid?: number; bvid?: string } {
+  const aid = Number(payload.aid);
+  if (aid > 0) {
+    return { aid: Math.floor(aid) };
+  }
+  const bvid = payload.bvid?.trim();
+  if (bvid) {
+    return { bvid };
+  }
+  throw new Error('视频参数不完整');
 }
 
 async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
@@ -652,6 +664,49 @@ async function handleFollowAuthor(
   return patch;
 }
 
+/**
+ * 点赞/取消点赞视频。
+ */
+async function handleLikeVideo(
+  request: Extract<MessageRequest, { type: 'LIKE_VIDEO' }>
+): Promise<ResponseMap['LIKE_VIDEO']> {
+  const csrf = request.payload.csrf?.trim();
+  if (!csrf) {
+    throw new Error('点赞参数不完整');
+  }
+  const target = normalizeVideoTarget(request.payload);
+  const like = request.payload.like === true;
+  await likeVideo(target, like, csrf);
+  return {
+    aid: target.aid,
+    bvid: target.bvid,
+    liked: like
+  };
+}
+
+/**
+ * 给视频投币。
+ */
+async function handleCoinVideo(
+  request: Extract<MessageRequest, { type: 'COIN_VIDEO' }>
+): Promise<ResponseMap['COIN_VIDEO']> {
+  const csrf = request.payload.csrf?.trim();
+  if (!csrf) {
+    throw new Error('投币参数不完整');
+  }
+  const target = normalizeVideoTarget(request.payload);
+  const multiply = Number(request.payload.multiply) >= 2 ? 2 : 1;
+  const selectLike = request.payload.selectLike === true;
+  const result = await coinVideo(target, multiply, selectLike, csrf);
+  return {
+    aid: target.aid,
+    bvid: target.bvid,
+    multiply,
+    selectLike,
+    like: result.like
+  };
+}
+
 async function handleRecordVideoClick(
   request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
 ): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
@@ -854,6 +909,10 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleMarkAllGroupsRead());
     case 'FOLLOW_AUTHOR':
       return ok(await handleFollowAuthor(request));
+    case 'LIKE_VIDEO':
+      return ok(await handleLikeVideo(request));
+    case 'COIN_VIDEO':
+      return ok(await handleCoinVideo(request));
     case 'GET_GROUP_READ_MARKS':
       return ok(await handleGetGroupReadMarks(request));
     case 'RECORD_VIDEO_CLICK':

@@ -77,6 +77,11 @@ interface WebCardData {
   following?: boolean;
 }
 
+export interface VideoActionTarget {
+  aid?: number;
+  bvid?: string;
+}
+
 async function fetchApi<T>(
   path: string,
   params?: Record<string, string | number>
@@ -348,6 +353,73 @@ export async function modifyUserRelation(
     extend_content: extendContent,
     csrf
   });
+}
+
+function buildVideoActionParams(target: VideoActionTarget): Record<string, string | number> {
+  const params: Record<string, string | number> = {};
+  const aid = Number(target.aid);
+  const bvid = target.bvid?.trim();
+
+  if (aid > 0) {
+    params.aid = Math.floor(aid);
+  } else if (bvid) {
+    params.bvid = bvid;
+  } else {
+    throw new Error('视频参数不完整');
+  }
+
+  return params;
+}
+
+/**
+ * 点赞/取消点赞视频。
+ * like=true => 点赞（1），like=false => 取消点赞（2）。
+ */
+export async function likeVideo(
+  target: VideoActionTarget,
+  like: boolean,
+  csrf: string
+): Promise<void> {
+  const params = buildVideoActionParams(target);
+  await postApi<Record<string, never>>('/x/web-interface/archive/like', {
+    ...params,
+    like: like ? 1 : 2,
+    csrf
+  });
+}
+
+interface CoinVideoResponse {
+  like?: boolean;
+}
+
+/**
+ * 给视频投币。
+ * multiply 仅允许 1 或 2；selectLike=true 时附加点赞。
+ */
+export async function coinVideo(
+  target: VideoActionTarget,
+  multiply: number,
+  selectLike: boolean,
+  csrf: string
+): Promise<{ like?: boolean }> {
+  const params = buildVideoActionParams(target);
+  const safeMultiply = multiply >= 2 ? 2 : 1;
+  const payload = await postApi<CoinVideoResponse>('/x/web-interface/coin/add', {
+    ...params,
+    multiply: safeMultiply,
+    select_like: selectLike ? 1 : 0,
+    csrf
+  });
+  return { like: payload.data?.like };
+}
+
+/**
+ * 查询视频近期点赞状态（仅“近期口径”，不保证覆盖历史点赞）。
+ */
+export async function getVideoRecentLikeState(target: VideoActionTarget): Promise<boolean> {
+  const params = buildVideoActionParams(target);
+  const payload = await fetchApi<number>('/x/web-interface/archive/has/like', params);
+  return Number(payload.data) === 1;
 }
 
 interface AccInfoData {

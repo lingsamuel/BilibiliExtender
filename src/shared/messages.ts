@@ -33,6 +33,8 @@ export type MessageRequest =
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
   | { type: 'FOLLOW_AUTHOR'; payload: { mid: number; follow: boolean; csrf: string } }
+  | { type: 'LIKE_VIDEO'; payload: { aid?: number; bvid?: string; like: boolean; csrf: string } }
+  | { type: 'COIN_VIDEO'; payload: { aid?: number; bvid?: string; multiply: number; selectLike?: boolean; csrf: string } }
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
@@ -179,6 +181,18 @@ export interface ResponseMap {
     follower?: number;
     name?: string;
     face?: string;
+  };
+  LIKE_VIDEO: {
+    aid?: number;
+    bvid?: string;
+    liked: boolean;
+  };
+  COIN_VIDEO: {
+    aid?: number;
+    bvid?: string;
+    multiply: number;
+    selectLike: boolean;
+    like?: boolean;
   };
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
