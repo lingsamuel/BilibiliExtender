@@ -929,7 +929,9 @@ export function toFeedResult(
     const videos =
       effectiveOverviewFilter === 'none'
         ? filterAuthorVideosByTracking(allVideos, authorBoundaryTs, settings.extraOlderVideoCount)
-        : applyOverviewFilterForAuthor(allVideos, effectiveOverviewFilter, settings.defaultReadMarkDays);
+        : effectiveOverviewFilter === 'all'
+          ? allVideos
+          : applyOverviewFilterForAuthor(allVideos, effectiveOverviewFilter, settings.defaultReadMarkDays);
     const meta = authorMetaMap.get(mid);
 
     // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
@@ -970,6 +972,8 @@ export function toFeedResult(
   const mixedAllVideos =
     effectiveOverviewFilter === 'none'
       ? aggregateMixedVideos(authorMids, authorCacheMap)
+      : effectiveOverviewFilter === 'all'
+        ? aggregateMixedVideos(authorMids, authorCacheMap)
       : aggregateMixedVideosByOverviewFilter(
           authorMids,
           authorCacheMap,
