@@ -33,6 +33,12 @@
     </aside>
 
     <main class="bbe-main">
+      <div class="bbe-toast-stack" aria-live="polite" aria-atomic="false">
+        <div v-for="toast in toasts" :key="toast.id" class="bbe-toast bbe-toast-error">
+          {{ toast.message }}
+        </div>
+      </div>
+
       <section v-if="isDebugView" class="bbe-list bbe-settings-scroll">
         <DebugPanel />
       </section>
@@ -79,8 +85,7 @@
       </header>
 
       <section ref="listRef" class="bbe-list" @scroll="onListScroll">
-        <div v-if="errorMsg" class="bbe-empty">{{ errorMsg }}</div>
-        <div v-else-if="showGeneratingPlaceholder" class="bbe-empty">正在生成缓存，请稍候...</div>
+        <div v-if="showGeneratingPlaceholder" class="bbe-empty">正在生成缓存，请稍候...</div>
         <div v-else-if="loading" class="bbe-empty">加载中...</div>
         <div v-else-if="!feed || (mode === 'mixed' && feed.mixedVideos.length === 0)" class="bbe-empty">
           当前分组暂无投稿
@@ -446,10 +451,11 @@ const summaries = ref<GroupSummary[]>([]);
 const activeGroupId = ref('');
 const activeEntryId = ref('');
 const feed = ref<GroupFeedResult | null>(null);
-const errorMsg = ref('');
 const warningMsg = ref('');
 const debugMode = ref(false);
 const listRef = ref<HTMLElement | null>(null);
+const toasts = ref<Array<{ id: number; message: string }>>([]);
+let toastSeq = 0;
 let summaryTimer: number | null = null;
 let pollTimer: number | null = null;
 let userExplicitlyChoseAll = false;
@@ -506,6 +512,23 @@ interface MixedDayGroupWithDivider {
   dayKey: string;
   label: string;
   videos: MixedVideoWithBoundary[];
+}
+
+/**
+ * 前台统一错误提示入口：只弹通知，不覆盖主内容。
+ * 这样即使接口失败，也能保留当前可用缓存内容，避免“整页不可用”。
+ */
+function showErrorToast(message: string): void {
+  const text = message.trim();
+  if (!text) {
+    return;
+  }
+  const id = ++toastSeq;
+  const next = [...toasts.value, { id, message: text }];
+  toasts.value = next.slice(-4);
+  window.setTimeout(() => {
+    toasts.value = toasts.value.filter((item) => item.id !== id);
+  }, 3200);
 }
 
 function buildTrackingFilterKey(ts: number): string {
@@ -869,7 +892,7 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
     await nextTick();
     updateByAuthorNavState();
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '作者分页切换失败';
+    showErrorToast(error instanceof Error ? error.message : '作者分页切换失败');
   } finally {
     setAuthorPageLoading(author.authorMid, false);
   }
@@ -1007,7 +1030,7 @@ async function toggleAuthorFollow(author: AuthorFeed): Promise<void> {
 
   const csrf = getCsrfFromCookie();
   if (!csrf) {
-    errorMsg.value = '未获取到 CSRF，请确认当前页面登录态有效';
+    showErrorToast('未获取到 CSRF，请确认当前页面登录态有效');
     return;
   }
 
@@ -1050,7 +1073,7 @@ async function toggleAuthorFollow(author: AuthorFeed): Promise<void> {
       following: prevFollowing,
       follower: prevFollower
     });
-    errorMsg.value = error instanceof Error ? error.message : (nextFollowing ? '关注失败' : '取消关注失败');
+    showErrorToast(error instanceof Error ? error.message : (nextFollowing ? '关注失败' : '取消关注失败'));
   } finally {
     const nextMap = { ...followPendingMap.value };
     delete nextMap[mid];
@@ -1627,8 +1650,6 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
     return;
   }
 
-  errorMsg.value = '';
-
   const isLoadMore = Boolean(options?.loadMore);
   if (isLoadMore) {
     loadingMore.value = true;
@@ -1803,7 +1824,7 @@ async function openDrawer(): Promise<void> {
 
     await loadFeed();
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '加载失败';
+    showErrorToast(error instanceof Error ? error.message : '加载失败');
   }
 }
 
@@ -1851,7 +1872,7 @@ async function manualRefresh(): Promise<void> {
     startPoll(POLL_MAX_REFRESHING);
   } catch (error) {
     refreshing.value = false;
-    errorMsg.value = error instanceof Error ? error.message : '刷新失败';
+    showErrorToast(error instanceof Error ? error.message : '刷新失败');
   }
 }
 
@@ -1897,7 +1918,7 @@ async function selectEntry(entryId: string): Promise<void> {
   try {
     await loadFeed();
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '切换分组失败';
+    showErrorToast(error instanceof Error ? error.message : '切换分组失败');
   }
 }
 
@@ -1912,7 +1933,7 @@ async function switchMode(nextMode: ViewMode): Promise<void> {
   try {
     await loadFeed();
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '切换视图失败';
+    showErrorToast(error instanceof Error ? error.message : '切换视图失败');
   }
 }
 
@@ -1923,7 +1944,7 @@ async function onTrackingReadFilterChange(): Promise<void> {
   try {
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '切换已阅时间点失败';
+    showErrorToast(error instanceof Error ? error.message : '切换已阅时间点失败');
   }
 }
 
@@ -1933,7 +1954,7 @@ async function onOverviewFilterChange(): Promise<void> {
   try {
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '切换概览筛选失败';
+    showErrorToast(error instanceof Error ? error.message : '切换概览筛选失败');
   }
 }
 
@@ -1941,7 +1962,7 @@ async function onByAuthorSortByLatestChange(): Promise<void> {
   try {
     await loadFeed();
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '切换作者排序失败';
+    showErrorToast(error instanceof Error ? error.message : '切换作者排序失败');
   }
 }
 
@@ -2039,7 +2060,7 @@ async function markCurrentGroupRead(): Promise<void> {
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '标记已阅失败';
+    showErrorToast(error instanceof Error ? error.message : '标记已阅失败');
   }
 }
 
@@ -2109,7 +2130,7 @@ async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: st
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : fallbackErrorMessage;
+    showErrorToast(error instanceof Error ? error.message : fallbackErrorMessage);
   }
 }
 
@@ -2146,7 +2167,7 @@ async function onToggleVideoReviewed(payload: { bvid: string; reviewed: boolean 
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     reviewedOverrideMap.value = prevMap;
-    errorMsg.value = error instanceof Error ? error.message : '设置视频已阅状态失败';
+    showErrorToast(error instanceof Error ? error.message : '设置视频已阅状态失败');
   }
 }
 
@@ -2165,7 +2186,7 @@ async function toggleAuthorIgnoreUnread(author: AuthorFeed): Promise<void> {
     }
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '设置作者不计算未读失败';
+    showErrorToast(error instanceof Error ? error.message : '设置作者不计算未读失败');
   }
 }
 
@@ -2217,7 +2238,7 @@ async function setAuthorReadMark(authorMid: number, readMarkTs: number): Promise
     }
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '设置作者已阅失败';
+    showErrorToast(error instanceof Error ? error.message : '设置作者已阅失败');
   }
 }
 
@@ -2253,7 +2274,7 @@ async function clearAuthorReadMark(authorMid: number): Promise<void> {
     }
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '清除作者已阅失败';
+    showErrorToast(error instanceof Error ? error.message : '清除作者已阅失败');
   }
 }
 
@@ -2322,7 +2343,7 @@ async function onListScroll(event: Event): Promise<void> {
   try {
     await loadFeed({ loadMore: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '加载更多失败';
+    showErrorToast(error instanceof Error ? error.message : '加载更多失败');
   }
 }
 
@@ -2337,7 +2358,7 @@ async function onLoadMoreClick(): Promise<void> {
   try {
     await loadFeed({ loadMore: true });
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '加载更多失败';
+    showErrorToast(error instanceof Error ? error.message : '加载更多失败');
   }
 }
 
@@ -2351,7 +2372,7 @@ async function onGroupListChanged(): Promise<void> {
   try {
     await loadSummary();
   } catch (error) {
-    errorMsg.value = error instanceof Error ? error.message : '刷新分组失败';
+    showErrorToast(error instanceof Error ? error.message : '刷新分组失败');
   }
 }
 
