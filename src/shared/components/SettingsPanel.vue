@@ -290,12 +290,32 @@ function isGroupDirty(group: GroupConfig): boolean {
   );
 }
 
+/**
+ * 将分组对象序列化为“可结构化克隆”的普通对象。
+ * 不能把 Vue Proxy 直接传给 runtime.sendMessage，否则会触发
+ * `Proxy object could not be cloned`。
+ */
+function normalizeGroupPayload(
+  group: GroupConfig
+): Omit<GroupConfig, 'createdAt' | 'updatedAt'> & Partial<Pick<GroupConfig, 'createdAt' | 'updatedAt'>> {
+  return {
+    groupId: String(group.groupId),
+    mediaId: Number(group.mediaId),
+    mediaTitle: String(group.mediaTitle),
+    alias: group.alias?.trim() || undefined,
+    enabled: group.enabled === true,
+    excludeFromUnreadCount: group.excludeFromUnreadCount === true,
+    createdAt: Number(group.createdAt) || undefined,
+    updatedAt: Number(group.updatedAt) || undefined
+  };
+}
+
 async function saveGroup(group: GroupConfig): Promise<void> {
   if (!isGroupDirty(group)) return;
   try {
     const resp = await sendMessage({
       type: 'UPSERT_GROUP',
-      payload: { group }
+      payload: { group: normalizeGroupPayload(group) }
     });
     if (!resp.ok || !resp.data) {
       throw new Error(resp.error ?? '保存分组失败');
