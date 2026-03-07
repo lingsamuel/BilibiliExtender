@@ -646,6 +646,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-grid {
   overflow: visible;
+  --bbe-author-grid-gap: 10px;
 }
 
 .bbe-author-grid-item {
@@ -660,7 +661,8 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-read-boundary {
   position: absolute;
-  left: -12px;
+  /* 竖线中心对齐到相邻卡片间距中线，避免贴在较旧卡片边缘。 */
+  left: calc(var(--bbe-author-grid-gap) * -0.5 - 12px);
   top: 16%;
   width: 24px;
   height: 68%;
