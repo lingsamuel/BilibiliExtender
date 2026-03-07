@@ -2090,7 +2090,13 @@ async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: st
     if (!resp.ok) {
       throw new Error(resp.error ?? fallbackErrorMessage);
     }
-    selectedReadMarkTs.value = readMarkTs;
+    // 后端会把分组已阅时间点归一化到分钟精度，这里必须以实际落库值回填，
+    // 否则会出现 select 无法匹配选项（下拉空白）与筛选基线偏移的问题。
+    const latestTs = resp.data?.marks?.[activeGroupId.value]?.timestamps?.[0];
+    selectedReadMarkTs.value =
+      typeof latestTs === 'number' && latestTs > 0
+        ? latestTs
+        : Math.floor(readMarkTs / 60) * 60;
     userExplicitlyChoseAll = false;
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
