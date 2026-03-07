@@ -962,7 +962,7 @@ export function toFeedResult(
     };
   });
 
-  if (mode === 'byAuthor' && byAuthorSortEnabled) {
+  if (mode !== 'mixed' && byAuthorSortEnabled) {
     videosByAuthor = sortAuthorsByLatestPubdate(videosByAuthor);
   }
 

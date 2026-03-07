@@ -166,9 +166,9 @@
 
         <template v-else>
           <div v-if="warningMsg" class="bbe-warning">{{ warningMsg }}</div>
-          <div class="bbe-by-author-layout">
+          <div class="bbe-by-author-layout" :class="{ 'no-nav': !hasByAuthorNav }">
             <aside
-              v-if="byAuthorNavItems.length > 0"
+              v-if="hasByAuthorNav"
               class="bbe-by-author-nav"
               aria-label="作者导航"
             >
@@ -651,7 +651,7 @@ const byAuthorFeeds = computed<AuthorFeed[]>(() => {
     return [];
   }
   const rawAuthors = feed.value.videosByAuthor;
-  if (mode.value !== 'byAuthor' || !byAuthorSortByLatest.value) {
+  if (!byAuthorSortByLatest.value) {
     return rawAuthors;
   }
   return rawAuthors
@@ -853,7 +853,7 @@ async function submitAuthorPageJump(author: AuthorFeed): Promise<void> {
 }
 
 const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
-  if (mode.value !== 'byAuthor') {
+  if (mode.value === 'mixed') {
     return [];
   }
   return byAuthorFeeds.value.map((author) => ({
@@ -862,6 +862,8 @@ const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
     authorFace: author.authorFace
   }));
 });
+
+const hasByAuthorNav = computed(() => byAuthorNavItems.value.length > 0);
 
 function isFollowPending(mid: number): boolean {
   return followPendingMap.value[mid] === true;
@@ -1436,7 +1438,7 @@ function updateMixedTimelineState(): void {
  * - 无可视作者时回退到当前滚动位置下的首个作者。
  */
 function updateByAuthorNavState(): void {
-  if (!visible.value || mode.value !== 'byAuthor') {
+  if (!visible.value || mode.value === 'mixed') {
     resetByAuthorNavState();
     return;
   }
@@ -1497,7 +1499,7 @@ function updateByAuthorNavState(): void {
     // 初始渲染时 section 引用可能尚未挂载，先稳定选第一个，下一帧再按真实可见比例重算。
     byAuthorActiveMid.value = byAuthorActiveMid.value ?? sections[0]?.authorMid ?? null;
     requestAnimationFrame(() => {
-      if (visible.value && mode.value === 'byAuthor') {
+      if (visible.value && mode.value !== 'mixed') {
         updateByAuthorNavState();
       }
     });
@@ -2234,7 +2236,7 @@ function scrollToAuthor(authorMid: number): void {
 async function onListScroll(event: Event): Promise<void> {
   if (mode.value === 'mixed') {
     updateMixedTimelineState();
-  } else if (mode.value === 'byAuthor') {
+  } else {
     updateByAuthorNavState();
   }
 
@@ -2336,14 +2338,14 @@ watch(
       ensureMixedTimelineResizeObserver();
       updateMixedTimelineState();
     }
-    if (mode.value === 'byAuthor') {
+    if (mode.value !== 'mixed') {
       updateByAuthorNavState();
     }
     requestAnimationFrame(() => {
       if (mode.value === 'mixed') {
         updateMixedTimelineState();
       }
-      if (mode.value === 'byAuthor') {
+      if (mode.value !== 'mixed') {
         updateByAuthorNavState();
       }
     });
@@ -2352,7 +2354,7 @@ watch(
 );
 
 watch(byAuthorActiveMid, (mid) => {
-  if (mid === null || mode.value !== 'byAuthor') {
+  if (mid === null || mode.value === 'mixed') {
     return;
   }
   const navItemEl = byAuthorNavItemElements.get(mid);

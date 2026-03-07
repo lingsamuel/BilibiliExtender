@@ -213,6 +213,10 @@ body.bbe-page-scroll-lock {
   min-height: 0;
 }
 
+.bbe-by-author-layout.no-nav {
+  grid-template-columns: 1fr;
+}
+
 .bbe-by-author-nav {
   position: sticky;
   top: 0;
