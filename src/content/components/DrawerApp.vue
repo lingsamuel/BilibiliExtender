@@ -47,7 +47,7 @@
           <button class="bbe-btn" :class="{ active: mode === 'mixed' }" @click="switchMode('mixed')">时间流</button>
           <button class="bbe-btn" :class="{ active: mode === 'byAuthor' }" @click="switchMode('byAuthor')">未观看</button>
           <button class="bbe-btn" :class="{ active: mode === 'overview' }" @click="switchMode('overview')">概览</button>
-          <label v-if="mode === 'byAuthor'" class="bbe-toolbar-check">
+          <label v-if="mode !== 'mixed'" class="bbe-toolbar-check">
             <input v-model="byAuthorSortByLatest" type="checkbox" @change="onByAuthorSortByLatestChange" />
             <span>按更新时间倒序</span>
           </label>
