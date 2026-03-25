@@ -152,10 +152,12 @@
                         <VideoCard
                           :video="item.video"
                           :clicked="clickedMap[item.video.bvid] !== undefined"
-                          :liked="likedMap[item.video.bvid] === true"
+                          :liked="isVideoLiked(item.video.bvid)"
+                          :like-pending="isVideoLikePending(item.video.bvid)"
                           :reviewed="isVideoReviewed(item.video)"
                           :dimmed="shouldDimMixedVideo(item.video)"
                           @click="onVideoClick"
+                          @toggle-like="onToggleVideoLike(item.video, $event)"
                           @toggle-reviewed="onToggleVideoReviewed"
                         />
                       </div>
@@ -289,9 +291,11 @@
                     <VideoCard
                       :video="video"
                       :clicked="clickedMap[video.bvid] !== undefined"
-                      :liked="likedMap[video.bvid] === true"
+                      :liked="isVideoLiked(video.bvid)"
+                      :like-pending="isVideoLikePending(video.bvid)"
                       :reviewed="isVideoReviewed(video)"
                       @click="onVideoClick"
+                      @toggle-like="onToggleVideoLike(video, $event)"
                       @toggle-reviewed="onToggleVideoReviewed"
                     />
                   </div>
@@ -477,7 +481,7 @@ const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
 const reviewedOverrideMap = ref<Record<string, boolean>>({});
-const likedMap = ref<Record<string, boolean>>({});
+const likedStateMap = ref<Record<string, VideoLikeState>>({});
 const followPendingMap = ref<Record<number, boolean>>({});
 const authorLikePendingMap = ref<Record<number, boolean>>({});
 const byAuthorPageMap = ref<Record<number, number>>({});
@@ -511,6 +515,12 @@ interface ByAuthorNavItem {
   authorMid: number;
   authorName: string;
   authorFace?: string;
+}
+
+interface VideoLikeState {
+  liked: boolean;
+  pending?: boolean;
+  likedAt?: number;
 }
 
 interface MixedVideoWithBoundary {
@@ -1004,6 +1014,51 @@ function isAuthorLikePending(mid: number): boolean {
   return authorLikePendingMap.value[mid] === true;
 }
 
+function isVideoLiked(bvid: string): boolean {
+  return likedStateMap.value[bvid]?.liked === true;
+}
+
+function isVideoLikePending(bvid: string): boolean {
+  return likedStateMap.value[bvid]?.pending === true;
+}
+
+/**
+ * 点赞态只保存“最近一次本地成功写操作”和进行中的 pending 状态，
+ * 未命中的视频按默认未点赞处理，不主动补远端查询。
+ */
+function patchVideoLikeStates(
+  patches: Array<{ bvid: string; liked?: boolean; pending?: boolean; likedAt?: number }>
+): void {
+  if (patches.length === 0) {
+    return;
+  }
+
+  const next = { ...likedStateMap.value };
+  for (const patch of patches) {
+    const bvid = patch.bvid?.trim();
+    if (!bvid) {
+      continue;
+    }
+
+    const prev = next[bvid];
+    const liked = patch.liked ?? prev?.liked ?? false;
+    const pending = patch.pending ?? false;
+    const likedAt = patch.likedAt ?? (liked ? (prev?.likedAt ?? Date.now()) : undefined);
+
+    if (!liked && !pending) {
+      delete next[bvid];
+      continue;
+    }
+
+    next[bvid] = {
+      liked,
+      pending,
+      likedAt
+    };
+  }
+  likedStateMap.value = next;
+}
+
 function formatFollowerWan(follower: number | undefined): string {
   if (typeof follower !== 'number' || Number.isNaN(follower) || follower < 0) {
     return '--';
@@ -1174,13 +1229,14 @@ async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
     return;
   }
 
-  const videos = getAuthorVisibleVideos(author);
+  const videos = getAuthorVisibleVideos(author).filter((video) => !isVideoLiked(video.bvid) && !isVideoLikePending(video.bvid));
   if (videos.length === 0) {
     showErrorToast('当前没有可点赞的视频');
     return;
   }
 
   authorLikePendingMap.value = { ...authorLikePendingMap.value, [authorMid]: true };
+  patchVideoLikeStates(videos.map((video) => ({ bvid: video.bvid, pending: true, liked: isVideoLiked(video.bvid) })));
   try {
     const resp = await sendMessage({
       type: 'BATCH_LIKE_VIDEOS',
@@ -1190,7 +1246,9 @@ async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
           aid: video.aid,
           bvid: video.bvid
         })),
-        csrf
+        csrf,
+        pageOrigin: window.location.origin,
+        pageReferer: window.location.href
       }
     });
 
@@ -1203,19 +1261,81 @@ async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
     }
 
     const failedBvids = new Set(resp.data.failedBvids);
-    const nextLikedMap = { ...likedMap.value };
-    for (const video of videos) {
-      if (!failedBvids.has(video.bvid)) {
-        nextLikedMap[video.bvid] = true;
-      }
-    }
-    likedMap.value = nextLikedMap;
+    patchVideoLikeStates(
+      videos.map((video) => ({
+        bvid: video.bvid,
+        liked: !failedBvids.has(video.bvid),
+        pending: false,
+        likedAt: !failedBvids.has(video.bvid) ? Date.now() : undefined
+      }))
+    );
   } catch (error) {
+    patchVideoLikeStates(videos.map((video) => ({ bvid: video.bvid, pending: false, liked: false })));
     showErrorToast(error instanceof Error ? error.message : '一键点赞失败');
   } finally {
     const next = { ...authorLikePendingMap.value };
     delete next[authorMid];
     authorLikePendingMap.value = next;
+  }
+}
+
+async function onToggleVideoLike(video: VideoItem, payload: { bvid: string; liked: boolean }): Promise<void> {
+  if (isVideoLikePending(video.bvid)) {
+    return;
+  }
+
+  const csrf = getCsrfFromCookie();
+  if (!csrf) {
+    showErrorToast('未获取到 CSRF，请确认当前页面登录态有效');
+    return;
+  }
+
+  const prevState = likedStateMap.value[video.bvid];
+  patchVideoLikeStates([
+    {
+      bvid: video.bvid,
+      liked: prevState?.liked ?? false,
+      pending: true,
+      likedAt: prevState?.likedAt
+    }
+  ]);
+
+  try {
+    const resp = await sendMessage({
+      type: 'LIKE_VIDEO',
+      payload: {
+        aid: video.aid,
+        bvid: video.bvid,
+        authorMid: video.authorMid,
+        like: payload.liked,
+        csrf,
+        pageOrigin: window.location.origin,
+        pageReferer: window.location.href
+      }
+    });
+
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? (payload.liked ? '点赞失败' : '取消点赞失败'));
+    }
+
+    patchVideoLikeStates([
+      {
+        bvid: video.bvid,
+        liked: resp.data.liked,
+        pending: false,
+        likedAt: resp.data.liked ? Date.now() : undefined
+      }
+    ]);
+  } catch (error) {
+    patchVideoLikeStates([
+      {
+        bvid: video.bvid,
+        liked: prevState?.liked ?? false,
+        pending: false,
+        likedAt: prevState?.likedAt
+      }
+    ]);
+    showErrorToast(error instanceof Error ? error.message : (payload.liked ? '点赞失败' : '取消点赞失败'));
   }
 }
 
@@ -1333,7 +1453,7 @@ async function fetchClickedVideos(): Promise<void> {
   if (bvids.length === 0) {
     clickedMap.value = {};
     reviewedOverrideMap.value = {};
-    likedMap.value = {};
+    likedStateMap.value = {};
     return;
   }
 
@@ -1350,13 +1470,13 @@ async function fetchClickedVideos(): Promise<void> {
   }
   // 点赞态仅使用本地已知结果（手动点赞/批量点赞成功后写入），不在读取链路触发远端查询。
   const keepBvids = new Set(bvids);
-  const nextLikedMap: Record<string, boolean> = {};
-  for (const [bvid, liked] of Object.entries(likedMap.value)) {
-    if (liked === true && keepBvids.has(bvid)) {
-      nextLikedMap[bvid] = true;
+  const nextLikedStateMap: Record<string, VideoLikeState> = {};
+  for (const [bvid, state] of Object.entries(likedStateMap.value)) {
+    if (keepBvids.has(bvid) && (state.liked === true || state.pending === true)) {
+      nextLikedStateMap[bvid] = state;
     }
   }
-  likedMap.value = nextLikedMap;
+  likedStateMap.value = nextLikedStateMap;
 }
 
 function stopPoll(): void {
@@ -1957,7 +2077,7 @@ async function openDrawer(): Promise<void> {
   visible.value = true;
   clickedMap.value = {};
   reviewedOverrideMap.value = {};
-  likedMap.value = {};
+  likedStateMap.value = {};
   followPendingMap.value = {};
   authorLikePendingMap.value = {};
   resetAuthorPaginationState();
@@ -2013,7 +2133,7 @@ async function openDrawer(): Promise<void> {
 
 function closeDrawer(): void {
   visible.value = false;
-  likedMap.value = {};
+  likedStateMap.value = {};
   followPendingMap.value = {};
   authorLikePendingMap.value = {};
   resetAuthorPaginationState();
@@ -2078,6 +2198,7 @@ async function selectEntry(entryId: string): Promise<void> {
   activeGroupId.value = entryId;
   followPendingMap.value = {};
   authorLikePendingMap.value = {};
+  likedStateMap.value = {};
   resetAuthorPaginationState();
   userExplicitlyChoseAll = false;
   warningMsg.value = '';

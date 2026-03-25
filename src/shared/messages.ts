@@ -42,9 +42,29 @@ export type MessageRequest =
         pageReferer: string;
       };
     }
-  | { type: 'LIKE_VIDEO'; payload: { aid?: number; bvid?: string; like: boolean; csrf: string } }
+  | {
+      type: 'LIKE_VIDEO';
+      payload: {
+        aid?: number;
+        bvid?: string;
+        authorMid: number;
+        like: boolean;
+        csrf: string;
+        pageOrigin: string;
+        pageReferer: string;
+      };
+    }
   | { type: 'COIN_VIDEO'; payload: { aid?: number; bvid?: string; multiply: number; selectLike?: boolean; csrf: string } }
-  | { type: 'BATCH_LIKE_VIDEOS'; payload: { authorMid: number; videos: Array<{ aid: number; bvid: string }>; csrf: string } }
+  | {
+      type: 'BATCH_LIKE_VIDEOS';
+      payload: {
+        authorMid: number;
+        videos: Array<{ aid: number; bvid: string }>;
+        csrf: string;
+        pageOrigin: string;
+        pageReferer: string;
+      };
+    }
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
@@ -66,10 +86,16 @@ export type MessageResponse<T = unknown> = {
 };
 
 export type SchedulerAuthorTaskReason = 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
-export type SchedulerTaskReason = SchedulerAuthorTaskReason | 'group-fav-refresh';
+export type SchedulerTaskReason =
+  | SchedulerAuthorTaskReason
+  | 'group-fav-refresh'
+  | 'single-card-like'
+  | 'single-card-unlike'
+  | 'author-batch-like';
 export type SchedulerTaskTrigger =
   | 'alarm-routine'
   | 'debug-run-now'
+  | 'manual-click'
   | 'manual-refresh'
   | 'group-created-auto-refresh'
   | 'get-group-feed-missing-fav-cache'
@@ -108,6 +134,27 @@ export interface SchedulerStatusResponse {
     lastRunAt?: number;
     nextAlarmAt?: number;
     queue: Array<{ groupId: string }>;
+  };
+  likeChannel: {
+    running: boolean;
+    queueLength: number;
+    currentTask: {
+      bvid: string;
+      aid: number;
+      action: 'like' | 'unlike';
+      source: 'single-card-toggle' | 'author-batch-like';
+      authorMid: number;
+    } | null;
+    batchCompleted: number;
+    batchFailed: number;
+    lastRunAt?: number;
+    queue: Array<{
+      bvid: string;
+      aid: number;
+      action: 'like' | 'unlike';
+      source: 'single-card-toggle' | 'author-batch-like';
+      authorMid: number;
+    }>;
   };
   burst: {
     running: boolean;
@@ -154,9 +201,11 @@ export interface SchedulerStatusResponse {
   }>;
   // 最近的调度历史（最新在前，最多保留 50 条）
   history: Array<{
-    channel: 'author-video' | 'group-fav';
+    channel: 'author-video' | 'group-fav' | 'like-action';
     mid?: number;
     groupId?: string;
+    bvid?: string;
+    aid?: number;
     pn?: number;
     name: string;
     success: boolean;
@@ -231,7 +280,7 @@ export interface ResponseMap {
     accepted: true;
     triggeredAt: number;
     channels: Array<{
-      name: 'author-video' | 'group-fav';
+      name: 'author-video' | 'group-fav' | 'like-action';
       queued: number;
       nextAlarmAt?: number;
     }>;

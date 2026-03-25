@@ -4,7 +4,9 @@
 
 ### 1.1 问题
 
-当前实现覆盖作者视频缓存刷新与收藏夹缓存刷新，但“用户交互动作（如一键点赞）”缺少同等级别的受控调度，容易在批量操作时触发风控。
+当前实现覆盖作者视频缓存刷新与收藏夹缓存刷新，但点赞交互仍未完全并入同等级别的受控调度：
+- 作者“一键点赞”仍是独立串行队列；
+- 单个 VideoCard 的点赞/取消点赞还未统一接入通道化调度与限流。
 
 ### 1.2 目标
 
@@ -147,20 +149,31 @@ interface LikeActionTask extends SchedulerTaskBase {
   bvid: string;
   aid: number;
   authorMid: number;
-  source: 'author-batch-like';
+  action: 'like' | 'unlike';
+  source: 'single-card-toggle' | 'author-batch-like';
   trigger: 'manual-click';
+  pageContext: {
+    tabId: number;
+    pageOrigin: string;
+    pageReferer: string;
+  };
 }
 ```
 
 来源：
-- 优先：前台点击作者“一键点赞”后，将该作者当前可见视频列表转为点赞任务并入列。
+- 优先：
+  - 前台点击某个 VideoCard 拇指按钮后，将该卡片转为点赞/取消点赞任务并入列；
+  - 前台点击作者“一键点赞”后，将该作者当前可见视频列表转为点赞任务并入列。
 
 执行：
-1. 串行执行视频点赞 API（`archive/like`，`like=1`）。
-2. 单任务失败不中断后续任务；失败明细写入批次结果。
-3. 队列去重键为 `bvid`，避免重复点赞同一视频。
-4. 任务间固定间隔（默认 `1000ms`）。
-5. 批次结束向前台返回成功/失败汇总，用于 toast 展示。
+1. 串行执行视频点赞 API（`archive/like`）：
+   - `action='like'` => `like=1`
+   - `action='unlike'` => `like=2`
+2. 每个任务在真正发起请求前，都必须基于 `pageContext` 安装仅命中当前 `tabId` 的 DNR session rule，修正 `Origin`、`Referer`、`Sec-Fetch-Site`。
+3. 单任务失败不中断后续任务；失败明细写入批次结果。
+4. 队列去重键为 `bvid`，避免重复操作同一视频。
+5. 任务间固定间隔（默认 `1000ms`）。
+6. 单卡点击任务允许前台同步等待结果；作者批量点赞在批次结束后向前台返回成功/失败汇总，用于 toast 展示。
 
 ### 3.3 Alarm 与间隔设置
 
@@ -172,6 +185,8 @@ interface LikeActionTask extends SchedulerTaskBase {
 每个通道独立注册 alarm：
 - `bbe:refresh:author-video`
 - `bbe:refresh:group-fav`
+
+说明：`like-action` 为纯交互通道，不注册周期 alarm，仅响应前台显式入列。
 
 ### 3.4 前台交互
 
@@ -478,12 +493,15 @@ interface SchedulerStatusResponse {
       | 'prefetch-next-page'
       | 'load-more-boundary'
       | 'group-fav-refresh'
+      | 'single-card-like'
+      | 'single-card-unlike'
       | 'author-batch-like';
     // 触发来源（是谁触发了这次任务）
     trigger:
       | 'alarm-routine'
       | 'debug-run-now'
       | 'manual-refresh'
+      | 'manual-click'
       | 'request-author-page'
       | 'group-created-auto-refresh'
       | 'get-group-feed-missing-fav-cache'
@@ -522,7 +540,9 @@ interface SchedulerStatusResponse {
 - `src/background/index.ts`：
   - `MANUAL_REFRESH` 改为触发“收藏夹刷新 → 作者视频刷新”链路。
   - `GET_GROUP_FEED` 无缓存时触发 `group-fav` 优先任务。
-- `src/background/index.ts`：新增 `RUN_SCHEDULER_NOW` 消息路由。
+- `src/background/index.ts`：
+  - 新增 `RUN_SCHEDULER_NOW` 消息路由。
+  - 点赞消息路由改为提交 `like-action` 通道，并在安装 tab-scoped DNR session rule 时使用 `sender.tab.id + pageOrigin + pageReferer`。
 - `src/background/feed-service.ts`：补充分组收藏夹刷新原子函数（仅供调度器调用）。
 - `src/shared/types.ts`：`ExtensionSettings` 新增 `groupFavRefreshIntervalMinutes`、`schedulerBatchSize`。
 - `src/shared/constants.ts`：两个后台刷新间隔默认值均调整为 `10`。
@@ -530,9 +550,12 @@ interface SchedulerStatusResponse {
   - 新增 `groupFavRefreshIntervalMinutes` 设置项。
   - 新增 `schedulerBatchSize` 设置项（全调度器共享）。
   - 分组行新增“立即刷新”按钮。
-- `src/shared/messages.ts`：新增 `RUN_SCHEDULER_NOW` 消息类型与响应，调试状态返回 `schedulerBatchSize`。
+- `src/shared/messages.ts`：
+  - 新增 `RUN_SCHEDULER_NOW` 消息类型与响应，调试状态返回 `schedulerBatchSize`。
+  - `LIKE_VIDEO`、`BATCH_LIKE_VIDEOS` 消息新增 `pageOrigin`、`pageReferer`，用于点赞请求的 DNR 规则安装。
 - `src/content/components/DebugPanel.vue`：新增“立刻发起调度”按钮并展示重置后的下次触发时间。
-- `src/content/components/DrawerApp.vue`：作者标题新增“一键点赞”入口并接入点赞调度。
+- `src/content/components/DrawerApp.vue`：作者标题新增“一键点赞”入口，并为所有 VideoCard 注入可点击的点赞/取消点赞交互与本地 pending 状态。
+- `src/content/components/VideoCard.vue`：新增始终显示的拇指按钮、loading/disabled 态与点赞切换事件。
 
 ## 6. 与主 Spec 的关系
 

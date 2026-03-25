@@ -86,6 +86,31 @@
     </section>
 
     <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
+      <h2 class="bbe-panel-title">点赞通道状态</h2>
+      <div class="bbe-debug-grid">
+        <span>状态</span>
+        <span>{{ status?.likeChannel.running ? '运行中' : '空闲' }}</span>
+        <span>当前任务</span>
+        <span>{{ likeCurrentTaskText }}</span>
+        <span>队列长度</span>
+        <span>{{ status?.likeChannel.queueLength ?? 0 }}</span>
+        <span>批次进度</span>
+        <span>{{ status?.likeChannel.batchCompleted ?? 0 }}</span>
+        <span>失败任务</span>
+        <span>{{ status?.likeChannel.batchFailed ?? 0 }}</span>
+        <span>上次执行</span>
+        <span>{{ likeLastRunText }}</span>
+      </div>
+
+      <h3 v-if="status && status.likeChannel.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
+      <div v-if="status && status.likeChannel.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.likeChannel.queue" :key="`${task.bvid}-${i}`" class="bbe-debug-queue-item">
+          {{ i + 1 }}. {{ task.bvid }} / {{ task.action === 'like' ? '点赞' : '取消点赞' }} / {{ task.source === 'author-batch-like' ? '批量' : '单卡' }}
+        </div>
+      </div>
+    </section>
+
+    <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
       <h2 class="bbe-panel-title">全局冷却状态</h2>
       <div class="bbe-debug-grid">
         <span>状态</span>
@@ -206,6 +231,17 @@ const groupNextAlarmText = computed(() => {
   return formatAlarmText(status.value.groupChannel.nextAlarmAt);
 });
 
+const likeLastRunText = computed(() => {
+  if (!status.value?.likeChannel.lastRunAt) return '从未';
+  return formatRelativeMinutes(status.value.likeChannel.lastRunAt);
+});
+
+const likeCurrentTaskText = computed(() => {
+  const task = status.value?.likeChannel.currentTask;
+  if (!task) return '无';
+  return `${task.bvid} / ${task.action === 'like' ? '点赞' : '取消点赞'} / ${task.source === 'author-batch-like' ? '批量' : '单卡'}`;
+});
+
 const burstLastRunText = computed(() => {
   if (!status.value?.burst.lastRunAt) return '从未';
   return formatRelativeMinutes(status.value.burst.lastRunAt);
@@ -299,22 +335,33 @@ function formatBurstTaskLabel(name: string | undefined, mid: number): string {
   return normalized;
 }
 
-function formatHistoryChannel(channel: 'author-video' | 'group-fav'): string {
-  return channel === 'group-fav' ? 'group-fav' : 'author-video';
+function formatHistoryChannel(channel: 'author-video' | 'group-fav' | 'like-action'): string {
+  if (channel === 'group-fav') return 'group-fav';
+  if (channel === 'like-action') return 'like-action';
+  return 'author-video';
 }
 
 function formatHistoryReason(item: {
   trigger: SchedulerTaskTrigger;
   taskReason: SchedulerTaskReason;
-  channel: 'author-video' | 'group-fav';
+  channel: 'author-video' | 'group-fav' | 'like-action';
   mid?: number;
   groupId?: string;
+  bvid?: string;
+  aid?: number;
   pn?: number;
 }): string {
   const params: string[] = [];
   if (item.channel === 'group-fav') {
     if (item.groupId) {
       params.push(`groupId=${item.groupId}`);
+    }
+  } else if (item.channel === 'like-action') {
+    if (item.bvid) {
+      params.push(`bvid=${item.bvid}`);
+    }
+    if (typeof item.aid === 'number') {
+      params.push(`aid=${item.aid}`);
     }
   } else {
     if (typeof item.mid === 'number') {

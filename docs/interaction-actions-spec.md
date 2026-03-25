@@ -2,26 +2,30 @@
 
 ## 1. 背景
 
-当前版本在“关注”等操作失败时，会把主内容区直接替换为错误文本，导致页面看起来“不可用”。同时，视频点赞/投币能力与点赞状态展示尚未接入，作者维度也缺少批量点赞能力。
+当前版本已经具备基础的关注与点赞链路，但点赞交互仍存在三个缺口：
+- VideoCard 只能在“本地已知点赞成功”时显示角标，未点赞时没有统一入口，且不能直接在卡片上切换点赞/取消点赞。
+- 作者“一键点赞”仍使用独立串行队列，尚未并入通道化调度器。
+- 点赞请求尚未补齐与关注同级的 DNR 头改写策略，在多标签页场景下也缺少按标签页精确命中的约束。
 
 本 Spec 定义以下能力：
 - 错误展示统一为通知弹框（toast），不再用错误文本覆盖主内容区。
 - 修复关注 API 请求结构。
-- 新增视频点赞、投币 API。
-- 在作者区域新增“一键点赞”能力，并通过点赞调度器串行执行。
-- 在 VideoCard 封面左下角展示点赞状态拇指标记。
+- 新增/完善视频点赞、投币 API。
+- 在作者区域保留“一键点赞”能力，并将点赞任务并入通道化调度器。
+- 在所有 VideoCard 封面左下角展示可点击的点赞拇指按钮，支持点赞/取消点赞。
 
 ## 2. 范围与非目标
 
 ### 2.1 范围
-- Content UI：错误提示、作者区域操作按钮、VideoCard 点赞角标。
-- Background：关注/点赞/投币消息处理与点赞调度执行。
-- Shared API/消息协议：新增点赞与投币相关接口。
+- Content UI：错误提示、作者区域操作按钮、VideoCard 点赞按钮/角标。
+- Background：关注/点赞/投币消息处理、点赞调度执行与点赞写请求 DNR 规则安装。
+- Shared API/消息协议：新增/扩展点赞与投币相关接口。
 
 ### 2.2 非目标
 - 不新增桌面系统通知。
 - 不做“一键三连”能力。
 - 不做历史全量点赞状态回溯。
+- 本轮不改造投币链路的 DNR 接入，仅处理点赞请求。
 
 ## 3. 功能需求
 
@@ -64,12 +68,17 @@
 #### 3.3.1 点赞 API
 - 端点：`POST /x/web-interface/archive/like`
 - 入参：`aid|bvid`（二选一）、`like`（1 点赞 / 2 取消赞）、`csrf`
-- 请求策略：默认按“POST 写操作”处理，接入与关注同类的 DNR 头改写能力。
+- 请求策略：
+  - 默认按“POST 写操作”处理，接入与关注同类的 DNR 头改写能力。
+  - Content script 发送消息时同时携带当前页面的 `pageOrigin`、`pageReferer`。
+  - Background 结合消息 `sender.tab.id` 安装 session-scoped DNR 规则，精确限定 `tabIds + archive/like + POST + xmlhttprequest`。
+  - DNR 规则至少改写 `Origin`、`Referer`、`Sec-Fetch-Site`，其中 `Referer` 去掉 hash，`Sec-Fetch-Site` 固定为 `same-site`。
+  - 单卡点赞与作者批量点赞共享同一套 DNR 安装逻辑。
 
 #### 3.3.2 投币 API
 - 端点：`POST /x/web-interface/coin/add`
 - 入参：`aid|bvid`（二选一）、`multiply`（1/2）、`select_like`（0/1）、`csrf`
-- 请求策略：默认按“POST 写操作”处理，接入与关注同类的 DNR 头改写能力。
+- 请求策略：保留现状；本轮不扩展投币请求的 DNR 处理。
 
 ### 3.4 作者区域“一键点赞”按钮
 
@@ -78,19 +87,26 @@
    - 仅覆盖当前筛选结果与当前分页可见视频；
    - 不隐式拉取未展示页。
 3. 执行策略：
-   - 任务先入点赞调度队列；
-   - 调度器串行执行，避免瞬时并发导致风控；
+   - 任务先入 `like-action` 通道；
+   - 调度器按通道串行执行，避免瞬时并发导致风控；
    - 单条失败不中断后续任务；
    - 结束后 toast 汇总成功/失败数量。
 4. 运行中按钮显示 loading 并禁用，避免重复触发同一作者批次。
 
-### 3.5 VideoCard 点赞状态角标
+### 3.5 VideoCard 点赞按钮与状态角标
 
-1. 在视频封面左下角增加小拇指图标位。
-2. 未点赞：不显示图标。
-3. 已点赞：显示粉色拇指图标。
-4. 状态来源优先级：
-   - 本地点赞成功回写状态（最高优先）；
+1. 所有 VideoCard 在封面左下角都显示一个可点击的小拇指按钮，时间流与按作者视图统一生效。
+2. 未点赞：
+   - 显示白色描边、无填充的拇指按钮；
+   - hover 时允许轻微高亮，但不改成粉色实心。
+3. 已点赞：
+   - 显示粉色填充的拇指按钮；
+   - 再次点击执行取消点赞。
+4. 运行中：
+   - 当前卡片按钮进入 loading/disabled 状态；
+   - 前台不再接受同一 `bvid` 的重复点击，避免同卡片并发切换状态。
+5. 状态来源优先级：
+   - 本地最近一次成功写操作回写状态（最高优先，可为 `liked=true/false`）；
    - 默认未点赞。
 
 ## 4. 消息协议变更
@@ -100,6 +116,10 @@
 - `COIN_VIDEO`
 - `ENQUEUE_AUTHOR_VISIBLE_LIKES`
 - `GET_LIKE_SCHEDULER_STATUS`（调试可选）
+
+消息负载调整：
+- `LIKE_VIDEO`：新增 `pageOrigin`、`pageReferer`，用于安装 tab-scoped DNR 规则。
+- `BATCH_LIKE_VIDEOS`：新增 `pageOrigin`、`pageReferer`，用于作者批量点赞安装 tab-scoped DNR 规则。
 
 返回约定：
 - 与现有消息一致，统一 `{ ok, data?, error? }`。
@@ -116,23 +136,34 @@ interface LikeTask {
   bvid: string;
   aid: number;
   authorMid: number;
-  source: 'author-batch-like';
+  action: 'like' | 'unlike';
+  source: 'single-card-toggle' | 'author-batch-like';
   trigger: 'manual-click';
+  pageContext: {
+    tabId: number;
+    pageOrigin: string;
+    pageReferer: string;
+  };
 }
 ```
 
 执行约束：
 1. 队列去重键：`bvid`。
-2. 串行执行；任务间固定间隔（默认 1000ms）。
-3. 单任务失败记录错误并继续下一条。
-4. 队列清空后返回批次汇总（成功数、失败数、失败明细）。
-5. 不影响现有 `author-video` / `group-fav` 刷新通道。
+2. 单卡点赞/取消点赞与作者批量点赞统一走 `like-action` 通道。
+3. 串行执行；任务间固定间隔（默认 1000ms）。
+4. 单任务执行前需先安装 tab-scoped DNR 规则，再调用点赞 API：
+   - `action='like'` => `like=1`
+   - `action='unlike'` => `like=2`
+5. 单任务失败记录错误并继续下一条。
+6. 单卡点击可同步等待该任务完成后回写 UI；作者批量点赞在批次结束后返回汇总（成功数、失败数、失败明细）。
+7. 不影响现有 `author-video` / `group-fav` 刷新通道。
 
 ## 6. 数据结构建议
 
 ```ts
 interface VideoInteractionState {
-  liked?: boolean; // 近期口径 + 本地成功回写
+  liked: boolean; // 本地最近一次成功写操作口径
+  pending?: boolean;
   likedAt?: number;
 }
 
@@ -155,16 +186,24 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 ### 7.2 作者一键点赞
 1. 用户点击作者“一键点赞”。
 2. 收集该作者当前可见视频列表并入队。
-3. 调度器串行点赞。
+3. 调度器通过 `like-action` 通道串行点赞。
 4. 每条成功即回写该视频 `liked=true`。
 5. 批次结束 toast 汇总结果。
+
+### 7.3 VideoCard 单卡点赞/取消点赞
+1. 用户点击某张 VideoCard 左下角拇指按钮。
+2. 前端根据当前本地状态决定目标动作：未点赞则提交 `like`，已点赞则提交 `unlike`。
+3. 消息携带 `pageOrigin`、`pageReferer`；background 使用 `sender.tab.id` 安装仅命中当前标签页的 DNR session rule。
+4. 调度器将该任务作为 `like-action` 优先任务串行执行。
+5. 成功后本地回写该视频 `liked=true/false`；失败则保留旧状态并 toast 提示。
 
 ## 8. 错误与降级
 
 1. 任何接口失败均使用 toast 提示，不替换主内容区域。
 2. 关注失败：回滚按钮状态。
 3. 点赞批次部分失败：成功项保留，失败项记录并汇总提示。
-4. 点赞态未命中本地状态时：不阻断页面渲染，角标按未点赞展示。
+4. 点赞态未命中本地状态时：不阻断页面渲染，按钮按“未点赞空心态”展示。
+5. 当前浏览器若不支持 `declarativeNetRequest.updateSessionRules`：点赞操作直接报错并 toast，不降级为无 DNR 写请求。
 
 ## 9. 验收标准
 
@@ -172,5 +211,7 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 2. 关注/取关请求中包含 `extend_content`，且流程可正常完成。
 3. 存在可调用的视频点赞与投币消息/API。
 4. 每位作者标题行显示“一键点赞”按钮，点击后可对当前可见视频批量点赞。
-5. 一键点赞采用串行调度，不会并发轰炸接口。
-6. VideoCard 封面左下角可按点赞状态显示粉色拇指标记；未点赞时不显示。
+5. 一键点赞采用 `like-action` 通道串行调度，不会并发轰炸接口。
+6. 所有 VideoCard 封面左下角都显示可点击拇指按钮：未点赞为空心白色描边，已点赞为粉色实心。
+7. 单卡点击可执行点赞与取消点赞，成功后即时回写 UI。
+8. 点赞请求会安装仅命中当前标签页的 DNR session rule，避免多标签页串用来源头。

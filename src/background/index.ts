@@ -3,7 +3,6 @@ import {
   coinVideo,
   getMyCreatedFolders,
   getUserCard,
-  likeVideo,
   modifyUserRelation
 } from '@/shared/api/bilibili';
 import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
@@ -45,6 +44,8 @@ import {
 } from '@/background/feed-service';
 import {
   enqueueBurst,
+  enqueueLikeActionAndWait,
+  enqueueLikeBatchAndWait,
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
@@ -53,10 +54,7 @@ import {
   runSchedulerNow,
   setupAlarm
 } from '@/background/scheduler';
-import { enqueueLikeBatchAndWait } from '@/background/like-scheduler';
-
-const FOLLOW_REQUEST_DNR_RULE_ID = 1001;
-const FOLLOW_REQUEST_DNR_RULE_PRIORITY = 10;
+import { installFollowRequestHeaderRule } from '@/background/request-dnr';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -136,59 +134,6 @@ function normalizeVideoTarget(payload: { aid?: number; bvid?: string }): { aid?:
   throw new Error('视频参数不完整');
 }
 
-/**
- * 为关注请求安装一次“仅命中 relation/modify”的 DNR 会话规则，
- * 将扩展发起的请求头改写为贴近页面前端的上下文。
- */
-async function installFollowRequestHeaderRule(pageOrigin: string, pageReferer: string): Promise<void> {
-  const safeOrigin = pageOrigin.trim();
-  const safeReferer = pageReferer.trim();
-  if (!safeOrigin || !safeReferer) {
-    throw new Error('页面上下文不完整');
-  }
-
-  if (!ext.declarativeNetRequest?.updateSessionRules) {
-    throw new Error('当前浏览器不支持 declarativeNetRequest');
-  }
-
-  const refererUrl = new URL(safeReferer);
-  refererUrl.hash = '';
-
-  await ext.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [FOLLOW_REQUEST_DNR_RULE_ID],
-    addRules: [
-      {
-        id: FOLLOW_REQUEST_DNR_RULE_ID,
-        priority: FOLLOW_REQUEST_DNR_RULE_PRIORITY,
-        action: {
-          type: 'modifyHeaders',
-          requestHeaders: [
-            {
-              header: 'origin',
-              operation: 'set',
-              value: safeOrigin
-            },
-            {
-              header: 'referer',
-              operation: 'set',
-              value: refererUrl.toString()
-            },
-            {
-              header: 'sec-fetch-site',
-              operation: 'set',
-              value: 'same-site'
-            }
-          ]
-        },
-        condition: {
-          regexFilter: '^https://api\\.bilibili\\.com/x/relation/modify(\\?.*)?$',
-          requestMethods: ['post'],
-          resourceTypes: ['xmlhttprequest']
-        }
-      }
-    ]
-  });
-}
 
 async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
   const [groups, settings, folders, feedCacheMap] = await Promise.all([
@@ -612,19 +557,21 @@ async function handleGetGroupReadMarks(
  * 关注/取消关注作者，并尽量同步回写 AuthorVideoCache 中的 Card 信息。
  */
 async function handleFollowAuthor(
-  request: Extract<MessageRequest, { type: 'FOLLOW_AUTHOR' }>
+  request: Extract<MessageRequest, { type: 'FOLLOW_AUTHOR' }>,
+  sender: chrome.runtime.MessageSender
 ): Promise<ResponseMap['FOLLOW_AUTHOR']> {
   const mid = request.payload.mid;
   const follow = request.payload.follow;
   const csrf = request.payload.csrf?.trim();
   const pageOrigin = request.payload.pageOrigin?.trim();
   const pageReferer = request.payload.pageReferer?.trim();
+  const tabId = sender.tab?.id;
 
-  if (!mid || !csrf || !pageOrigin || !pageReferer) {
+  if (!mid || !csrf || !pageOrigin || !pageReferer || typeof tabId !== 'number') {
     throw new Error('关注参数不完整');
   }
 
-  await installFollowRequestHeaderRule(pageOrigin, pageReferer);
+  await installFollowRequestHeaderRule(tabId, pageOrigin, pageReferer);
   await modifyUserRelation(mid, follow, csrf);
 
   const authorCacheMap = await getAuthorCacheSnapshot();
@@ -677,19 +624,36 @@ async function handleFollowAuthor(
  * 点赞/取消点赞视频。
  */
 async function handleLikeVideo(
-  request: Extract<MessageRequest, { type: 'LIKE_VIDEO' }>
+  request: Extract<MessageRequest, { type: 'LIKE_VIDEO' }>,
+  sender: chrome.runtime.MessageSender
 ): Promise<ResponseMap['LIKE_VIDEO']> {
   const csrf = request.payload.csrf?.trim();
-  if (!csrf) {
+  const pageOrigin = request.payload.pageOrigin?.trim();
+  const pageReferer = request.payload.pageReferer?.trim();
+  const authorMid = Math.max(1, Number(request.payload.authorMid) || 0);
+  const tabId = sender.tab?.id;
+  const aid = Math.max(0, Math.floor(Number(request.payload.aid) || 0));
+  const bvid = request.payload.bvid?.trim() || '';
+  if (!csrf || !pageOrigin || !pageReferer || !authorMid || typeof tabId !== 'number' || !aid || !bvid) {
     throw new Error('点赞参数不完整');
   }
-  const target = normalizeVideoTarget(request.payload);
   const like = request.payload.like === true;
-  await likeVideo(target, like, csrf);
+  const result = await enqueueLikeActionAndWait({
+    aid,
+    bvid,
+    authorMid,
+    csrf,
+    like,
+    pageContext: {
+      tabId,
+      pageOrigin,
+      pageReferer
+    }
+  });
   return {
-    aid: target.aid,
-    bvid: target.bvid,
-    liked: like
+    aid: result.aid,
+    bvid: result.bvid,
+    liked: result.liked
   };
 }
 
@@ -720,14 +684,18 @@ async function handleCoinVideo(
  * 作者级批量点赞：按当前前台可见视频入队，后台串行执行并汇总结果。
  */
 async function handleBatchLikeVideos(
-  request: Extract<MessageRequest, { type: 'BATCH_LIKE_VIDEOS' }>
+  request: Extract<MessageRequest, { type: 'BATCH_LIKE_VIDEOS' }>,
+  sender: chrome.runtime.MessageSender
 ): Promise<ResponseMap['BATCH_LIKE_VIDEOS']> {
   const authorMid = Math.max(1, Number(request.payload.authorMid) || 0);
   if (!authorMid) {
     throw new Error('作者参数不完整');
   }
   const csrf = request.payload.csrf?.trim();
-  if (!csrf) {
+  const pageOrigin = request.payload.pageOrigin?.trim();
+  const pageReferer = request.payload.pageReferer?.trim();
+  const tabId = sender.tab?.id;
+  if (!csrf || !pageOrigin || !pageReferer || typeof tabId !== 'number') {
     throw new Error('点赞参数不完整');
   }
 
@@ -748,7 +716,11 @@ async function handleBatchLikeVideos(
     };
   }
 
-  return enqueueLikeBatchAndWait(authorMid, videos, csrf);
+  return enqueueLikeBatchAndWait(authorMid, videos, csrf, {
+    tabId,
+    pageOrigin,
+    pageReferer
+  });
 }
 
 async function handleRecordVideoClick(
@@ -939,7 +911,7 @@ async function handleRunSchedulerNow(): Promise<ResponseMap['RUN_SCHEDULER_NOW']
   return runSchedulerNow();
 }
 
-async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
+async function routeMessage(request: MessageRequest, sender: chrome.runtime.MessageSender): Promise<MessageResponse> {
   switch (request.type) {
     case 'PING':
       return ok({ pong: true });
@@ -962,13 +934,13 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
     case 'MARK_ALL_GROUPS_READ':
       return ok(await handleMarkAllGroupsRead());
     case 'FOLLOW_AUTHOR':
-      return ok(await handleFollowAuthor(request));
+      return ok(await handleFollowAuthor(request, sender));
     case 'LIKE_VIDEO':
-      return ok(await handleLikeVideo(request));
+      return ok(await handleLikeVideo(request, sender));
     case 'COIN_VIDEO':
       return ok(await handleCoinVideo(request));
     case 'BATCH_LIKE_VIDEOS':
-      return ok(await handleBatchLikeVideos(request));
+      return ok(await handleBatchLikeVideos(request, sender));
     case 'GET_GROUP_READ_MARKS':
       return ok(await handleGetGroupReadMarks(request));
     case 'RECORD_VIDEO_CLICK':
@@ -1008,8 +980,8 @@ ext.runtime.onInstalled.addListener(async () => {
   await setupAlarm(merged);
 });
 
-ext.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse) => {
-  routeMessage(request)
+ext.runtime.onMessage.addListener((request: MessageRequest, sender, sendResponse) => {
+  routeMessage(request, sender)
     .then((response) => sendResponse(response))
     .catch((error) => sendResponse(fail(error)));
 

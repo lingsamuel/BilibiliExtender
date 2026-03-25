@@ -32,7 +32,8 @@ import {
   type AuthorCacheMap,
   type MixedUsedPageItem
 } from '@/background/feed-service';
-import { getMyCreatedFolders } from '@/shared/api/bilibili';
+import { getMyCreatedFolders, likeVideo } from '@/shared/api/bilibili';
+import { installLikeRequestHeaderRule } from '@/background/request-dnr';
 import { WbiExpiredError } from '@/shared/utils/wbi';
 
 export interface SchedulerTask {
@@ -51,6 +52,24 @@ interface GroupFavTask {
   trigger: SchedulerTaskTrigger;
 }
 
+interface LikePageContext {
+  tabId: number;
+  pageOrigin: string;
+  pageReferer: string;
+}
+
+interface LikeActionTask {
+  key: `like:${string}`;
+  aid: number;
+  bvid: string;
+  authorMid: number;
+  csrf: string;
+  action: 'like' | 'unlike';
+  source: 'single-card-toggle' | 'author-batch-like';
+  trigger: 'manual-click';
+  pageContext: LikePageContext;
+}
+
 const MAX_HISTORY = 50;
 const BURST_RETRY_DELAY_MS = 60_000;
 const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
@@ -58,10 +77,28 @@ const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
 type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'reason' | 'failFast' | 'trigger'>> & Pick<SchedulerTask, 'groupId'>;
 type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
+export interface LikeTaskResult {
+  aid: number;
+  bvid: string;
+  liked: boolean;
+  authorMid: number;
+  source: 'single-card-toggle' | 'author-batch-like';
+}
+
+export interface LikeBatchResult {
+  authorMid: number;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  failedBvids: string[];
+}
+
 interface HistoryEntry {
-  channel: 'author-video' | 'group-fav';
+  channel: 'author-video' | 'group-fav' | 'like-action';
   mid?: number;
   groupId?: string;
+  bvid?: string;
+  aid?: number;
   pn?: number;
   name: string;
   mode: 'regular' | 'burst';
@@ -69,6 +106,12 @@ interface HistoryEntry {
   timestamp: number;
   taskReason: SchedulerTaskReason;
   trigger: SchedulerTaskTrigger;
+  error?: string;
+}
+
+interface LikeTaskWaiterResult {
+  ok: boolean;
+  result?: LikeTaskResult;
   error?: string;
 }
 
@@ -123,6 +166,7 @@ function createBurstState(): BurstState {
 
 const authorState = createChannelState<AuthorTask>();
 const groupFavState = createChannelState<GroupFavTask>();
+const likeActionState = createChannelState<LikeActionTask>();
 const burstState = createBurstState();
 const history: HistoryEntry[] = [];
 let historyHydrated = false;
@@ -139,6 +183,7 @@ let pendingGroupFavRoutineAfterBurst = false;
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
 const burstTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
+const likeTaskWaiters = new Map<string, Array<(result: LikeTaskWaiterResult) => void>>();
 void ensureHistoryHydrated();
 
 function sleep(ms: number): Promise<void> {
@@ -179,6 +224,27 @@ function notifyBurstTaskFinished(task: AuthorTask, result: { ok: boolean; error?
   for (const waiter of waiters) {
     waiter(result);
   }
+}
+
+function notifyLikeTaskFinished(task: LikeActionTask, result: LikeTaskWaiterResult): void {
+  const key = keyOfLikeTask(task);
+  const waiters = likeTaskWaiters.get(key);
+  if (!waiters || waiters.length === 0) {
+    return;
+  }
+  likeTaskWaiters.delete(key);
+  for (const waiter of waiters) {
+    waiter(result);
+  }
+}
+
+function waitForLikeTask(task: LikeActionTask): Promise<LikeTaskWaiterResult> {
+  const key = keyOfLikeTask(task);
+  return new Promise((resolve) => {
+    const waiters = likeTaskWaiters.get(key) ?? [];
+    waiters.push(resolve);
+    likeTaskWaiters.set(key, waiters);
+  });
 }
 
 async function ensureHistoryHydrated(): Promise<void> {
@@ -224,6 +290,10 @@ function keyOfAuthorTask(task: Pick<AuthorTask, 'mid' | 'pn'>): string {
   return `${task.mid}:${task.pn}`;
 }
 
+function keyOfLikeTask(task: Pick<LikeActionTask, 'bvid'>): LikeActionTask['key'] {
+  return `like:${task.bvid}`;
+}
+
 function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
   return {
     mid: task.mid,
@@ -233,6 +303,35 @@ function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
     reason: task.reason ?? 'first-page-refresh',
     trigger: task.trigger ?? 'alarm-routine',
     failFast: task.failFast === true
+  };
+}
+
+function normalizeLikePageContext(pageContext: LikePageContext): LikePageContext {
+  return {
+    tabId: Number(pageContext.tabId),
+    pageOrigin: pageContext.pageOrigin?.trim() || '',
+    pageReferer: pageContext.pageReferer?.trim() || ''
+  };
+}
+
+function normalizeLikeActionTask(task: LikeActionTask): LikeActionTask {
+  const aid = Math.max(0, Math.floor(Number(task.aid) || 0));
+  const bvid = task.bvid?.trim() || '';
+  const authorMid = Math.max(1, Math.floor(Number(task.authorMid) || 0));
+  if (!aid || !bvid || !authorMid) {
+    throw new Error('点赞任务参数不完整');
+  }
+
+  return {
+    key: keyOfLikeTask({ bvid }),
+    aid,
+    bvid,
+    authorMid,
+    csrf: task.csrf?.trim() || '',
+    action: task.action === 'unlike' ? 'unlike' : 'like',
+    source: task.source,
+    trigger: 'manual-click',
+    pageContext: normalizeLikePageContext(task.pageContext)
   };
 }
 
@@ -349,6 +448,13 @@ function fillQueueToBatchSize<TTask>(
 
   state.queue.push(...picked);
   return picked.length;
+}
+
+function getExistingLikeActionByBvid(bvid: string): LikeActionTask | null {
+  if (likeActionState.currentTask?.bvid === bvid) {
+    return likeActionState.currentTask;
+  }
+  return likeActionState.queue.find((task) => task.bvid === bvid) ?? null;
 }
 
 function isBurstActive(): boolean {
@@ -700,6 +806,95 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
   enqueuePriority(priorityTasks);
 }
 
+async function runLikeTask(task: LikeActionTask): Promise<LikeTaskResult> {
+  const csrf = task.csrf?.trim();
+  if (!csrf) {
+    throw new Error('点赞参数不完整');
+  }
+
+  await installLikeRequestHeaderRule(task.pageContext.tabId, task.pageContext.pageOrigin, task.pageContext.pageReferer);
+  await likeVideo(
+    {
+      aid: task.aid,
+      bvid: task.bvid
+    },
+    task.action === 'like',
+    csrf
+  );
+
+  return {
+    aid: task.aid,
+    bvid: task.bvid,
+    liked: task.action === 'like',
+    authorMid: task.authorMid,
+    source: task.source
+  };
+}
+
+async function runLikeActionLoop(): Promise<void> {
+  if (likeActionState.running) return;
+
+  likeActionState.running = true;
+  likeActionState.lastRunAt = Date.now();
+
+  while (likeActionState.queue.length > 0) {
+    const task = likeActionState.queue.shift()!;
+    likeActionState.currentTask = task;
+
+    try {
+      const result = await runLikeTask(task);
+      likeActionState.batchCompleted++;
+      pushHistory({
+        channel: 'like-action',
+        mid: task.authorMid,
+        bvid: task.bvid,
+        aid: task.aid,
+        name: task.bvid,
+        mode: 'regular',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: task.action === 'like'
+          ? (task.source === 'single-card-toggle' ? 'single-card-like' : 'author-batch-like')
+          : 'single-card-unlike',
+        trigger: task.trigger
+      });
+      notifyLikeTaskFinished(task, { ok: true, result });
+    } catch (error) {
+      likeActionState.batchFailed.push(task);
+      pushHistory({
+        channel: 'like-action',
+        mid: task.authorMid,
+        bvid: task.bvid,
+        aid: task.aid,
+        name: task.bvid,
+        mode: 'regular',
+        success: false,
+        timestamp: Date.now(),
+        taskReason: task.action === 'like'
+          ? (task.source === 'single-card-toggle' ? 'single-card-like' : 'author-batch-like')
+          : 'single-card-unlike',
+        trigger: task.trigger,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      notifyLikeTaskFinished(task, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      console.warn('[BBE] 点赞任务执行失败 bvid:', task.bvid, error);
+    } finally {
+      likeActionState.currentTask = null;
+    }
+
+    if (likeActionState.queue.length > 0) {
+      await sleep(BG_REFRESH_INTRA_DELAY_MS);
+    }
+  }
+
+  likeActionState.batchFailed = [];
+  likeActionState.batchCompleted = 0;
+  likeActionState.running = false;
+}
+
 async function runAuthorLoop(): Promise<void> {
   if (authorState.running) return;
 
@@ -1035,6 +1230,12 @@ function startGroupFavLoopIfIdle(): void {
   }
 }
 
+function startLikeActionLoopIfIdle(): void {
+  if (!likeActionState.running && likeActionState.queue.length > 0) {
+    void runLikeActionLoop();
+  }
+}
+
 export function enqueueBurst(tasks: SchedulerTask[]): number {
   const normalizedTasks = tasks.map(normalizeAuthorTask);
   const taskKeys = new Set(normalizedTasks.map((task) => keyOfAuthorTask(task)));
@@ -1134,6 +1335,118 @@ export function enqueuePriorityGroup(groupIds: string[], trigger: SchedulerTaskT
     startGroupFavLoopIfIdle();
   }
   return added;
+}
+
+export async function enqueueLikeActionAndWait(input: {
+  aid: number;
+  bvid: string;
+  authorMid: number;
+  csrf: string;
+  like: boolean;
+  pageContext: LikePageContext;
+}): Promise<LikeTaskResult> {
+  const task = normalizeLikeActionTask({
+    key: keyOfLikeTask({ bvid: input.bvid }),
+    aid: input.aid,
+    bvid: input.bvid,
+    authorMid: input.authorMid,
+    csrf: input.csrf,
+    action: input.like ? 'like' : 'unlike',
+    source: 'single-card-toggle',
+    trigger: 'manual-click',
+    pageContext: input.pageContext
+  });
+
+  const existing = getExistingLikeActionByBvid(task.bvid);
+  if (existing && existing.action !== task.action) {
+    throw new Error('当前视频正在切换点赞状态，请稍后再试');
+  }
+
+  const waiter = waitForLikeTask(task);
+  dedupeAndEnqueue(likeActionState, [task], keyOfLikeTask, true);
+  startLikeActionLoopIfIdle();
+
+  const result = await waiter;
+  if (!result.ok || !result.result) {
+    throw new Error(result.error ?? '点赞失败');
+  }
+  return result.result;
+}
+
+export async function enqueueLikeBatchAndWait(
+  authorMid: number,
+  videos: Array<{ aid: number; bvid: string }>,
+  csrf: string,
+  pageContext: LikePageContext
+): Promise<LikeBatchResult> {
+  const normalizedVideos = new Map<string, { aid: number; bvid: string }>();
+  for (const video of videos) {
+    const aid = Math.max(0, Math.floor(Number(video.aid) || 0));
+    const bvid = video.bvid?.trim() || '';
+    if (!aid || !bvid) {
+      continue;
+    }
+    if (!normalizedVideos.has(bvid)) {
+      normalizedVideos.set(bvid, { aid, bvid });
+    }
+  }
+
+  if (normalizedVideos.size === 0) {
+    return {
+      authorMid,
+      total: 0,
+      successCount: 0,
+      failedCount: 0,
+      failedBvids: []
+    };
+  }
+
+  const tasks: LikeActionTask[] = [];
+  const failedBvids = new Set<string>();
+  for (const video of normalizedVideos.values()) {
+    const task = normalizeLikeActionTask({
+      key: keyOfLikeTask({ bvid: video.bvid }),
+      aid: video.aid,
+      bvid: video.bvid,
+      authorMid,
+      csrf,
+      action: 'like',
+      source: 'author-batch-like',
+      trigger: 'manual-click',
+      pageContext
+    });
+    const existing = getExistingLikeActionByBvid(task.bvid);
+    if (existing && existing.action !== task.action) {
+      failedBvids.add(task.bvid);
+      continue;
+    }
+    tasks.push(task);
+  }
+
+  const waitJobs = tasks.map(async (task) => {
+    const result = await waitForLikeTask(task);
+    return { task, result };
+  });
+  dedupeAndEnqueue(likeActionState, tasks, keyOfLikeTask, true);
+  startLikeActionLoopIfIdle();
+
+  const settled = await Promise.all(waitJobs);
+  let successCount = 0;
+  for (const item of settled) {
+    if (item.result.ok) {
+      successCount += 1;
+      continue;
+    }
+    failedBvids.add(item.task.bvid);
+  }
+
+  return {
+    authorMid,
+    total: normalizedVideos.size,
+    successCount,
+    failedCount: failedBvids.size,
+    failedBvids: Array.from(failedBvids)
+  };
 }
 
 async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
@@ -1258,7 +1571,7 @@ export async function setupAlarm(settings: ExtensionSettings): Promise<void> {
 export async function runSchedulerNow(): Promise<{
   accepted: true;
   triggeredAt: number;
-  channels: Array<{ name: 'author-video' | 'group-fav'; queued: number; nextAlarmAt?: number }>;
+  channels: Array<{ name: 'author-video' | 'group-fav' | 'like-action'; queued: number; nextAlarmAt?: number }>;
 }> {
   const [author, groupFav] = await Promise.all([
     triggerAuthorRoutineNow({ resetAlarmSchedule: true }),
@@ -1270,7 +1583,8 @@ export async function runSchedulerNow(): Promise<{
     triggeredAt: Date.now(),
     channels: [
       { name: 'author-video', queued: author.queued, nextAlarmAt: author.nextAlarmAt },
-      { name: 'group-fav', queued: groupFav.queued, nextAlarmAt: groupFav.nextAlarmAt }
+      { name: 'group-fav', queued: groupFav.queued, nextAlarmAt: groupFav.nextAlarmAt },
+      { name: 'like-action', queued: likeActionState.queue.length }
     ]
   };
 }
@@ -1389,6 +1703,29 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
       lastRunAt: groupFavState.lastRunAt,
       nextAlarmAt: groupFavAlarm?.scheduledTime,
       queue: groupFavState.queue.map((item) => ({ groupId: item.groupId }))
+    },
+    likeChannel: {
+      running: likeActionState.running,
+      queueLength: likeActionState.queue.length,
+      currentTask: likeActionState.currentTask
+        ? {
+            bvid: likeActionState.currentTask.bvid,
+            aid: likeActionState.currentTask.aid,
+            action: likeActionState.currentTask.action,
+            source: likeActionState.currentTask.source,
+            authorMid: likeActionState.currentTask.authorMid
+          }
+        : null,
+      batchCompleted: likeActionState.batchCompleted,
+      batchFailed: likeActionState.batchFailed.length,
+      lastRunAt: likeActionState.lastRunAt,
+      queue: likeActionState.queue.map((item) => ({
+        bvid: item.bvid,
+        aid: item.aid,
+        action: item.action,
+        source: item.source,
+        authorMid: item.authorMid
+      }))
     },
     burst: {
       running: burstState.running,

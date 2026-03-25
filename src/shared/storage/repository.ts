@@ -17,9 +17,11 @@ type FeedCacheMap = Record<string, GroupFeedCache>;
 type AuthorVideoCacheMap = Record<number, AuthorVideoCache>;
 type AuthorPreferenceMap = Record<number, AuthorPreference>;
 type SchedulerHistoryEntry = {
-  channel: 'author-video' | 'group-fav';
+  channel: 'author-video' | 'group-fav' | 'like-action';
   mid?: number;
   groupId?: string;
+  bvid?: string;
+  aid?: number;
   pn?: number;
   name: string;
   success: boolean;
@@ -430,24 +432,41 @@ export async function loadSchedulerHistory(): Promise<SchedulerHistoryEntry[]> {
 
   const history = await storageGet(ext.storage.local, STORAGE_KEYS.SCHEDULER_HISTORY, [] as SchedulerHistoryEntry[]);
   const rawList = Array.isArray(history) ? history : [];
-  memoryCache.schedulerHistory = rawList
-    .filter((item): item is Partial<SchedulerHistoryEntry> & { timestamp: number } => Boolean(item && typeof item.timestamp === 'number'))
+  const normalizedRawList = rawList
+    .filter((item) => Boolean(item && typeof item.timestamp === 'number')) as Array<Partial<SchedulerHistoryEntry> & { timestamp: number }>;
+  memoryCache.schedulerHistory = normalizedRawList
     .map((item) => {
-      const channel = item.channel === 'group-fav' ? 'group-fav' : 'author-video';
+      const channel = item.channel === 'group-fav'
+        ? 'group-fav'
+        : item.channel === 'like-action'
+          ? 'like-action'
+          : 'author-video';
       const taskReason = item.taskReason
-        ?? (channel === 'group-fav' ? 'group-fav-refresh' : 'first-page-refresh');
+        ?? (channel === 'group-fav'
+          ? 'group-fav-refresh'
+          : channel === 'like-action'
+            ? 'author-batch-like'
+            : 'first-page-refresh');
       return {
         channel,
         mid: typeof item.mid === 'number' ? item.mid : undefined,
         groupId: typeof item.groupId === 'string' ? item.groupId : undefined,
+        bvid: typeof item.bvid === 'string' ? item.bvid : undefined,
+        aid: typeof item.aid === 'number' ? item.aid : undefined,
         pn: typeof item.pn === 'number' ? item.pn : undefined,
-        name: typeof item.name === 'string' ? item.name : (channel === 'group-fav' ? (item.groupId || 'unknown-group') : String(item.mid || 0)),
+        name: typeof item.name === 'string'
+          ? item.name
+          : channel === 'group-fav'
+            ? (item.groupId || 'unknown-group')
+            : channel === 'like-action'
+              ? (item.bvid || 'unknown-video')
+              : String(item.mid || 0),
         success: item.success === true,
         timestamp: item.timestamp,
         error: typeof item.error === 'string' ? item.error : undefined,
         mode: item.mode === 'burst' ? 'burst' : 'regular',
         taskReason,
-        trigger: item.trigger ?? 'alarm-routine'
+        trigger: item.trigger ?? (channel === 'like-action' ? 'manual-click' : 'alarm-routine')
       };
     });
   return memoryCache.schedulerHistory;
