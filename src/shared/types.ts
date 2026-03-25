@@ -88,6 +88,8 @@ export interface AuthorFeed {
   videos: VideoItem[];
   // 当前筛选结果是否“仅由已阅前额外视频构成”（没有已阅基线之后的新视频）
   hasOnlyExtraOlderVideos?: boolean;
+  // 概览按天筛选无命中时，是否使用了“保底 1 条最新视频”兜底展示。
+  hasOverviewFallbackLatestVideo?: boolean;
   // 该作者投稿缓存里的最新发布时间（秒级时间戳）
   latestPubdate?: number;
 }

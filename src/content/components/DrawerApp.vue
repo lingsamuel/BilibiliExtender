@@ -256,11 +256,8 @@
                       </button>
                     </div>
                   </div>
-                  <span
-                    v-if="author.hasOnlyExtraOlderVideos && author.latestPubdate"
-                    class="bbe-author-title-note"
-                  >
-                    最近更新：{{ formatDaysAgo(author.latestPubdate) }}
+                  <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
+                    {{ getAuthorLatestUpdateNote(author) }}
                   </span>
                 </h3>
                 <div class="bbe-grid bbe-author-grid">
@@ -748,9 +745,19 @@ const byAuthorFeeds = computed<AuthorFeed[]>(() => {
     .map((item) => item.author);
 });
 
-const isByAuthorPaginationEnabled = computed(
-  () => mode.value === 'byAuthor' && selectedReadMarkTs.value === 0
-);
+function isOverviewDayFilter(filter: OverviewFilterKey): boolean {
+  return filter === 'gd' || filter === 'd14' || filter === 'd30';
+}
+
+const isByAuthorPaginationEnabled = computed(() => {
+  if (mode.value === 'byAuthor') {
+    return selectedReadMarkTs.value === 0;
+  }
+  if (mode.value === 'overview') {
+    return activeOverviewFilter.value === 'all';
+  }
+  return false;
+});
 
 function getAuthorApiPageSize(author: AuthorFeed): number {
   return Math.max(1, Number(author.apiPageSize) || feed.value?.byAuthorPageSize || AUTHOR_VIDEOS_PAGE_SIZE);
@@ -807,6 +814,25 @@ function getAuthorVisibleVideos(author: AuthorFeed): VideoItem[] {
 
 function shouldShowAuthorPagination(author: AuthorFeed): boolean {
   return isByAuthorPaginationEnabled.value && getAuthorTotalPages(author) > 1;
+}
+
+function shouldShowAuthorLatestUpdateNote(author: AuthorFeed): boolean {
+  if (!author.latestPubdate) {
+    return false;
+  }
+  if (author.hasOnlyExtraOlderVideos) {
+    return true;
+  }
+  return mode.value === 'overview'
+    && isOverviewDayFilter(activeOverviewFilter.value)
+    && author.hasOverviewFallbackLatestVideo === true;
+}
+
+function getAuthorLatestUpdateNote(author: AuthorFeed): string {
+  if (!author.latestPubdate) {
+    return '';
+  }
+  return `最近更新：${formatDaysAgo(author.latestPubdate)}`;
 }
 
 function isAuthorPageLoading(authorMid: number): boolean {

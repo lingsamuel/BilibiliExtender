@@ -660,27 +660,65 @@ function resolveOverviewPerAuthorCount(overviewFilter: OverviewFilterKey): numbe
   return null;
 }
 
-function applyOverviewFilterForAuthor(
+interface OverviewAuthorSelection {
+  videos: VideoItem[];
+  usedLatestFallback: boolean;
+}
+
+/**
+ * 概览模式作者列表筛选：
+ * - `all` 直接返回全量缓存；
+ * - `N条` 只按条数截断；
+ * - `N天内` 先按时间窗口过滤，若完全无命中则保底返回最新 1 条。
+ */
+function selectOverviewVideosForAuthor(
   videos: VideoItem[],
   overviewFilter: OverviewFilterKey,
   defaultReadMarkDays: number
-): VideoItem[] {
+): OverviewAuthorSelection {
   if (overviewFilter === 'none' || overviewFilter === 'all') {
-    return videos;
+    return {
+      videos,
+      usedLatestFallback: false
+    };
   }
 
   const perAuthorCount = resolveOverviewPerAuthorCount(overviewFilter);
   if (perAuthorCount !== null) {
-    return videos.slice(0, perAuthorCount);
+    return {
+      videos: videos.slice(0, perAuthorCount),
+      usedLatestFallback: false
+    };
   }
 
   const days = resolveOverviewDays(overviewFilter, defaultReadMarkDays);
   if (days !== null) {
     const lowerBound = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
-    return videos.filter((video) => video.pubdate >= lowerBound);
+    const scoped = videos.filter((video) => video.pubdate >= lowerBound);
+    if (scoped.length > 0 || videos.length === 0) {
+      return {
+        videos: scoped,
+        usedLatestFallback: false
+      };
+    }
+    return {
+      videos: videos.slice(0, 1),
+      usedLatestFallback: true
+    };
   }
 
-  return videos;
+  return {
+    videos,
+    usedLatestFallback: false
+  };
+}
+
+function applyOverviewFilterForAuthor(
+  videos: VideoItem[],
+  overviewFilter: OverviewFilterKey,
+  defaultReadMarkDays: number
+): VideoItem[] {
+  return selectOverviewVideosForAuthor(videos, overviewFilter, defaultReadMarkDays).videos;
 }
 
 function hasAuthorPotentialMoreForMixed(
@@ -912,15 +950,14 @@ export function toFeedResult(
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
     const allVideos = authorCacheMap[mid]?.videos ?? [];
+    const overviewSelection = selectOverviewVideosForAuthor(allVideos, effectiveOverviewFilter, settings.defaultReadMarkDays);
     const pref = authorPreferences[mid];
     const hasAuthorReadMarkOverride = Boolean(pref?.readMarkTs && pref.readMarkTs > 0);
     const authorBoundaryTs = resolveAuthorUnreadBaselineTs(mid, trackingGroupBaselineTs, authorPreferences);
     const videos =
       effectiveOverviewFilter === 'none'
         ? filterAuthorVideosByTracking(allVideos, authorBoundaryTs, settings.extraOlderVideoCount)
-        : effectiveOverviewFilter === 'all'
-          ? allVideos
-          : applyOverviewFilterForAuthor(allVideos, effectiveOverviewFilter, settings.defaultReadMarkDays);
+        : overviewSelection.videos;
     const meta = authorMetaMap.get(mid);
 
     // 当当前展示列表全部落在基线之前时，说明该作者“仅显示已阅前额外视频”。
@@ -947,6 +984,8 @@ export function toFeedResult(
         authorBoundaryTs > 0 &&
         videos.length > 0 &&
         videos.every((video) => video.pubdate < authorBoundaryTs),
+      hasOverviewFallbackLatestVideo:
+        effectiveOverviewFilter !== 'none' && overviewSelection.usedLatestFallback,
       latestPubdate: getLatestPubdate(allVideos) ?? undefined
     };
   });
