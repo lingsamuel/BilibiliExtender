@@ -2,6 +2,16 @@ import type { CurrentUser, FavoriteFolder, VideoItem } from '@/shared/types';
 import { extractWbiKey, signWbiParams, WbiExpiredError } from '@/shared/utils/wbi';
 
 const API_BASE = 'https://api.bilibili.com';
+const RELATION_SPMID = '333.1387';
+const RELATION_STATISTICS = JSON.stringify({
+  appId: 100,
+  platform: 5
+});
+const RELATION_DEVICE_REQ = JSON.stringify({
+  platform: 'web',
+  device: 'pc',
+  spmid: RELATION_SPMID
+});
 
 interface ApiResponse<T> {
   code: number;
@@ -116,10 +126,17 @@ async function fetchApi<T>(
 
 async function postApi<T>(
   path: string,
-  body: Record<string, string | number>
+  body: Record<string, string | number>,
+  query?: Record<string, string | number>
 ): Promise<ApiResponse<T>> {
   const url = new URL(path, API_BASE);
   const form = new URLSearchParams();
+
+  if (query) {
+    Object.entries(query).forEach(([key, value]) => {
+      url.searchParams.set(key, String(value));
+    });
+  }
 
   Object.entries(body).forEach(([key, value]) => {
     form.set(key, String(value));
@@ -340,8 +357,8 @@ export async function modifyUserRelation(
   csrf: string
 ): Promise<void> {
   const act = follow ? 1 : 2;
-  // 关注接口在 Web 端需要携带 extend_content（实体类型 + 目标 uid），
-  // 否则在部分账号/风控场景下可能被拦截。
+  // 关注接口除了业务参数外，还需要尽量补齐 Web 前端同形态的上下文字段，
+  // 否则部分账号会因为客户端判定或风控校验失败。
   const extendContent = JSON.stringify({
     entity: 'user',
     entity_id: fid
@@ -350,8 +367,14 @@ export async function modifyUserRelation(
     fid,
     act,
     re_src: 11,
+    gaia_source: 'web_main',
+    spmid: RELATION_SPMID,
     extend_content: extendContent,
+    is_from_frontend_component: 'true',
     csrf
+  }, {
+    statistics: RELATION_STATISTICS,
+    'x-bili-device-req-json': RELATION_DEVICE_REQ
   });
 }
 

@@ -43,14 +43,19 @@
 - `re_src`（保持 11）
 - `csrf`
 - `extend_content`（本次修复关键）
+- `gaia_source=web_main`
+- `spmid=333.1387`
+- `is_from_frontend_component=true`
+- URL Query：`statistics={"appId":100,"platform":5}`
+- URL Query：`x-bili-device-req-json={"platform":"web","device":"pc","spmid":"333.1387"}`
 
 `extend_content` 规则：
 - JSON 字符串：`{"entity":"user","entity_id":<fid>}`
 - 提交时作为 form 字段发送（URL 编码由 `URLSearchParams` 处理）。
 
 说明：
-- 抓包中出现的 `statistics`、`x-bili-device-req-json`、`gaia_source`、`spmid`、`is_from_frontend_component` 本次均不设为强制参数。
-- 若后续线上验证仍有风控问题，再追加为可配置扩展参数。
+- `extend_content` 仍作为 form 字段提交，继续交给 `URLSearchParams` 做 URL 编码；不要求保留抓包里“冒号未编码”的字面形态。
+- 本次修复先固定补齐抓包中与客户端判定相关的上下文字段；若补齐后仍失败，再继续评估是否必须改为页面上下文发起请求。
 
 ### 3.3 新增视频点赞/投币 API
 
