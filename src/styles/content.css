@@ -788,8 +788,8 @@ body.bbe-page-scroll-lock {
 .bbe-author-follow-btn {
   border: 1px solid var(--bbe-brand-color);
   border-radius: 6px;
-  background: #fff;
-  color: var(--bbe-brand-color);
+  background: var(--bbe-brand-color);
+  color: #fff;
   padding: 3px 10px;
   font-size: 12px;
   line-height: 1.5;
