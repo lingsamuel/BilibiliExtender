@@ -12,6 +12,7 @@ export const STORAGE_KEYS = {
   AUTHOR_PREFERENCES: 'bbe:author-preferences',
   LEGACY_AUTHOR_READ_MARKS: 'bbe:author-read-marks',
   CLICKED_VIDEOS: 'bbe:clicked-videos',
+  LIKED_VIDEOS: 'bbe:liked-videos',
   VIDEO_REVIEWED_OVERRIDES: 'bbe:video-reviewed-overrides',
   SCHEDULER_HISTORY: 'bbe:scheduler:history'
 } as const;
@@ -33,6 +34,7 @@ export const MIXED_LOAD_INCREMENT = 20;
 
 export const MAX_READ_MARK_COUNT = 10;
 export const CLICKED_VIDEO_EXPIRE_DAYS = 30;
+export const LIKED_VIDEO_EXPIRE_DAYS = 30;
 // 作者投稿接口每页条数（对应 getUploaderVideos 的 ps 参数）
 export const AUTHOR_VIDEOS_PAGE_SIZE = 24;
 

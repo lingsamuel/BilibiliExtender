@@ -2,10 +2,8 @@
 
 ## 1. 背景
 
-当前版本已经具备基础的关注与点赞链路，但点赞交互仍存在三个缺口：
-- VideoCard 只能在“本地已知点赞成功”时显示角标，未点赞时没有统一入口，且不能直接在卡片上切换点赞/取消点赞。
-- 作者“一键点赞”仍使用独立串行队列，尚未并入通道化调度器。
-- 点赞请求尚未补齐与关注同级的 DNR 头改写策略，在多标签页场景下也缺少按标签页精确命中的约束。
+当前版本已经具备关注、单卡点赞/取消点赞、作者一键点赞与 DNR 头改写链路，但点赞状态仍存在一个体验缺口：
+- 插件内触发的点赞结果若只保留在抽屉内存态，页面刷新或重新打开后会丢失。
 
 本 Spec 定义以下能力：
 - 错误展示统一为通知弹框（toast），不再用错误文本覆盖主内容区。
@@ -13,18 +11,20 @@
 - 新增/完善视频点赞、投币 API。
 - 在作者区域保留“一键点赞”能力，并将点赞任务并入通道化调度器。
 - 在所有 VideoCard 封面左下角展示可点击的点赞拇指按钮，支持点赞/取消点赞。
+- 对“通过插件触发成功的点赞结果”做本地持久化：仅写入 `storage.local`、保留 30 天、不补远端点赞态。
 
 ## 2. 范围与非目标
 
 ### 2.1 范围
 - Content UI：错误提示、作者区域操作按钮、VideoCard 点赞按钮/角标。
-- Background：关注/点赞/投币消息处理、点赞调度执行与点赞写请求 DNR 规则安装。
+- Background：关注/点赞/投币消息处理、点赞调度执行、点赞写请求 DNR 规则安装与本地点赞记录维护。
 - Shared API/消息协议：新增/扩展点赞与投币相关接口。
 
 ### 2.2 非目标
 - 不新增桌面系统通知。
 - 不做“一键三连”能力。
 - 不做历史全量点赞状态回溯。
+- 不查询或同步站点真实点赞态。
 - 本轮不改造投币链路的 DNR 接入，仅处理点赞请求。
 
 ## 3. 功能需求
@@ -173,7 +173,8 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 
 说明：
 - 该状态用于 UI 呈现与短期交互反馈，不参与 unread 计算。
-- 可按需持久化；若不持久化，至少在抽屉会话内保持一致。
+- 点赞成功结果持久化到 `chrome.storage.local` 的 `bbe:liked-videos`，仅记录插件触发的成功点赞。
+- 数据保留 30 天；取消点赞后删除对应记录；不写入 `storage.sync`。
 
 ## 7. 交互流程
 
@@ -188,7 +189,7 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 1. 用户点击作者“一键点赞”。
 2. 收集该作者当前可见视频列表并入队。
 3. 调度器通过 `like-action` 通道串行点赞。
-4. 每条成功即回写该视频 `liked=true`。
+4. 每条成功即回写该视频 `liked=true`，并将 `bvid -> likedAt` 写入 `storage.local`。
 5. 批次结束 toast 汇总结果。
 
 ### 7.3 VideoCard 单卡点赞/取消点赞
@@ -196,14 +197,17 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 2. 前端根据当前本地状态决定目标动作：未点赞则提交 `like`，已点赞则提交 `unlike`。
 3. 消息携带 `pageOrigin`、`pageReferer`；background 在真正发起单次写请求前临时安装 DNR session rule，请求结束后立即清理。
 4. 调度器将该任务作为 `like-action` 优先任务串行执行。
-5. 成功后本地回写该视频 `liked=true/false`；失败则保留旧状态并 toast 提示。
+5. 成功后本地回写该视频 `liked=true/false`：
+   - 点赞成功：写入 `storage.local`，保留 30 天；
+   - 取消点赞成功：删除该 `bvid` 的本地记录。
+6. 失败则保留旧状态并 toast 提示。
 
 ## 8. 错误与降级
 
 1. 任何接口失败均使用 toast 提示，不替换主内容区域。
 2. 关注失败：回滚按钮状态。
 3. 点赞批次部分失败：成功项保留，失败项记录并汇总提示。
-4. 点赞态未命中本地状态时：不阻断页面渲染，按钮按“未点赞空心态”展示。
+4. 点赞态未命中本地状态时：不阻断页面渲染，按钮按“未点赞空心态”展示；不额外查询远端点赞态。
 5. 当前浏览器若不支持 `declarativeNetRequest.updateSessionRules`：点赞操作直接报错并 toast，不降级为无 DNR 写请求。
 
 ## 9. 验收标准
@@ -216,3 +220,4 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 6. 所有 VideoCard 封面左下角都显示可点击拇指按钮：未点赞为空心白色描边，已点赞为粉色实心。
 7. 单卡点击可执行点赞与取消点赞，成功后即时回写 UI。
 8. 点赞请求会在执行前临时安装 DNR session rule，并通过后台串行门避免多条写请求并发时串用来源头。
+9. 仅插件内触发成功的点赞会写入 `storage.local`，刷新后 30 天内仍能恢复为已点赞态；取消点赞后对应记录会被删除。

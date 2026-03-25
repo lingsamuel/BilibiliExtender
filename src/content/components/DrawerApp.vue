@@ -1024,8 +1024,10 @@ function isVideoLikePending(bvid: string): boolean {
 }
 
 /**
- * 点赞态只保存“最近一次本地成功写操作”和进行中的 pending 状态，
- * 未命中的视频按默认未点赞处理，不主动补远端查询。
+ * 点赞态只认插件本地写入的结果：
+ * - 成功点赞/批量点赞后写入 storage.local，并保留 30 天；
+ * - 取消点赞后删除本地记录；
+ * - 读取链路不主动补远端查询。
  */
 function patchVideoLikeStates(
   patches: Array<{ bvid: string; liked?: boolean; pending?: boolean; likedAt?: number }>
@@ -1458,9 +1460,10 @@ async function fetchClickedVideos(): Promise<void> {
     return;
   }
 
-  const [clickedResp, reviewedResp] = await Promise.all([
+  const [clickedResp, reviewedResp, likedResp] = await Promise.all([
     sendMessage({ type: 'GET_CLICKED_VIDEOS', payload: { bvids } }),
-    sendMessage({ type: 'GET_VIDEO_REVIEWED_OVERRIDES', payload: { bvids } })
+    sendMessage({ type: 'GET_VIDEO_REVIEWED_OVERRIDES', payload: { bvids } }),
+    sendMessage({ type: 'GET_LIKED_VIDEOS', payload: { bvids } })
   ]);
 
   if (clickedResp.ok && clickedResp.data) {
@@ -1469,15 +1472,27 @@ async function fetchClickedVideos(): Promise<void> {
   if (reviewedResp.ok && reviewedResp.data) {
     reviewedOverrideMap.value = reviewedResp.data.overrides;
   }
-  // 点赞态仅使用本地已知结果（手动点赞/批量点赞成功后写入），不在读取链路触发远端查询。
-  const keepBvids = new Set(bvids);
-  const nextLikedStateMap: Record<string, VideoLikeState> = {};
-  for (const [bvid, state] of Object.entries(likedStateMap.value)) {
-    if (keepBvids.has(bvid) && (state.liked === true || state.pending === true)) {
-      nextLikedStateMap[bvid] = state;
+  if (likedResp.ok && likedResp.data) {
+    const keepBvids = new Set(bvids);
+    const nextLikedStateMap: Record<string, VideoLikeState> = {};
+    for (const bvid of bvids) {
+      const prevState = likedStateMap.value[bvid];
+      if (prevState?.pending) {
+        nextLikedStateMap[bvid] = prevState;
+        continue;
+      }
+
+      const likedAt = likedResp.data.liked[bvid];
+      if (typeof likedAt === 'number' && keepBvids.has(bvid)) {
+        nextLikedStateMap[bvid] = {
+          liked: true,
+          pending: false,
+          likedAt
+        };
+      }
     }
+    likedStateMap.value = nextLikedStateMap;
   }
-  likedStateMap.value = nextLikedStateMap;
 }
 
 function stopPoll(): void {

@@ -10,9 +10,11 @@ import { ext } from '@/shared/platform/webext';
 import {
   appendGroupReadMark,
   clearAuthorReadMark,
+  clearVideoLiked,
   cleanOrphanClicks,
   cleanOrphanReviewedOverrides,
   loadAuthorPreferences,
+  loadLikedVideos,
   loadVideoReviewedOverrides,
   loadGroupReadMarks,
   loadClickedVideos,
@@ -21,6 +23,7 @@ import {
   loadLastGroupId,
   loadRuntimeStateMap,
   loadSettings,
+  recordVideoLiked,
   recordVideoClick,
   setAuthorIgnoreUnreadCount,
   setAuthorReadMark,
@@ -649,6 +652,11 @@ async function handleLikeVideo(
       pageReferer
     }
   });
+  if (result.liked) {
+    await recordVideoLiked(result.bvid, Date.now());
+  } else {
+    await clearVideoLiked(result.bvid);
+  }
   return {
     aid: result.aid,
     bvid: result.bvid,
@@ -715,11 +723,15 @@ async function handleBatchLikeVideos(
     };
   }
 
-  return enqueueLikeBatchAndWait(authorMid, videos, csrf, {
+  const result = await enqueueLikeBatchAndWait(authorMid, videos, csrf, {
     tabId,
     pageOrigin,
     pageReferer
   });
+  const failedBvids = new Set(result.failedBvids);
+  const succeededVideos = videos.filter((video) => !failedBvids.has(video.bvid));
+  await Promise.all(succeededVideos.map((video) => recordVideoLiked(video.bvid, Date.now())));
+  return result;
 }
 
 async function handleRecordVideoClick(
@@ -742,6 +754,21 @@ async function handleGetClickedVideos(
   }
 
   return { clicked };
+}
+
+async function handleGetLikedVideos(
+  request: Extract<MessageRequest, { type: 'GET_LIKED_VIDEOS' }>
+): Promise<ResponseMap['GET_LIKED_VIDEOS']> {
+  const allLiked = await loadLikedVideos();
+  const liked: Record<string, number> = {};
+
+  for (const bvid of request.payload.bvids) {
+    if (allLiked[bvid]) {
+      liked[bvid] = allLiked[bvid];
+    }
+  }
+
+  return { liked };
 }
 
 async function handleSetVideoReviewed(
@@ -946,6 +973,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleRecordVideoClick(request));
     case 'GET_CLICKED_VIDEOS':
       return ok(await handleGetClickedVideos(request));
+    case 'GET_LIKED_VIDEOS':
+      return ok(await handleGetLikedVideos(request));
     case 'SET_VIDEO_REVIEWED':
       return ok(await handleSetVideoReviewed(request));
     case 'GET_VIDEO_REVIEWED_OVERRIDES':

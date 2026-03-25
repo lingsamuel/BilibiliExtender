@@ -1,4 +1,10 @@
-import { DEFAULT_SETTINGS, MAX_READ_MARK_COUNT, STORAGE_KEYS } from '@/shared/constants';
+import {
+  CLICKED_VIDEO_EXPIRE_DAYS,
+  DEFAULT_SETTINGS,
+  LIKED_VIDEO_EXPIRE_DAYS,
+  MAX_READ_MARK_COUNT,
+  STORAGE_KEYS
+} from '@/shared/constants';
 import { ext, type StorageAreaLike } from '@/shared/platform/webext';
 import type { SchedulerTaskReason, SchedulerTaskTrigger } from '@/shared/messages';
 import type {
@@ -16,6 +22,8 @@ type RuntimeStateMap = Record<string, GroupRuntimeState>;
 type FeedCacheMap = Record<string, GroupFeedCache>;
 type AuthorVideoCacheMap = Record<number, AuthorVideoCache>;
 type AuthorPreferenceMap = Record<number, AuthorPreference>;
+type ClickedVideoMap = Record<string, number>;
+type LikedVideoMap = Record<string, number>;
 type SchedulerHistoryEntry = {
   channel: 'author-video' | 'group-fav' | 'like-action';
   mid?: number;
@@ -46,7 +54,8 @@ const memoryCache: {
   lastGroupId?: string;
   hasLastGroupId: boolean;
   groupReadMarks?: Record<string, GroupReadMark>;
-  clickedVideos?: Record<string, number>;
+  clickedVideos?: ClickedVideoMap;
+  likedVideos?: LikedVideoMap;
   videoReviewedOverrides?: Record<string, boolean>;
   authorPreferences?: AuthorPreferenceMap;
   schedulerHistory?: SchedulerHistoryEntry[];
@@ -369,9 +378,21 @@ export async function loadClickedVideos(): Promise<ClickedVideoMap> {
     return memoryCache.clickedVideos;
   }
 
-  const map = await storageGet(ext.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, {} as ClickedVideoMap);
-  memoryCache.clickedVideos = map;
-  return map;
+  const rawMap = await storageGet(ext.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, {} as ClickedVideoMap);
+  const expireBefore = Date.now() - CLICKED_VIDEO_EXPIRE_DAYS * 24 * 60 * 60 * 1000;
+  const nextMap: ClickedVideoMap = {};
+
+  for (const [bvid, clickedAt] of Object.entries(rawMap)) {
+    if (typeof clickedAt === 'number' && clickedAt >= expireBefore) {
+      nextMap[bvid] = clickedAt;
+    }
+  }
+
+  memoryCache.clickedVideos = nextMap;
+  if (Object.keys(nextMap).length !== Object.keys(rawMap).length) {
+    await storageSet(ext.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, nextMap);
+  }
+  return nextMap;
 }
 
 export async function saveClickedVideos(map: ClickedVideoMap): Promise<void> {
@@ -383,6 +404,48 @@ export async function recordVideoClick(bvid: string): Promise<void> {
   const map = await loadClickedVideos();
   map[bvid] = Date.now();
   await saveClickedVideos(map);
+}
+
+export async function loadLikedVideos(): Promise<LikedVideoMap> {
+  if (memoryCache.likedVideos) {
+    return memoryCache.likedVideos;
+  }
+
+  const rawMap = await storageGet(ext.storage.local, STORAGE_KEYS.LIKED_VIDEOS, {} as LikedVideoMap);
+  const expireBefore = Date.now() - LIKED_VIDEO_EXPIRE_DAYS * 24 * 60 * 60 * 1000;
+  const nextMap: LikedVideoMap = {};
+
+  for (const [bvid, likedAt] of Object.entries(rawMap)) {
+    if (typeof likedAt === 'number' && likedAt >= expireBefore) {
+      nextMap[bvid] = likedAt;
+    }
+  }
+
+  memoryCache.likedVideos = nextMap;
+  if (Object.keys(nextMap).length !== Object.keys(rawMap).length) {
+    await storageSet(ext.storage.local, STORAGE_KEYS.LIKED_VIDEOS, nextMap);
+  }
+  return nextMap;
+}
+
+export async function saveLikedVideos(map: LikedVideoMap): Promise<void> {
+  memoryCache.likedVideos = map;
+  await storageSet(ext.storage.local, STORAGE_KEYS.LIKED_VIDEOS, map);
+}
+
+export async function recordVideoLiked(bvid: string, likedAt = Date.now()): Promise<void> {
+  const map = await loadLikedVideos();
+  map[bvid] = likedAt;
+  await saveLikedVideos(map);
+}
+
+export async function clearVideoLiked(bvid: string): Promise<void> {
+  const map = await loadLikedVideos();
+  if (!(bvid in map)) {
+    return;
+  }
+  delete map[bvid];
+  await saveLikedVideos(map);
 }
 
 export async function loadVideoReviewedOverrides(): Promise<VideoReviewedOverrideMap> {

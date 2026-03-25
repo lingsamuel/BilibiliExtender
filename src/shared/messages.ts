@@ -68,6 +68,7 @@ export type MessageRequest =
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
+  | { type: 'GET_LIKED_VIDEOS'; payload: { bvids: string[] } }
   | { type: 'SET_VIDEO_REVIEWED'; payload: { bvid: string; reviewed: boolean } }
   | { type: 'GET_VIDEO_REVIEWED_OVERRIDES'; payload: { bvids: string[] } }
   | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
@@ -263,6 +264,7 @@ export interface ResponseMap {
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
+  GET_LIKED_VIDEOS: { liked: Record<string, number> };
   SET_VIDEO_REVIEWED: { bvid: string; reviewed: boolean };
   GET_VIDEO_REVIEWED_OVERRIDES: { overrides: Record<string, boolean> };
   SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };
