@@ -407,6 +407,7 @@ const BY_AUTHOR_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_FALLBACK_VISIBLE_RATIO_THRESHOLD = 0.1;
 const AUTHOR_TITLE_STICKY_TOP_OFFSET_PX = 8;
 const AUTHOR_TITLE_STICKY_EPSILON_PX = 1;
+const AUTHOR_TITLE_STICKY_SCROLLTOP_EPSILON_PX = 1;
 const AUTHOR_PAGE_POLL_FAST_ATTEMPTS = 3;
 const AUTHOR_PAGE_POLL_FAST_INTERVAL_MS = 500;
 const AUTHOR_PAGE_POLL_SLOW_INTERVAL_MS = 1000;
@@ -1990,6 +1991,7 @@ function updateByAuthorNavState(): void {
   const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
   const viewTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
   const viewBottomPx = listRect.bottom;
+  const hasScrolledIntoByAuthorList = container.scrollTop > AUTHOR_TITLE_STICKY_SCROLLTOP_EPSILON_PX;
 
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
@@ -2021,11 +2023,13 @@ function updateByAuthorNavState(): void {
        * sticky 视觉态直接比较“静态锚点”和“标题当前 rect”：
        * - 未 sticky 时，标题 top 应与锚点 top 基本重合；
        * - 进入 sticky 后，标题会相对锚点被向下钉住，因此 title.top > anchor.top；
+       * - 但首个作者在 scrollTop=0 时会被浏览器原生 sticky 机制立即下压到 top:8px，
+       *   这不应算作“用户感知到的 sticky 态”，因此还要额外要求列表已经发生实际滚动；
        * - 只要标题仍有一部分可见，就继续保留 sticky 样式，直到完全离开可视区。
        */
       const titleDetachedFromAnchor = titleRect.top > anchorRect.top + AUTHOR_TITLE_STICKY_EPSILON_PX;
       const titleStillVisible = titleRect.bottom > viewTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
-      nextStickyTitleMap[author.authorMid] = titleDetachedFromAnchor && titleStillVisible;
+      nextStickyTitleMap[author.authorMid] = hasScrolledIntoByAuthorList && titleDetachedFromAnchor && titleStillVisible;
     }
 
     if (activeMid === null && visibleRatio > BY_AUTHOR_VISIBLE_RATIO_THRESHOLD) {
