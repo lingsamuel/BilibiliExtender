@@ -542,7 +542,7 @@ interface SchedulerStatusResponse {
   - `GET_GROUP_FEED` 无缓存时触发 `group-fav` 优先任务。
 - `src/background/index.ts`：
   - 新增 `RUN_SCHEDULER_NOW` 消息路由。
-  - 点赞消息路由改为提交 `like-action` 通道，并在安装 tab-scoped DNR session rule 时使用 `sender.tab.id + pageOrigin + pageReferer`。
+  - 点赞消息路由改为提交 `like-action` 通道，并在单次写请求执行前使用 `pageOrigin + pageReferer` 临时安装 DNR session rule；请求结束后立即清理。
 - `src/background/feed-service.ts`：补充分组收藏夹刷新原子函数（仅供调度器调用）。
 - `src/shared/types.ts`：`ExtensionSettings` 新增 `groupFavRefreshIntervalMinutes`、`schedulerBatchSize`。
 - `src/shared/constants.ts`：两个后台刷新间隔默认值均调整为 `10`。

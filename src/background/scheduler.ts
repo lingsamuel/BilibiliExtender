@@ -33,7 +33,7 @@ import {
   type MixedUsedPageItem
 } from '@/background/feed-service';
 import { getMyCreatedFolders, likeVideo } from '@/shared/api/bilibili';
-import { installLikeRequestHeaderRule } from '@/background/request-dnr';
+import { runWithLikeRequestHeaders } from '@/background/request-dnr';
 import { WbiExpiredError } from '@/shared/utils/wbi';
 
 export interface SchedulerTask {
@@ -812,15 +812,16 @@ async function runLikeTask(task: LikeActionTask): Promise<LikeTaskResult> {
     throw new Error('点赞参数不完整');
   }
 
-  await installLikeRequestHeaderRule(task.pageContext.tabId, task.pageContext.pageOrigin, task.pageContext.pageReferer);
-  await likeVideo(
-    {
-      aid: task.aid,
-      bvid: task.bvid
-    },
-    task.action === 'like',
-    csrf
-  );
+  await runWithLikeRequestHeaders(task.pageContext.pageOrigin, task.pageContext.pageReferer, async () => {
+    await likeVideo(
+      {
+        aid: task.aid,
+        bvid: task.bvid
+      },
+      task.action === 'like',
+      csrf
+    );
+  });
 
   return {
     aid: task.aid,

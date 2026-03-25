@@ -54,7 +54,7 @@ import {
   runSchedulerNow,
   setupAlarm
 } from '@/background/scheduler';
-import { installFollowRequestHeaderRule } from '@/background/request-dnr';
+import { runWithFollowRequestHeaders } from '@/background/request-dnr';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -565,14 +565,13 @@ async function handleFollowAuthor(
   const csrf = request.payload.csrf?.trim();
   const pageOrigin = request.payload.pageOrigin?.trim();
   const pageReferer = request.payload.pageReferer?.trim();
-  const tabId = sender.tab?.id;
-
-  if (!mid || !csrf || !pageOrigin || !pageReferer || typeof tabId !== 'number') {
+  if (!mid || !csrf || !pageOrigin || !pageReferer || !sender.tab?.id) {
     throw new Error('关注参数不完整');
   }
 
-  await installFollowRequestHeaderRule(tabId, pageOrigin, pageReferer);
-  await modifyUserRelation(mid, follow, csrf);
+  await runWithFollowRequestHeaders(pageOrigin, pageReferer, async () => {
+    await modifyUserRelation(mid, follow, csrf);
+  });
 
   const authorCacheMap = await getAuthorCacheSnapshot();
   const existing = authorCacheMap[mid];

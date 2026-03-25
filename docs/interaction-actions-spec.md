@@ -71,7 +71,8 @@
 - 请求策略：
   - 默认按“POST 写操作”处理，接入与关注同类的 DNR 头改写能力。
   - Content script 发送消息时同时携带当前页面的 `pageOrigin`、`pageReferer`。
-  - Background 结合消息 `sender.tab.id` 安装 session-scoped DNR 规则，精确限定 `tabIds + archive/like + POST + xmlhttprequest`。
+  - 点赞请求实际由 background 发起；因此不能依赖 `tabIds` 命中，而是由 background 在单次写请求前临时安装 session rule，请求结束后立即清理。
+  - 为避免多个写请求并发时互相污染来源头，background 对接入 DNR 的写请求使用串行门执行。
   - DNR 规则至少改写 `Origin`、`Referer`、`Sec-Fetch-Site`，其中 `Referer` 去掉 hash，`Sec-Fetch-Site` 固定为 `same-site`。
   - 单卡点赞与作者批量点赞共享同一套 DNR 安装逻辑。
 
@@ -118,8 +119,8 @@
 - `GET_LIKE_SCHEDULER_STATUS`（调试可选）
 
 消息负载调整：
-- `LIKE_VIDEO`：新增 `pageOrigin`、`pageReferer`，用于安装 tab-scoped DNR 规则。
-- `BATCH_LIKE_VIDEOS`：新增 `pageOrigin`、`pageReferer`，用于作者批量点赞安装 tab-scoped DNR 规则。
+- `LIKE_VIDEO`：新增 `pageOrigin`、`pageReferer`，用于安装单次请求级别的 DNR 规则。
+- `BATCH_LIKE_VIDEOS`：新增 `pageOrigin`、`pageReferer`，用于作者批量点赞安装单次请求级别的 DNR 规则。
 
 返回约定：
 - 与现有消息一致，统一 `{ ok, data?, error? }`。
@@ -151,7 +152,7 @@ interface LikeTask {
 1. 队列去重键：`bvid`。
 2. 单卡点赞/取消点赞与作者批量点赞统一走 `like-action` 通道。
 3. 串行执行；任务间固定间隔（默认 1000ms）。
-4. 单任务执行前需先安装 tab-scoped DNR 规则，再调用点赞 API：
+4. 单任务执行前需先安装 session-scoped DNR 规则，再调用点赞 API；请求结束后立即清理规则：
    - `action='like'` => `like=1`
    - `action='unlike'` => `like=2`
 5. 单任务失败记录错误并继续下一条。
@@ -193,7 +194,7 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 ### 7.3 VideoCard 单卡点赞/取消点赞
 1. 用户点击某张 VideoCard 左下角拇指按钮。
 2. 前端根据当前本地状态决定目标动作：未点赞则提交 `like`，已点赞则提交 `unlike`。
-3. 消息携带 `pageOrigin`、`pageReferer`；background 使用 `sender.tab.id` 安装仅命中当前标签页的 DNR session rule。
+3. 消息携带 `pageOrigin`、`pageReferer`；background 在真正发起单次写请求前临时安装 DNR session rule，请求结束后立即清理。
 4. 调度器将该任务作为 `like-action` 优先任务串行执行。
 5. 成功后本地回写该视频 `liked=true/false`；失败则保留旧状态并 toast 提示。
 
@@ -214,4 +215,4 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 5. 一键点赞采用 `like-action` 通道串行调度，不会并发轰炸接口。
 6. 所有 VideoCard 封面左下角都显示可点击拇指按钮：未点赞为空心白色描边，已点赞为粉色实心。
 7. 单卡点击可执行点赞与取消点赞，成功后即时回写 UI。
-8. 点赞请求会安装仅命中当前标签页的 DNR session rule，避免多标签页串用来源头。
+8. 点赞请求会在执行前临时安装 DNR session rule，并通过后台串行门避免多条写请求并发时串用来源头。

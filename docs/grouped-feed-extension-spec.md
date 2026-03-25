@@ -502,7 +502,7 @@ interface GroupFeedCache {
 - 权限：声明 `host_permissions` 覆盖 `*.bilibili.com` 必需域名。
 - 不主动导出/展示用户 Cookie 原文。
 - 对 Bilibili 的 `POST` 写操作，默认在 background 发起前通过 DNR 改写关键来源头，至少覆盖 `Origin`、`Referer`、`Sec-Fetch-Site`，避免请求表现为扩展上下文。
-- Content script 负责提供当前页面 `origin/referer`；background 负责结合 `sender.tab.id` 安装 session-scoped、tab-scoped 的 DNR 规则，避免多个标签页串用同一组来源头。
+- Content script 负责提供当前页面 `origin/referer`；background 在真正发起单次写请求前临时安装 session-scoped DNR 规则，请求完成后立即清理，并通过后台串行门避免多个写请求并发时串用同一组来源头。
 - 若某个 `POST` 写操作在补齐业务参数后仍失败，优先检查该接口是否缺少 DNR 头改写，而不是直接假设 Cookie、CSRF 或请求体字段错误。
 
 ### 5.4 Bilibili API（首版拟定）
