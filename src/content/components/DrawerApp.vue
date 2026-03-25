@@ -1990,7 +1990,6 @@ function updateByAuthorNavState(): void {
   const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
   const viewTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
   const viewBottomPx = listRect.bottom;
-  const stickyTopPx = resolveByAuthorStickyTopPx(container, toolbarEl);
 
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
@@ -2014,16 +2013,19 @@ function updateByAuthorNavState(): void {
     const sectionHeight = Math.max(1, sectionRect.height);
     const visibleRatio = visibleHeight / sectionHeight;
     const titleEl = sectionEl.querySelector('.bbe-author-title');
-    if (titleEl instanceof HTMLElement) {
+    const anchorEl = sectionEl.querySelector('.bbe-author-scroll-anchor');
+    if (titleEl instanceof HTMLElement && anchorEl instanceof HTMLElement) {
       const titleRect = titleEl.getBoundingClientRect();
+      const anchorRect = anchorEl.getBoundingClientRect();
       /**
-       * sticky 视觉态的判定需要覆盖两个边界：
-       * 1. 作者分段顶部必须已经真正越过吸顶线，避免首个作者初始刚好贴线时被误判为 sticky；
-       * 2. 标题只要仍有一部分留在可视区内，就继续保留 sticky 样式，避免被下一段顶走的过渡阶段过早退化。
+       * sticky 视觉态直接比较“静态锚点”和“标题当前 rect”：
+       * - 未 sticky 时，标题 top 应与锚点 top 基本重合；
+       * - 进入 sticky 后，标题会相对锚点被向下钉住，因此 title.top > anchor.top；
+       * - 只要标题仍有一部分可见，就继续保留 sticky 样式，直到完全离开可视区。
        */
-      const sectionPassedStickyTop = sectionTopPx < stickyTopPx - AUTHOR_TITLE_STICKY_EPSILON_PX;
+      const titleDetachedFromAnchor = titleRect.top > anchorRect.top + AUTHOR_TITLE_STICKY_EPSILON_PX;
       const titleStillVisible = titleRect.bottom > viewTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
-      nextStickyTitleMap[author.authorMid] = sectionPassedStickyTop && titleStillVisible;
+      nextStickyTitleMap[author.authorMid] = titleDetachedFromAnchor && titleStillVisible;
     }
 
     if (activeMid === null && visibleRatio > BY_AUTHOR_VISIBLE_RATIO_THRESHOLD) {
