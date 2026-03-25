@@ -165,20 +165,21 @@
                   </div>
                 </section>
               </template>
+
+              <div v-if="!loading && !loadingMore && !generating && feed?.hasMoreForMixed" class="bbe-load-more-row">
+                <button
+                  type="button"
+                  class="bbe-btn"
+                  :disabled="loadingMore || loading || generating"
+                  @click="onLoadMoreClick"
+                >
+                  加载更多
+                </button>
+              </div>
+              <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
+              <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
             </div>
           </div>
-          <div v-if="!loading && !loadingMore && !generating && feed?.hasMoreForMixed" class="bbe-load-more-row">
-            <button
-              type="button"
-              class="bbe-btn"
-              :disabled="loadingMore || loading || generating"
-              @click="onLoadMoreClick"
-            >
-              加载更多
-            </button>
-          </div>
-          <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
-          <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
         </template>
 
         <template v-else>
