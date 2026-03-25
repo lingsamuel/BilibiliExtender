@@ -1984,12 +1984,18 @@ function updateByAuthorNavState(): void {
   }
 
   const listRect = container.getBoundingClientRect();
+  const listPaddingTopPx = Number.parseFloat(window.getComputedStyle(container).paddingTop) || 0;
   const mainEl = container.closest('.bbe-main');
   const toolbarEl = mainEl?.querySelector('.bbe-toolbar');
   const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
   const viewTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
   const viewBottomPx = listRect.bottom;
-  const stickyTopPx = viewTopPx + AUTHOR_TITLE_STICKY_TOP_OFFSET_PX;
+  /**
+   * sticky 标题的 top 是相对于滚动容器的 padding box，而不是容器边框。
+   * `.bbe-list` 自身有 `padding-top: 12px`，因此若这里只加 top: 8px，
+   * 会比真实吸顶位置少算 12px，导致标题已经 sticky 但样式状态仍未切换。
+   */
+  const stickyTopPx = listRect.top + listPaddingTopPx + AUTHOR_TITLE_STICKY_TOP_OFFSET_PX;
 
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
