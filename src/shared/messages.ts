@@ -44,6 +44,7 @@ export type MessageRequest =
   | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
   | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
+  | { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
   | { type: 'MARK_ALL_GROUPS_READ' }
   | { type: 'GET_SCHEDULER_STATUS' }
@@ -65,6 +66,7 @@ export type SchedulerTaskTrigger =
   | 'get-group-feed-missing-fav-cache'
   | 'get-group-feed-missing-author-cache'
   | 'get-group-feed-boundary'
+  | 'request-author-page'
   | 'group-fav-chain';
 
 export interface SchedulerStatusResponse {
@@ -208,6 +210,11 @@ export interface ResponseMap {
   SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };
   SET_AUTHOR_READ_MARK: { preference: AuthorPreference };
   CLEAR_AUTHOR_READ_MARK: { preference: AuthorPreference };
+  REQUEST_AUTHOR_PAGE: {
+    accepted: boolean;
+    status: 'queued' | 'cached' | 'no-more';
+    maxCachedPn?: number;
+  };
   GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };
   MARK_ALL_GROUPS_READ: { marks: Record<string, GroupReadMark>; readMarkTs: number };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;

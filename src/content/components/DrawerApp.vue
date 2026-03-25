@@ -486,6 +486,7 @@ const authorLikePendingMap = ref<Record<number, boolean>>({});
 const byAuthorPageMap = ref<Record<number, number>>({});
 const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
 const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
+const pendingAuthorPageTargetMap = ref<Record<number, number>>({});
 const mixedDaySectionElements = new Map<string, HTMLElement>();
 const mixedSectionsRef = ref<HTMLElement | null>(null);
 const mixedDayInViewMap = ref<Record<string, boolean>>({});
@@ -809,7 +810,20 @@ function shouldShowAuthorPagination(author: AuthorFeed): boolean {
 }
 
 function isAuthorPageLoading(authorMid: number): boolean {
-  return byAuthorPageLoadingMap.value[authorMid] === true;
+  return byAuthorPageLoadingMap.value[authorMid] === true || pendingAuthorPageTargetMap.value[authorMid] !== undefined;
+}
+
+function setPendingAuthorPageTarget(authorMid: number, targetPage?: number): void {
+  if (!targetPage || targetPage <= 0) {
+    const next = { ...pendingAuthorPageTargetMap.value };
+    delete next[authorMid];
+    pendingAuthorPageTargetMap.value = next;
+    return;
+  }
+  pendingAuthorPageTargetMap.value = {
+    ...pendingAuthorPageTargetMap.value,
+    [authorMid]: Math.max(1, Math.floor(targetPage))
+  };
 }
 
 function setAuthorPageLoading(authorMid: number, loadingState: boolean): void {
@@ -864,7 +878,7 @@ function getAuthorPagerItems(author: AuthorFeed): Array<number | '...'> {
 }
 
 async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<void> {
-  if (!isByAuthorPaginationEnabled.value || isAuthorPageLoading(author.authorMid)) {
+  if (!isByAuthorPaginationEnabled.value || isAuthorPageLoading(author.authorMid) || !activeGroupId.value) {
     return;
   }
 
@@ -877,18 +891,43 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
 
   setAuthorPageLoading(author.authorMid, true);
   try {
-    // 前台不再指定页号触发补页：目标页未缓存时只提交“刷新意图”，由调度器自主决定拉取策略。
+    // 前台只提交“作者分页意图”，不再同步等待该页拉取完成。
     const cachedPages = new Set(author.cachedPagePns ?? []);
     const hasCachedPage = cachedPages.has(nextPage);
     if (!hasCachedPage) {
       const resp = await sendMessage({
-        type: 'MANUAL_REFRESH',
-        payload: { groupId: activeGroupId.value }
+        type: 'REQUEST_AUTHOR_PAGE',
+        payload: {
+          groupId: activeGroupId.value,
+          mid: author.authorMid,
+          pn: nextPage
+        }
       });
-      if (!resp.ok || !resp.data?.accepted) {
-        throw new Error(resp.error ?? '提交刷新失败');
+      if (!resp.ok || !resp.data) {
+        throw new Error(resp.error ?? '提交分页任务失败');
       }
-      showErrorToast('目标页尚未缓存，已提交刷新任务，请稍后重试');
+
+      if (resp.data.status === 'no-more') {
+        const maxCachedPn = Math.max(1, Number(resp.data.maxCachedPn) || 1);
+        showErrorToast(`该作者暂无第 ${nextPage} 页（当前最多 ${maxCachedPn} 页）`);
+        setPendingAuthorPageTarget(author.authorMid);
+        return;
+      }
+
+      if (resp.data.status === 'cached') {
+        byAuthorPageMap.value = {
+          ...byAuthorPageMap.value,
+          [author.authorMid]: nextPage
+        };
+        setPendingAuthorPageTarget(author.authorMid);
+        clearAuthorPageJumpInput(author.authorMid);
+        await nextTick();
+        updateByAuthorNavState();
+        return;
+      }
+
+      setPendingAuthorPageTarget(author.authorMid, nextPage);
+      showErrorToast(`第 ${nextPage} 页缓存中，已提交分页任务`);
       startPoll(POLL_MAX_REFRESHING);
       return;
     }
@@ -897,6 +936,7 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
       ...byAuthorPageMap.value,
       [author.authorMid]: nextPage
     };
+    setPendingAuthorPageTarget(author.authorMid);
     clearAuthorPageJumpInput(author.authorMid);
     await nextTick();
     updateByAuthorNavState();
@@ -1341,6 +1381,7 @@ function resetAuthorPaginationState(): void {
   byAuthorPageMap.value = {};
   byAuthorPageJumpInputMap.value = {};
   byAuthorPageLoadingMap.value = {};
+  pendingAuthorPageTargetMap.value = {};
 }
 
 function syncAuthorPaginationStateWithFeed(): void {
@@ -1350,13 +1391,35 @@ function syncAuthorPaginationStateWithFeed(): void {
   }
 
   const mids = new Set(feed.value.videosByAuthor.map((author) => author.authorMid));
+  const nextPendingMap: Record<number, number> = {};
+  for (const [rawMid, rawTarget] of Object.entries(pendingAuthorPageTargetMap.value)) {
+    const mid = Number(rawMid);
+    const target = Math.max(1, Math.floor(Number(rawTarget) || 1));
+    if (mids.has(mid)) {
+      nextPendingMap[mid] = target;
+    }
+  }
+
   const nextPageMap: Record<number, number> = {};
+  let hasPendingApplied = false;
   for (const author of feed.value.videosByAuthor) {
     const current = Number(byAuthorPageMap.value[author.authorMid]) || 1;
     const totalPages = getAuthorTotalPages(author);
+    const pendingTarget = nextPendingMap[author.authorMid];
+    const normalizedPendingTarget = pendingTarget ? Math.min(totalPages, Math.max(1, pendingTarget)) : undefined;
+    const cachedPages = new Set(author.cachedPagePns ?? []);
+
+    if (normalizedPendingTarget && cachedPages.has(normalizedPendingTarget)) {
+      nextPageMap[author.authorMid] = normalizedPendingTarget;
+      delete nextPendingMap[author.authorMid];
+      hasPendingApplied = true;
+      continue;
+    }
+
     nextPageMap[author.authorMid] = Math.min(totalPages, Math.max(1, current));
   }
   byAuthorPageMap.value = nextPageMap;
+  pendingAuthorPageTargetMap.value = nextPendingMap;
 
   const nextJumpMap: Record<number, string> = {};
   for (const [rawMid, rawValue] of Object.entries(byAuthorPageJumpInputMap.value)) {
@@ -1375,6 +1438,12 @@ function syncAuthorPaginationStateWithFeed(): void {
     }
   }
   byAuthorPageLoadingMap.value = nextLoadingMap;
+
+  if (hasPendingApplied) {
+    void nextTick().then(() => {
+      updateByAuthorNavState();
+    });
+  }
 }
 
 function disconnectMixedTimelineResizeObserver(): void {
@@ -1661,6 +1730,10 @@ function startPoll(maxAttempts: number): void {
       stopPoll();
       generating.value = false;
       refreshing.value = false;
+      if (Object.keys(pendingAuthorPageTargetMap.value).length > 0) {
+        pendingAuthorPageTargetMap.value = {};
+        showErrorToast('分页任务仍在执行，请稍后重试目标页');
+      }
       return;
     }
 

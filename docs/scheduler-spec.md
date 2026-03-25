@@ -224,9 +224,9 @@ interface LikeActionTask extends SchedulerTaskBase {
 
 #### 3.4.5 前台调度边界（新增）
 
-1. 前台业务路径不得调用“指定作者/指定页”的补页接口（如 `ENSURE_AUTHOR_PAGE` 类能力）。
-2. 前台不得通过接口参数控制调度器内部策略（如强制 `failFast`、队首插入、通道选择、重试策略）。
-3. 前台可做的唯一刷新交互是“提交刷新意图”（例如 `MANUAL_REFRESH`），是否立即执行、先执行哪条任务、何时完成由调度器自行决定。
+1. 前台业务路径不得调用“同步补页并等待结果”的接口（如 `ENSURE_AUTHOR_PAGE` 类能力）。
+2. 前台可提交 `MANUAL_REFRESH` / `REQUEST_AUTHOR_PAGE` 等“刷新意图”，但不得通过参数控制调度器内部策略（如强制 `failFast`、队首插入、通道选择、重试策略）。
+3. 刷新意图仅表达“需要什么数据”，是否立即执行、先执行哪条任务、何时完成由调度器自行决定。
 4. 调试接口（如 `RUN_SCHEDULER_NOW`）仅用于调试面板，不得进入生产用户交互主路径。
 
 #### 3.4.6 新增分组自动刷新
@@ -367,6 +367,18 @@ interface ManualRefreshResponse {
 }
 ```
 
+新增作者分页意图消息（前台表达“想看第 N 页”，不等待执行完成）：
+
+```ts
+| { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number } }
+
+interface RequestAuthorPageResponse {
+  accepted: boolean;
+  status: 'queued' | 'cached' | 'no-more';
+  maxCachedPn?: number;
+}
+```
+
 新增调试触发消息：
 
 ```ts
@@ -472,6 +484,7 @@ interface SchedulerStatusResponse {
       | 'alarm-routine'
       | 'debug-run-now'
       | 'manual-refresh'
+      | 'request-author-page'
       | 'group-created-auto-refresh'
       | 'get-group-feed-missing-fav-cache'
       | 'get-group-feed-missing-author-cache'

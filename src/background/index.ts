@@ -35,6 +35,7 @@ import {
 } from '@/shared/storage/repository';
 import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
+  hasAuthorMorePages,
   increaseMixedTarget,
   makeSummary,
   markGroupRead,
@@ -758,6 +759,77 @@ async function handleClearAuthorReadMark(
   return { preference };
 }
 
+/**
+ * 提交“作者分页意图”到调度器：
+ * - 前台可表达“希望查看某作者某页”；
+ * - 具体拉取时机/顺序由调度器决定，接口本身不等待执行完成。
+ */
+async function handleRequestAuthorPage(
+  request: Extract<MessageRequest, { type: 'REQUEST_AUTHOR_PAGE' }>
+): Promise<ResponseMap['REQUEST_AUTHOR_PAGE']> {
+  const groupId = request.payload.groupId;
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  const pn = Math.max(1, Number(request.payload.pn) || 1);
+  if (!groupId) {
+    throw new Error('分组参数不合法');
+  }
+  if (!mid) {
+    throw new Error('作者参数不合法');
+  }
+
+  const [groups, settings, authorCacheMap] = await Promise.all([
+    loadGroups(),
+    loadSettings(),
+    getAuthorCacheSnapshot()
+  ]);
+
+  if (groupId === ALL_GROUP_ID) {
+    if (!settings.enableAllGroup) {
+      throw new Error('“全部”分组已关闭');
+    }
+  } else {
+    const group = groups.find((item) => item.groupId === groupId && item.enabled);
+    if (!group) {
+      throw new Error('分组不存在或已禁用');
+    }
+  }
+
+  const cache = authorCacheMap[mid];
+  if (cache?.pageState[pn]) {
+    return {
+      accepted: true,
+      status: 'cached',
+      maxCachedPn: cache.maxCachedPn
+    };
+  }
+
+  if (cache && !hasAuthorMorePages(cache) && pn > cache.maxCachedPn) {
+    return {
+      accepted: false,
+      status: 'no-more',
+      maxCachedPn: cache.maxCachedPn
+    };
+  }
+
+  enqueueBurst([
+    {
+      mid,
+      name: cache?.name?.trim() || String(mid),
+      groupId,
+      pn,
+      reason: 'load-more-boundary',
+      trigger: 'request-author-page',
+      failFast: false
+    }
+  ]);
+
+  return {
+    accepted: true,
+    status: 'queued',
+    maxCachedPn: cache?.maxCachedPn
+  };
+}
+
 async function handleGetAuthorPreferences(
   request: Extract<MessageRequest, { type: 'GET_AUTHOR_PREFERENCES' }>
 ): Promise<ResponseMap['GET_AUTHOR_PREFERENCES']> {
@@ -853,6 +925,8 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleSetAuthorReadMark(request));
     case 'CLEAR_AUTHOR_READ_MARK':
       return ok(await handleClearAuthorReadMark(request));
+    case 'REQUEST_AUTHOR_PAGE':
+      return ok(await handleRequestAuthorPage(request));
     case 'GET_AUTHOR_PREFERENCES':
       return ok(await handleGetAuthorPreferences(request));
     case 'MANUAL_REFRESH':

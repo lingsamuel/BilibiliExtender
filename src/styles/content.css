@@ -499,6 +499,7 @@ body.bbe-page-scroll-lock {
 .bbe-timeline-check {
   position: absolute;
   inset: 0;
+  bottom: 1px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
