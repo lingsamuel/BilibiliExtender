@@ -3021,7 +3021,7 @@ watch(visible, (nextVisible) => {
 });
 
 watch(
-  [mixedDayGroups, byAuthorNavItems, byAuthorVisibleVideosMap, mode, visible, byAuthorSortByLatest],
+  [mixedDayGroups, byAuthorNavItems, byAuthorVisibleVideosMap, mode, visible, byAuthorSortByLatest, loading, showGeneratingPlaceholder],
   async () => {
     if (!visible.value) {
       disconnectMixedTimelineResizeObserver();
@@ -3033,6 +3033,9 @@ watch(
     }
 
     await nextTick();
+    if (loading.value || showGeneratingPlaceholder.value) {
+      return;
+    }
     if (mode.value === 'mixed') {
       ensureMixedTimelineResizeObserver();
       updateMixedTimelineState();
