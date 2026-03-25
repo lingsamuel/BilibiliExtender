@@ -57,16 +57,19 @@
 - `extend_content` 仍作为 form 字段提交，继续交给 `URLSearchParams` 做 URL 编码；不要求保留抓包里“冒号未编码”的字面形态。
 - 当前阶段暂不使用页面桥接脚本，恢复为 background 发起关注请求。
 - 关注请求在发起前，由 DNR session rule 精确改写 `Origin`、`Referer`、`Sec-Fetch-Site`，其中 `Origin` 与 `Referer` 取自用户当前页面，`Sec-Fetch-Site` 固定为 `same-site`。
+- 该结论上升为项目约束：对 Bilibili 的 `POST` 写操作，默认应先接入 DNR 头改写；关注接口只是首个验证通过的落地点，不视为特例。
 
 ### 3.3 新增视频点赞/投币 API
 
 #### 3.3.1 点赞 API
 - 端点：`POST /x/web-interface/archive/like`
 - 入参：`aid|bvid`（二选一）、`like`（1 点赞 / 2 取消赞）、`csrf`
+- 请求策略：默认按“POST 写操作”处理，接入与关注同类的 DNR 头改写能力。
 
 #### 3.3.2 投币 API
 - 端点：`POST /x/web-interface/coin/add`
 - 入参：`aid|bvid`（二选一）、`multiply`（1/2）、`select_like`（0/1）、`csrf`
+- 请求策略：默认按“POST 写操作”处理，接入与关注同类的 DNR 头改写能力。
 
 ### 3.4 作者区域“一键点赞”按钮
 

@@ -58,6 +58,8 @@ docs/
 ## 权限说明
 - `host_permissions: https://*.bilibili.com/*`
   - 用于请求 Bilibili 接口（`credentials: include`）
+- `declarativeNetRequest`
+  - 用于在 Bilibili `POST` 写操作前改写关键来源头（如 `Origin`、`Referer`、`Sec-Fetch-Site`），降低扩展上下文触发风控的概率
 - `storage`
   - 保存分组、设置、运行时状态
 - `alarms`

@@ -497,6 +497,8 @@ interface GroupFeedCache {
 - 首选策略：通过扩展发起 `fetch(..., { credentials: 'include' })` 请求 Bilibili 域名接口，使用用户当前登录态 Cookie。
 - 权限：声明 `host_permissions` 覆盖 `*.bilibili.com` 必需域名。
 - 不主动导出/展示用户 Cookie 原文。
+- 对 Bilibili 的 `POST` 写操作，默认在 background 发起前通过 DNR 改写关键来源头，至少覆盖 `Origin`、`Referer`、`Sec-Fetch-Site`，避免请求表现为扩展上下文。
+- 若某个 `POST` 写操作在补齐业务参数后仍失败，优先检查该接口是否缺少 DNR 头改写，而不是直接假设 Cookie、CSRF 或请求体字段错误。
 
 ### 5.4 Bilibili API（首版拟定）
 - 登录与用户信息：用于确认登录态、拿到当前用户 `mid`。
@@ -509,6 +511,7 @@ interface GroupFeedCache {
 - 视频投币：`x/web-interface/coin/add`。
 
 说明：不同接口在 Web 端可能存在签名、分页、风控策略差异；实现阶段将封装可替换 API 适配层，保证后续可替换具体端点而不影响 UI 和核心逻辑。
+其中 `POST` 写接口默认视为“需要 DNR 上下文修正”的高风险接口，除非后续验证证明某接口可以稳定不依赖 DNR。
 
 ## 6. 数据结构（TypeScript）
 
