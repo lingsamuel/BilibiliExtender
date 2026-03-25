@@ -56,9 +56,7 @@ export const ALARM_NAMES = {
 export const EXTENSION_EVENT = {
   TOGGLE_DRAWER: 'bbe:toggle-drawer',
   OPEN_DRAWER: 'bbe:open-drawer',
-  UNREAD_CHANGED: 'bbe:unread-changed',
-  PAGE_BRIDGE_REQUEST: 'bbe:page-bridge-request',
-  PAGE_BRIDGE_RESPONSE: 'bbe:page-bridge-response'
+  UNREAD_CHANGED: 'bbe:unread-changed'
 } as const;
 
 export const VIRTUAL_GROUP_ID = {

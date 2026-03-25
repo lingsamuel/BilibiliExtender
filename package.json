@@ -1,13 +1,13 @@
 {
   "name": "bilibili-extender",
-  "version": "0.2.92",
+  "version": "0.2.93",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "npm run build:chromium && npm run build:firefox",
-    "build:chromium": "BROWSER_TARGET=chromium vite build && BROWSER_TARGET=chromium BUILD_TARGET=content vite build && BROWSER_TARGET=chromium BUILD_TARGET=page-bridge vite build && node scripts/write-manifest.mjs chromium",
-    "build:firefox": "BROWSER_TARGET=firefox vite build && BROWSER_TARGET=firefox BUILD_TARGET=content vite build && BROWSER_TARGET=firefox BUILD_TARGET=page-bridge vite build && node scripts/write-manifest.mjs firefox",
+    "build:chromium": "BROWSER_TARGET=chromium vite build && BROWSER_TARGET=chromium BUILD_TARGET=content vite build && node scripts/write-manifest.mjs chromium",
+    "build:firefox": "BROWSER_TARGET=firefox vite build && BROWSER_TARGET=firefox BUILD_TARGET=content vite build && node scripts/write-manifest.mjs firefox",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },

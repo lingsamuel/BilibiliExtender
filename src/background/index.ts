@@ -55,6 +55,9 @@ import {
 } from '@/background/scheduler';
 import { enqueueLikeBatchAndWait } from '@/background/like-scheduler';
 
+const FOLLOW_REQUEST_DNR_RULE_ID = 1001;
+const FOLLOW_REQUEST_DNR_RULE_PRIORITY = 10;
+
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
 }
@@ -131,6 +134,60 @@ function normalizeVideoTarget(payload: { aid?: number; bvid?: string }): { aid?:
     return { bvid };
   }
   throw new Error('视频参数不完整');
+}
+
+/**
+ * 为关注请求安装一次“仅命中 relation/modify”的 DNR 会话规则，
+ * 将扩展发起的请求头改写为贴近页面前端的上下文。
+ */
+async function installFollowRequestHeaderRule(pageOrigin: string, pageReferer: string): Promise<void> {
+  const safeOrigin = pageOrigin.trim();
+  const safeReferer = pageReferer.trim();
+  if (!safeOrigin || !safeReferer) {
+    throw new Error('页面上下文不完整');
+  }
+
+  if (!ext.declarativeNetRequest?.updateSessionRules) {
+    throw new Error('当前浏览器不支持 declarativeNetRequest');
+  }
+
+  const refererUrl = new URL(safeReferer);
+  refererUrl.hash = '';
+
+  await ext.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [FOLLOW_REQUEST_DNR_RULE_ID],
+    addRules: [
+      {
+        id: FOLLOW_REQUEST_DNR_RULE_ID,
+        priority: FOLLOW_REQUEST_DNR_RULE_PRIORITY,
+        action: {
+          type: 'modifyHeaders',
+          requestHeaders: [
+            {
+              header: 'origin',
+              operation: 'set',
+              value: safeOrigin
+            },
+            {
+              header: 'referer',
+              operation: 'set',
+              value: refererUrl.toString()
+            },
+            {
+              header: 'sec-fetch-site',
+              operation: 'set',
+              value: 'same-site'
+            }
+          ]
+        },
+        condition: {
+          regexFilter: '^https://api\\.bilibili\\.com/x/relation/modify(\\?.*)?$',
+          requestMethods: ['post'],
+          resourceTypes: ['xmlhttprequest']
+        }
+      }
+    ]
+  });
 }
 
 async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
@@ -560,15 +617,15 @@ async function handleFollowAuthor(
   const mid = request.payload.mid;
   const follow = request.payload.follow;
   const csrf = request.payload.csrf?.trim();
-  const skipRemoteRequest = request.payload.skipRemoteRequest === true;
+  const pageOrigin = request.payload.pageOrigin?.trim();
+  const pageReferer = request.payload.pageReferer?.trim();
 
-  if (!mid || (!skipRemoteRequest && !csrf)) {
+  if (!mid || !csrf || !pageOrigin || !pageReferer) {
     throw new Error('关注参数不完整');
   }
 
-  if (!skipRemoteRequest) {
-    await modifyUserRelation(mid, follow, csrf);
-  }
+  await installFollowRequestHeaderRule(pageOrigin, pageReferer);
+  await modifyUserRelation(mid, follow, csrf);
 
   const authorCacheMap = await getAuthorCacheSnapshot();
   const existing = authorCacheMap[mid];

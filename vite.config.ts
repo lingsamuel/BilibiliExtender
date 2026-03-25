@@ -34,27 +34,6 @@ const contentConfig = defineConfig({
   }
 });
 
-// 页面主世界桥接脚本：使用普通脚本形态注入站点页面，执行需要页面上下文的请求。
-const pageBridgeConfig = defineConfig({
-  plugins: [vue()],
-  resolve: sharedResolve,
-  build: {
-    outDir,
-    emptyOutDir: false,
-    rollupOptions: {
-      input: {
-        pageBridge: resolve(__dirname, 'src/content/page-bridge.ts')
-      },
-      output: {
-        format: 'iife',
-        entryFileNames: 'assets/page-bridge.js',
-        inlineDynamicImports: true,
-        assetFileNames: 'assets/[name][extname]'
-      }
-    }
-  }
-});
-
 // Background + Options：支持 ESM 的环境
 const mainConfig = defineConfig({
   plugins: [vue()],
@@ -81,11 +60,6 @@ const mainConfig = defineConfig({
   }
 });
 
-const activeConfig =
-  target === 'content'
-    ? contentConfig
-    : target === 'page-bridge'
-      ? pageBridgeConfig
-      : mainConfig;
+const activeConfig = target === 'content' ? contentConfig : mainConfig;
 
 export default activeConfig;

@@ -55,8 +55,8 @@
 
 说明：
 - `extend_content` 仍作为 form 字段提交，继续交给 `URLSearchParams` 做 URL 编码；不要求保留抓包里“冒号未编码”的字面形态。
-- 本次修复改为页面主世界发起关注请求：content script 注入桥接脚本，由页面上下文执行 `fetch`，尽量避免扩展后台请求暴露 `moz-extension://` 来源。
-- Background 仅负责在页面侧成功后同步 Card 信息与缓存，不再承担关注请求本身。
+- 当前阶段暂不使用页面桥接脚本，恢复为 background 发起关注请求。
+- 关注请求在发起前，由 DNR session rule 精确改写 `Origin`、`Referer`、`Sec-Fetch-Site`，其中 `Origin` 与 `Referer` 取自用户当前页面，`Sec-Fetch-Site` 固定为 `same-site`。
 
 ### 3.3 新增视频点赞/投币 API
 
