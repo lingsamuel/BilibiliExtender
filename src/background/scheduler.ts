@@ -93,6 +93,15 @@ export interface LikeBatchResult {
   failedBvids: string[];
 }
 
+export interface EnqueuedLikeBatch {
+  authorMid: number;
+  total: number;
+  queuedCount: number;
+  queuedBvids: string[];
+  skippedBvids: string[];
+  completion: Promise<LikeBatchResult>;
+}
+
 interface HistoryEntry {
   channel: 'author-video' | 'group-fav' | 'like-action';
   mid?: number;
@@ -1433,12 +1442,15 @@ export async function enqueueLikeActionAndWait(input: {
   return result.result;
 }
 
-export async function enqueueLikeBatchAndWait(
+export function enqueueLikeBatch(
   authorMid: number,
   videos: Array<{ aid: number; bvid: string }>,
   csrf: string,
-  pageContext: LikePageContext
-): Promise<LikeBatchResult> {
+  pageContext: LikePageContext,
+  options?: {
+    onTaskFinished?: (item: { task: LikeActionTask; result: LikeTaskWaiterResult }) => void | Promise<void>;
+  }
+): EnqueuedLikeBatch {
   const normalizedVideos = new Map<string, { aid: number; bvid: string }>();
   for (const video of videos) {
     const aid = Math.max(0, Math.floor(Number(video.aid) || 0));
@@ -1455,9 +1467,16 @@ export async function enqueueLikeBatchAndWait(
     return {
       authorMid,
       total: 0,
-      successCount: 0,
-      failedCount: 0,
-      failedBvids: []
+      queuedCount: 0,
+      queuedBvids: [],
+      skippedBvids: [],
+      completion: Promise.resolve({
+        authorMid,
+        total: 0,
+        successCount: 0,
+        failedCount: 0,
+        failedBvids: []
+      })
     };
   }
 
@@ -1485,28 +1504,53 @@ export async function enqueueLikeBatchAndWait(
 
   const waitJobs = tasks.map(async (task) => {
     const result = await waitForLikeTask(task);
+    if (options?.onTaskFinished) {
+      void Promise.resolve(options.onTaskFinished({ task, result })).catch((error) => {
+        console.warn('[BBE] 点赞任务进度回调失败 bvid:', task.bvid, error);
+      });
+    }
     return { task, result };
   });
   dedupeAndEnqueue(likeActionState, tasks, keyOfLikeTask, true);
   startLikeActionLoopIfIdle();
 
-  const settled = await Promise.all(waitJobs);
-  let successCount = 0;
-  for (const item of settled) {
-    if (item.result.ok) {
-      successCount += 1;
-      continue;
+  const completion = Promise.all(waitJobs).then((settled) => {
+    let successCount = 0;
+    for (const item of settled) {
+      if (item.result.ok) {
+        successCount += 1;
+        continue;
+      }
+      failedBvids.add(item.task.bvid);
     }
-    failedBvids.add(item.task.bvid);
-  }
+
+    return {
+      authorMid,
+      total: normalizedVideos.size,
+      successCount,
+      failedCount: failedBvids.size,
+      failedBvids: Array.from(failedBvids)
+    };
+  });
 
   return {
     authorMid,
     total: normalizedVideos.size,
-    successCount,
-    failedCount: failedBvids.size,
-    failedBvids: Array.from(failedBvids)
+    queuedCount: tasks.length,
+    queuedBvids: tasks.map((task) => task.bvid),
+    skippedBvids: Array.from(failedBvids),
+    completion
   };
+}
+
+export async function enqueueLikeBatchAndWait(
+  authorMid: number,
+  videos: Array<{ aid: number; bvid: string }>,
+  csrf: string,
+  pageContext: LikePageContext
+): Promise<LikeBatchResult> {
+  const batch = enqueueLikeBatch(authorMid, videos, csrf, pageContext);
+  return batch.completion;
 }
 
 async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {

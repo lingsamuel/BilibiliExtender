@@ -371,7 +371,12 @@ import {
   POLL_MAX_REFRESHING,
   VIRTUAL_GROUP_ID
 } from '@/shared/constants';
-import { sendMessage, type AuthorPageStatusMessage } from '@/shared/messages';
+import {
+  sendMessage,
+  type AuthorPageStatusMessage,
+  type BatchLikeStatusMessage,
+  type LikeTaskStatusMessage
+} from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import type { AuthorFeed, GroupFeedResult, GroupSummary, OverviewFilterKey, VideoItem, ViewMode } from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
@@ -1021,6 +1026,15 @@ function isAuthorLikePending(mid: number): boolean {
   return authorLikePendingMap.value[mid] === true;
 }
 
+function clearAuthorLikePending(mid: number): void {
+  if (!(mid in authorLikePendingMap.value)) {
+    return;
+  }
+  const next = { ...authorLikePendingMap.value };
+  delete next[mid];
+  authorLikePendingMap.value = next;
+}
+
 function isVideoLiked(bvid: string): boolean {
   return likedStateMap.value[bvid]?.liked === true;
 }
@@ -1244,6 +1258,7 @@ async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
     return;
   }
 
+  const prevStateMap = new Map(videos.map((video) => [video.bvid, likedStateMap.value[video.bvid]]));
   authorLikePendingMap.value = { ...authorLikePendingMap.value, [authorMid]: true };
   patchVideoLikeStates(videos.map((video) => ({ bvid: video.bvid, pending: true, liked: isVideoLiked(video.bvid) })));
   try {
@@ -1264,27 +1279,33 @@ async function batchLikeAuthorVisibleVideos(author: AuthorFeed): Promise<void> {
     if (!resp.ok || !resp.data) {
       throw new Error(resp.error ?? '一键点赞失败');
     }
-
-    if (resp.data.failedCount > 0) {
-      showErrorToast(`一键点赞完成：成功 ${resp.data.successCount}，失败 ${resp.data.failedCount}`);
+    const skippedBvids = new Set(resp.data.skippedBvids);
+    if (skippedBvids.size > 0) {
+      patchVideoLikeStates(
+        videos
+          .filter((video) => skippedBvids.has(video.bvid))
+          .map((video) => {
+            const prevState = prevStateMap.get(video.bvid);
+            return {
+              bvid: video.bvid,
+              liked: prevState?.liked ?? false,
+              pending: false,
+              likedAt: prevState?.likedAt
+            };
+          })
+      );
     }
 
-    const failedBvids = new Set(resp.data.failedBvids);
-    patchVideoLikeStates(
-      videos.map((video) => ({
-        bvid: video.bvid,
-        liked: !failedBvids.has(video.bvid),
-        pending: false,
-        likedAt: !failedBvids.has(video.bvid) ? Date.now() : undefined
-      }))
-    );
+    if (resp.data.queuedCount === 0) {
+      clearAuthorLikePending(authorMid);
+      if (resp.data.total > 0) {
+        showErrorToast('当前视频正在切换点赞状态，请稍后再试');
+      }
+    }
   } catch (error) {
     patchVideoLikeStates(videos.map((video) => ({ bvid: video.bvid, pending: false, liked: false })));
+    clearAuthorLikePending(authorMid);
     showErrorToast(error instanceof Error ? error.message : '一键点赞失败');
-  } finally {
-    const next = { ...authorLikePendingMap.value };
-    delete next[authorMid];
-    authorLikePendingMap.value = next;
   }
 }
 
@@ -1476,12 +1497,54 @@ function collectAllBvids(): string[] {
   return Array.from(bvids);
 }
 
+async function restoreLikeProgressState(currentBvids: string[]): Promise<void> {
+  if (currentBvids.length === 0) {
+    authorLikePendingMap.value = {};
+    return;
+  }
+
+  const resp = await sendMessage({ type: 'GET_SCHEDULER_STATUS' });
+  if (!resp.ok || !resp.data) {
+    return;
+  }
+
+  const pendingTasks = [
+    ...(resp.data.likeChannel.currentTask ? [resp.data.likeChannel.currentTask] : []),
+    ...resp.data.likeChannel.queue
+  ];
+  const keepBvids = new Set(currentBvids);
+  const nextAuthorLikePendingMap: Record<number, boolean> = {};
+  const patches: Array<{ bvid: string; liked?: boolean; pending?: boolean; likedAt?: number }> = [];
+
+  for (const task of pendingTasks) {
+    if (!keepBvids.has(task.bvid)) {
+      continue;
+    }
+
+    const prevState = likedStateMap.value[task.bvid];
+    patches.push({
+      bvid: task.bvid,
+      liked: prevState?.liked ?? false,
+      pending: true,
+      likedAt: prevState?.likedAt
+    });
+
+    if (task.source === 'author-batch-like' && task.action === 'like') {
+      nextAuthorLikePendingMap[task.authorMid] = true;
+    }
+  }
+
+  authorLikePendingMap.value = nextAuthorLikePendingMap;
+  patchVideoLikeStates(patches);
+}
+
 async function fetchClickedVideos(): Promise<void> {
   const bvids = collectAllBvids();
   if (bvids.length === 0) {
     clickedMap.value = {};
     reviewedOverrideMap.value = {};
     likedStateMap.value = {};
+    authorLikePendingMap.value = {};
     return;
   }
 
@@ -1518,6 +1581,7 @@ async function fetchClickedVideos(): Promise<void> {
     }
     likedStateMap.value = nextLikedStateMap;
   }
+  await restoreLikeProgressState(bvids);
 }
 
 function stopPoll(): void {
@@ -2879,17 +2943,68 @@ function onOpenDrawer(): void {
   void openDrawer();
 }
 
+function onDocumentVisibilityChange(): void {
+  if (document.hidden || !visible.value) {
+    return;
+  }
+  void fetchClickedVideos().catch(() => {
+    // 浏览器标签切回前台后的点赞态恢复失败时静默忽略，下次交互或刷新仍会再次收敛。
+  });
+}
+
+function handleLikeTaskStatusMessage(message: LikeTaskStatusMessage): void {
+  const { bvid, status, liked, likedAt } = message.payload;
+  if (status === 'success') {
+    patchVideoLikeStates([
+      {
+        bvid,
+        liked: liked === true,
+        pending: false,
+        likedAt: liked === true ? (likedAt ?? Date.now()) : undefined
+      }
+    ]);
+    return;
+  }
+
+  const prevState = likedStateMap.value[bvid];
+  patchVideoLikeStates([
+    {
+      bvid,
+      liked: prevState?.liked ?? false,
+      pending: false,
+      likedAt: prevState?.likedAt
+    }
+  ]);
+}
+
+function handleBatchLikeStatusMessage(message: BatchLikeStatusMessage): void {
+  clearAuthorLikePending(message.payload.authorMid);
+  if (message.payload.failedCount > 0) {
+    showErrorToast(`一键点赞完成：成功 ${message.payload.successCount}，失败 ${message.payload.failedCount}`);
+  }
+}
+
 function onRuntimeMessage(message: unknown): void {
   if (!message || typeof message !== 'object') {
     return;
   }
 
-  const nextMessage = message as Partial<AuthorPageStatusMessage>;
-  if (nextMessage.type !== 'AUTHOR_PAGE_STATUS' || !nextMessage.payload) {
+  const nextMessage = message as Partial<AuthorPageStatusMessage | LikeTaskStatusMessage | BatchLikeStatusMessage>;
+  if (!nextMessage.type || !nextMessage.payload) {
     return;
   }
 
-  handleAuthorPageStatusMessage(nextMessage as AuthorPageStatusMessage);
+  if (nextMessage.type === 'AUTHOR_PAGE_STATUS') {
+    handleAuthorPageStatusMessage(nextMessage as AuthorPageStatusMessage);
+    return;
+  }
+  if (nextMessage.type === 'LIKE_TASK_STATUS') {
+    handleLikeTaskStatusMessage(nextMessage as LikeTaskStatusMessage);
+    return;
+  }
+  if (nextMessage.type === 'BATCH_LIKE_STATUS') {
+    handleBatchLikeStatusMessage(nextMessage as BatchLikeStatusMessage);
+  }
 }
 
 watch(visible, (nextVisible) => {
@@ -2953,6 +3068,7 @@ onMounted(() => {
   window.addEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.addEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
   window.addEventListener('resize', onWindowResize);
+  document.addEventListener('visibilitychange', onDocumentVisibilityChange);
   ext.runtime.onMessage.addListener(onRuntimeMessage);
 
   void loadSummary().catch((error) => {
@@ -2971,6 +3087,7 @@ onUnmounted(() => {
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
   window.removeEventListener('resize', onWindowResize);
+  document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   ext.runtime.onMessage.removeListener(onRuntimeMessage);
   disconnectMixedTimelineResizeObserver();
 

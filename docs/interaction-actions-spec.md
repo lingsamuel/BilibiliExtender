@@ -91,7 +91,9 @@
    - 任务先入 `like-action` 通道；
    - 调度器按通道串行执行，避免瞬时并发导致风控；
    - 单条失败不中断后续任务；
-   - 结束后 toast 汇总成功/失败数量。
+   - 点击后只返回“已受理/已入队”结果，不等待整批任务全部完成；
+   - 后台每完成一条都要主动推送进度，前端即时刷新对应卡片；
+   - 整批结束后再推送一次汇总结果，用于 toast 展示成功/失败数量。
 4. 运行中按钮显示 loading 并禁用，避免重复触发同一作者批次。
 
 ### 3.5 VideoCard 点赞按钮与状态角标
@@ -115,8 +117,9 @@
 新增消息类型（命名可按现有风格调整）：
 - `LIKE_VIDEO`
 - `COIN_VIDEO`
-- `ENQUEUE_AUTHOR_VISIBLE_LIKES`
-- `GET_LIKE_SCHEDULER_STATUS`（调试可选）
+- `BATCH_LIKE_VIDEOS`
+- `LIKE_TASK_STATUS`（runtime message）
+- `BATCH_LIKE_STATUS`（runtime message）
 
 消息负载调整：
 - `LIKE_VIDEO`：新增 `pageOrigin`、`pageReferer`，用于安装单次请求级别的 DNR 规则。
@@ -125,6 +128,7 @@
 返回约定：
 - 与现有消息一致，统一 `{ ok, data?, error? }`。
 - 错误信息需可直接用于 toast 展示。
+- `BATCH_LIKE_VIDEOS` 只返回“本次已入队的任务集合”，不等待整批执行完成。
 
 ## 5. 点赞调度器设计
 
@@ -156,8 +160,11 @@ interface LikeTask {
    - `action='like'` => `like=1`
    - `action='unlike'` => `like=2`
 5. 单任务失败记录错误并继续下一条。
-6. 单卡点击可同步等待该任务完成后回写 UI；作者批量点赞在批次结束后返回汇总（成功数、失败数、失败明细）。
-7. 不影响现有 `author-video` / `group-fav` 刷新通道。
+6. 单卡点击可同步等待该任务完成后回写 UI；作者批量点赞只提交入队意图，不同步等待整批完成。
+7. 每条批量任务结束后，后台需主动向对应 content script 推送一条运行时消息，前端即时清除该卡片 pending 并回写 liked 状态。
+8. 批次全部结束后，后台再推送一条汇总消息，用于清除作者按钮 loading 并弹出汇总 toast。
+9. 前端在切换视图/分组或浏览器标签重新激活后，需要通过调度器状态接口重建当前仍在执行的点赞 pending 状态。
+10. 不影响现有 `author-video` / `group-fav` 刷新通道。
 
 ## 6. 数据结构建议
 
@@ -188,10 +195,11 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 ### 7.2 作者一键点赞
 1. 用户点击作者“一键点赞”。
 2. 收集该作者当前可见视频列表并入队。
-3. 调度器通过 `like-action` 通道串行点赞。
-4. 若点赞接口返回 `code=65006`（已赞过），按成功态处理：直接回写该视频 `liked=true`。
-5. 每条成功即回写该视频 `liked=true`，并将 `bvid -> likedAt` 写入 `storage.local`。
-6. 批次结束 toast 汇总结果。
+3. 后台立即返回“已受理/已入队”结果，前端保留作者按钮 loading，不等待整批执行完成。
+4. 调度器通过 `like-action` 通道串行点赞。
+5. 若点赞接口返回 `code=65006`（已赞过），按成功态处理：直接回写该视频 `liked=true`。
+6. 每条成功即回写该视频 `liked=true`，并将 `bvid -> likedAt` 写入 `storage.local`，同时主动推送进度消息给前端。
+7. 批次结束后后台推送汇总消息，前端清除作者按钮 loading，并按汇总结果决定是否 toast。
 
 ### 7.3 VideoCard 单卡点赞/取消点赞
 1. 用户点击某张 VideoCard 左下角拇指按钮。
@@ -211,6 +219,7 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 3. 点赞批次部分失败：成功项保留，失败项记录并汇总提示。
 4. 点赞态未命中本地状态时：不阻断页面渲染，按钮按“未点赞空心态”展示；不额外查询远端点赞态。
 5. 当前浏览器若不支持 `declarativeNetRequest.updateSessionRules`：点赞操作直接报错并 toast，不降级为无 DNR 写请求。
+6. 若前端在批量点赞过程中切换视图、分组或浏览器标签，返回后应能通过后台运行态与本地记录重新恢复“点赞中”与已完成项状态。
 
 ## 9. 验收标准
 
@@ -223,3 +232,4 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 7. 单卡点击可执行点赞与取消点赞，成功后即时回写 UI。
 8. 点赞请求会在执行前临时安装 DNR session rule，并通过后台串行门避免多条写请求并发时串用来源头。
 9. 仅插件内触发成功的点赞会写入 `storage.local`，刷新后 30 天内仍能恢复为已点赞态；取消点赞后对应记录会被删除。
+10. 作者“一键点赞”过程中，前端会随着每条任务完成实时刷新卡片状态，而不是等整批结束后一次性刷新。

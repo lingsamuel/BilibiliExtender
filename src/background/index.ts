@@ -7,9 +7,12 @@ import {
 } from '@/shared/api/bilibili';
 import type {
   AuthorPageStatusMessage,
+  BatchLikeStatusMessage,
+  LikeTaskStatusMessage,
   MessageRequest,
   MessageResponse,
-  ResponseMap
+  ResponseMap,
+  RuntimeMessage
 } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import {
@@ -52,8 +55,8 @@ import {
 } from '@/background/feed-service';
 import {
   enqueueBurst,
+  enqueueLikeBatch,
   enqueueLikeActionAndWait,
-  enqueueLikeBatchAndWait,
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
@@ -95,9 +98,9 @@ interface MissingAuthorTaskBuckets {
 
 const ALL_GROUP_ID = VIRTUAL_GROUP_ID.ALL;
 
-async function sendAuthorPageStatusMessage(
+async function sendRuntimeMessage(
   sender: chrome.runtime.MessageSender,
-  message: AuthorPageStatusMessage
+  message: RuntimeMessage
 ): Promise<void> {
   const tabId = sender.tab?.id;
   if (typeof tabId !== 'number') {
@@ -113,6 +116,27 @@ async function sendAuthorPageStatusMessage(
   } catch {
     // 页面已关闭、content script 不在场等情况直接忽略，前台仍有轮询兜底。
   }
+}
+
+async function sendAuthorPageStatusMessage(
+  sender: chrome.runtime.MessageSender,
+  message: AuthorPageStatusMessage
+): Promise<void> {
+  await sendRuntimeMessage(sender, message);
+}
+
+async function sendLikeTaskStatusMessage(
+  sender: chrome.runtime.MessageSender,
+  message: LikeTaskStatusMessage
+): Promise<void> {
+  await sendRuntimeMessage(sender, message);
+}
+
+async function sendBatchLikeStatusMessage(
+  sender: chrome.runtime.MessageSender,
+  message: BatchLikeStatusMessage
+): Promise<void> {
+  await sendRuntimeMessage(sender, message);
 }
 
 /**
@@ -743,21 +767,75 @@ async function handleBatchLikeVideos(
     return {
       authorMid,
       total: 0,
-      successCount: 0,
-      failedCount: 0,
-      failedBvids: []
+      queuedCount: 0,
+      queuedBvids: [],
+      skippedBvids: []
     };
   }
 
-  const result = await enqueueLikeBatchAndWait(authorMid, videos, csrf, {
+  const batch = enqueueLikeBatch(authorMid, videos, csrf, {
     tabId,
     pageOrigin,
     pageReferer
+  }, {
+    onTaskFinished: async ({ task, result }) => {
+      if (result.ok && result.result) {
+        const likedAt = result.result.liked ? Date.now() : undefined;
+        if (result.result.liked && likedAt) {
+          await recordVideoLiked(result.result.bvid, likedAt);
+        } else {
+          await clearVideoLiked(result.result.bvid);
+        }
+        await sendLikeTaskStatusMessage(sender, {
+          type: 'LIKE_TASK_STATUS',
+          payload: {
+            authorMid: result.result.authorMid,
+            bvid: result.result.bvid,
+            source: result.result.source,
+            status: 'success',
+            liked: result.result.liked,
+            likedAt
+          }
+        });
+        return;
+      }
+
+      await sendLikeTaskStatusMessage(sender, {
+        type: 'LIKE_TASK_STATUS',
+        payload: {
+          authorMid: task.authorMid,
+          bvid: task.bvid,
+          source: task.source,
+          status: 'failed',
+          error: result.error
+        }
+      });
+    }
   });
-  const failedBvids = new Set(result.failedBvids);
-  const succeededVideos = videos.filter((video) => !failedBvids.has(video.bvid));
-  await Promise.all(succeededVideos.map((video) => recordVideoLiked(video.bvid, Date.now())));
-  return result;
+  void batch.completion
+    .then(async (result) => {
+      await sendBatchLikeStatusMessage(sender, {
+        type: 'BATCH_LIKE_STATUS',
+        payload: {
+          authorMid: result.authorMid,
+          total: result.total,
+          successCount: result.successCount,
+          failedCount: result.failedCount,
+          failedBvids: result.failedBvids
+        }
+      });
+    })
+    .catch((error) => {
+      console.warn('[BBE] 批量点赞完成通知失败:', error);
+    });
+
+  return {
+    authorMid: batch.authorMid,
+    total: batch.total,
+    queuedCount: batch.queuedCount,
+    queuedBvids: batch.queuedBvids,
+    skippedBvids: batch.skippedBvids
+  };
 }
 
 async function handleRecordVideoClick(

@@ -99,6 +99,39 @@ export interface AuthorPageStatusMessage {
   payload: AuthorPageStatusPayload;
 }
 
+export interface LikeTaskStatusPayload {
+  authorMid: number;
+  bvid: string;
+  source: 'single-card-toggle' | 'author-batch-like';
+  status: 'success' | 'failed';
+  liked?: boolean;
+  likedAt?: number;
+  error?: string;
+}
+
+export interface LikeTaskStatusMessage {
+  type: 'LIKE_TASK_STATUS';
+  payload: LikeTaskStatusPayload;
+}
+
+export interface BatchLikeStatusPayload {
+  authorMid: number;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  failedBvids: string[];
+}
+
+export interface BatchLikeStatusMessage {
+  type: 'BATCH_LIKE_STATUS';
+  payload: BatchLikeStatusPayload;
+}
+
+export type RuntimeMessage =
+  | AuthorPageStatusMessage
+  | LikeTaskStatusMessage
+  | BatchLikeStatusMessage;
+
 export type SchedulerAuthorTaskReason = 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
 export type SchedulerTaskReason =
   | SchedulerAuthorTaskReason
@@ -270,9 +303,9 @@ export interface ResponseMap {
   BATCH_LIKE_VIDEOS: {
     authorMid: number;
     total: number;
-    successCount: number;
-    failedCount: number;
-    failedBvids: string[];
+    queuedCount: number;
+    queuedBvids: string[];
+    skippedBvids: string[];
   };
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
