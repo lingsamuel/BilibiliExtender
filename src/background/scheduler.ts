@@ -32,7 +32,7 @@ import {
   type AuthorCacheMap,
   type MixedUsedPageItem
 } from '@/background/feed-service';
-import { getMyCreatedFolders, likeVideo } from '@/shared/api/bilibili';
+import { BilibiliApiError, getMyCreatedFolders, likeVideo } from '@/shared/api/bilibili';
 import { runWithLikeRequestHeaders } from '@/background/request-dnr';
 import { WbiExpiredError } from '@/shared/utils/wbi';
 
@@ -812,16 +812,31 @@ async function runLikeTask(task: LikeActionTask): Promise<LikeTaskResult> {
     throw new Error('点赞参数不完整');
   }
 
-  await runWithLikeRequestHeaders(task.pageContext.pageOrigin, task.pageContext.pageReferer, async () => {
-    await likeVideo(
-      {
+  try {
+    await runWithLikeRequestHeaders(task.pageContext.pageOrigin, task.pageContext.pageReferer, async () => {
+      await likeVideo(
+        {
+          aid: task.aid,
+          bvid: task.bvid
+        },
+        task.action === 'like',
+        csrf
+      );
+    });
+  } catch (error) {
+    // 65006 表示服务端已经处于“已点赞”状态。这里直接回写 liked=true，
+    // 避免把用户当前的“点赞”意图误处理成一次取消赞。
+    if (task.action === 'like' && error instanceof BilibiliApiError && error.code === 65006) {
+      return {
         aid: task.aid,
-        bvid: task.bvid
-      },
-      task.action === 'like',
-      csrf
-    );
-  });
+        bvid: task.bvid,
+        liked: true,
+        authorMid: task.authorMid,
+        source: task.source
+      };
+    }
+    throw error;
+  }
 
   return {
     aid: task.aid,

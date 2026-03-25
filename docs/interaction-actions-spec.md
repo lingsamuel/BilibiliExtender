@@ -189,18 +189,20 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 1. 用户点击作者“一键点赞”。
 2. 收集该作者当前可见视频列表并入队。
 3. 调度器通过 `like-action` 通道串行点赞。
-4. 每条成功即回写该视频 `liked=true`，并将 `bvid -> likedAt` 写入 `storage.local`。
-5. 批次结束 toast 汇总结果。
+4. 若点赞接口返回 `code=65006`（已赞过），按成功态处理：直接回写该视频 `liked=true`。
+5. 每条成功即回写该视频 `liked=true`，并将 `bvid -> likedAt` 写入 `storage.local`。
+6. 批次结束 toast 汇总结果。
 
 ### 7.3 VideoCard 单卡点赞/取消点赞
 1. 用户点击某张 VideoCard 左下角拇指按钮。
 2. 前端根据当前本地状态决定目标动作：未点赞则提交 `like`，已点赞则提交 `unlike`。
 3. 消息携带 `pageOrigin`、`pageReferer`；background 在真正发起单次写请求前临时安装 DNR session rule，请求结束后立即清理。
 4. 调度器将该任务作为 `like-action` 优先任务串行执行。
-5. 成功后本地回写该视频 `liked=true/false`：
+5. 若点赞接口返回 `code=65006`（已赞过），按成功态处理并回写 `liked=true`。
+6. 成功后本地回写该视频 `liked=true/false`：
    - 点赞成功：写入 `storage.local`，保留 30 天；
    - 取消点赞成功：删除该 `bvid` 的本地记录。
-6. 失败则保留旧状态并 toast 提示。
+7. 失败则保留旧状态并 toast 提示。
 
 ## 8. 错误与降级
 

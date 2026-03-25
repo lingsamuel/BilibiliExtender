@@ -19,6 +19,18 @@ interface ApiResponse<T> {
   data: T;
 }
 
+export class BilibiliApiError extends Error {
+  readonly code: number;
+  readonly apiMessage: string;
+
+  constructor(code: number, message: string) {
+    super(`接口错误: ${code} ${message}`);
+    this.name = 'BilibiliApiError';
+    this.code = code;
+    this.apiMessage = message;
+  }
+}
+
 interface NavData {
   isLogin: boolean;
   mid: number;
@@ -118,7 +130,7 @@ async function fetchApi<T>(
   const payload = (await response.json()) as ApiResponse<T>;
 
   if (payload.code !== 0) {
-    throw new Error(`接口错误: ${payload.code} ${payload.message}`);
+    throw new BilibiliApiError(payload.code, payload.message);
   }
 
   return payload;
@@ -157,7 +169,7 @@ async function postApi<T>(
 
   const payload = (await response.json()) as ApiResponse<T>;
   if (payload.code !== 0) {
-    throw new Error(`接口错误: ${payload.code} ${payload.message}`);
+    throw new BilibiliApiError(payload.code, payload.message);
   }
   return payload;
 }
