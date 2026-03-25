@@ -634,9 +634,9 @@ body.bbe-page-scroll-lock {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid #f3c7d7;
-  background: #fff7fa;
-  color: #d783a3;
+  border: 1px solid #d7e1ef;
+  background: #fff;
+  color: #a4b1c6;
   cursor: pointer;
   transition:
     transform 0.16s ease,
@@ -647,8 +647,9 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-like-toggle:hover {
-  border-color: #eaa2bc;
-  background: #ffeef4;
+  border-color: #b8c7db;
+  background: #f5f8fc;
+  color: #7f90a7;
   transform: translateY(-1px);
 }
 
