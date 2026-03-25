@@ -95,6 +95,7 @@
           <div class="bbe-mixed-layout">
             <aside
               v-if="mixedTimelineItems.length > 0"
+              ref="mixedTimelineRef"
               class="bbe-timeline"
               :style="mixedTimelineStyle"
               aria-label="时间轴"
@@ -165,21 +166,20 @@
                   </div>
                 </section>
               </template>
-
-              <div v-if="!loading && !loadingMore && !generating && feed?.hasMoreForMixed" class="bbe-load-more-row">
-                <button
-                  type="button"
-                  class="bbe-btn"
-                  :disabled="loadingMore || loading || generating"
-                  @click="onLoadMoreClick"
-                >
-                  加载更多
-                </button>
-              </div>
-              <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
-              <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
             </div>
           </div>
+          <div v-if="!loading && !loadingMore && !generating && feed?.hasMoreForMixed" class="bbe-load-more-row">
+            <button
+              type="button"
+              class="bbe-btn"
+              :disabled="loadingMore || loading || generating"
+              @click="onLoadMoreClick"
+            >
+              加载更多
+            </button>
+          </div>
+          <div v-if="loadingMore" class="bbe-empty">正在加载更多...</div>
+          <div v-else-if="!feed.hasMoreForMixed" class="bbe-empty">没有更多内容了</div>
         </template>
 
         <template v-else>
@@ -490,6 +490,7 @@ const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
 const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
 const pendingAuthorPageTargetMap = ref<Record<number, number>>({});
 const mixedDaySectionElements = new Map<string, HTMLElement>();
+const mixedTimelineRef = ref<HTMLElement | null>(null);
 const mixedSectionsRef = ref<HTMLElement | null>(null);
 const mixedDayInViewMap = ref<Record<string, boolean>>({});
 const mixedTimelineNodeTopMap = ref<Record<string, number>>({});
@@ -1650,16 +1651,28 @@ function updateMixedTimelineState(): void {
   }
 
   const container = listRef.value;
+  const timelineEl = mixedTimelineRef.value;
   const groups = mixedDayGroups.value;
-  if (!container || groups.length === 0) {
+  if (!container || !timelineEl || groups.length === 0) {
     resetMixedTimelineState();
     return;
   }
 
-  const scrollTop = container.scrollTop;
+  const containerRect = container.getBoundingClientRect();
+  const timelineRect = timelineEl.getBoundingClientRect();
   const timelineHeight = Math.max(container.clientHeight, MIXED_TIMELINE_EDGE_PADDING * 2 + 1);
-  const viewBottom = scrollTop + timelineHeight;
-  const sectionsOffsetTop = mixedSectionsRef.value?.offsetTop ?? 0;
+  const viewTopPx = containerRect.top;
+  const viewBottomPx = containerRect.bottom;
+  /**
+   * 时间线节点最终写入的是“相对 sticky 盒子自身顶部”的坐标。
+   * 当 sticky 在列表底部被浏览器上推时，盒子 top 会发生位移，
+   * 因此必须基于真实 DOM 几何，而不能继续假设它始终贴着滚动容器顶部。
+   */
+  const visibleTimelineTopInBox = Math.max(0, viewTopPx - timelineRect.top);
+  const visibleTimelineBottomInBox = Math.max(
+    visibleTimelineTopInBox + 1,
+    Math.min(timelineHeight, viewBottomPx - timelineRect.top)
+  );
   const nextInViewMap: Record<string, boolean> = {};
   const nextNodeTopMap: Record<string, number> = {};
   const inViewIndexes: number[] = [];
@@ -1675,22 +1688,21 @@ function updateMixedTimelineState(): void {
     }
     measuredCount++;
 
-    const sectionTop = sectionsOffsetTop + sectionEl.offsetTop;
-    const sectionBottom = sectionTop + sectionEl.offsetHeight;
-    const visibleTop = Math.max(sectionTop, scrollTop);
-    const visibleBottom = Math.min(sectionBottom, viewBottom);
+    const sectionRect = sectionEl.getBoundingClientRect();
+    const visibleTop = Math.max(sectionRect.top, viewTopPx);
+    const visibleBottom = Math.min(sectionRect.bottom, viewBottomPx);
     const visibleHeight = Math.max(0, visibleBottom - visibleTop);
-    const sectionHeight = Math.max(1, sectionEl.offsetHeight);
+    const sectionHeight = Math.max(1, sectionRect.height);
     const visibleRatio = visibleHeight / sectionHeight;
     const inView = visibleRatio > MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD;
     nextInViewMap[group.dayKey] = inView;
     if (inView) {
       inViewIndexes.push(index);
-      inViewTopMap.set(index, sectionTop - scrollTop + 8);
+      inViewTopMap.set(index, sectionRect.top - timelineRect.top + 8);
     }
 
     // 以“可视区域顶部遇到的第一个日期段”为主日期，驱动时间轴压缩窗口。
-    if (focusIndex < 0 && sectionBottom > scrollTop + 1) {
+    if (focusIndex < 0 && sectionRect.bottom > viewTopPx + 1) {
       focusIndex = index;
     }
   }
@@ -1704,11 +1716,15 @@ function updateMixedTimelineState(): void {
       MIXED_TIMELINE_WINDOW_RADIUS
     );
     const range = Math.max(1, fallbackEnd - fallbackStart);
+    const availableHeight = Math.max(
+      0,
+      visibleTimelineBottomInBox - visibleTimelineTopInBox - MIXED_TIMELINE_EDGE_PADDING * 2
+    );
     const fallbackNodeTopMap: Record<string, number> = {};
     for (let index = fallbackStart; index <= fallbackEnd; index++) {
       const ratio = (index - fallbackStart) / range;
       fallbackNodeTopMap[groups[index].dayKey] =
-        MIXED_TIMELINE_EDGE_PADDING + ratio * (timelineHeight - MIXED_TIMELINE_EDGE_PADDING * 2);
+        visibleTimelineTopInBox + MIXED_TIMELINE_EDGE_PADDING + ratio * availableHeight;
     }
     mixedTimelineNodeTopMap.value = fallbackNodeTopMap;
     mixedTimelineWindow.value = { start: fallbackStart, end: fallbackEnd };
@@ -1736,21 +1752,22 @@ function updateMixedTimelineState(): void {
     const topCompressedCount = Math.max(0, firstVisibleIndex - start);
     const bottomCompressedCount = Math.max(0, end - lastVisibleIndex);
 
-    const topDockStart = MIXED_TIMELINE_EDGE_PADDING;
+    const topDockStart = visibleTimelineTopInBox + MIXED_TIMELINE_EDGE_PADDING;
     const topDockEnd =
       topCompressedCount > 0
         ? topDockStart + (topCompressedCount - 1) * MIXED_TIMELINE_OUTSIDE_GAP
         : topDockStart;
     const bottomDockStart =
       bottomCompressedCount > 0
-        ? timelineHeight - MIXED_TIMELINE_EDGE_PADDING - (bottomCompressedCount - 1) * MIXED_TIMELINE_OUTSIDE_GAP
-        : timelineHeight - MIXED_TIMELINE_EDGE_PADDING;
+        ? visibleTimelineBottomInBox - MIXED_TIMELINE_EDGE_PADDING - (bottomCompressedCount - 1) * MIXED_TIMELINE_OUTSIDE_GAP
+        : visibleTimelineBottomInBox - MIXED_TIMELINE_EDGE_PADDING;
 
-    const topInViewBound = topCompressedCount > 0 ? topDockEnd + MIXED_TIMELINE_OUTSIDE_GAP : MIXED_TIMELINE_EDGE_PADDING;
+    const topInViewBound =
+      topCompressedCount > 0 ? topDockEnd + MIXED_TIMELINE_OUTSIDE_GAP : visibleTimelineTopInBox + MIXED_TIMELINE_EDGE_PADDING;
     const bottomInViewBound =
       bottomCompressedCount > 0
         ? bottomDockStart - MIXED_TIMELINE_OUTSIDE_GAP
-        : timelineHeight - MIXED_TIMELINE_EDGE_PADDING;
+        : visibleTimelineBottomInBox - MIXED_TIMELINE_EDGE_PADDING;
     let minInViewTop = topInViewBound;
     let maxInViewTop = bottomInViewBound;
     if (minInViewTop > maxInViewTop) {
@@ -1786,10 +1803,14 @@ function updateMixedTimelineState(): void {
       MIXED_TIMELINE_WINDOW_RADIUS
     );
     const range = Math.max(1, fallbackEnd - fallbackStart);
+    const availableHeight = Math.max(
+      0,
+      visibleTimelineBottomInBox - visibleTimelineTopInBox - MIXED_TIMELINE_EDGE_PADDING * 2
+    );
     for (let index = fallbackStart; index <= fallbackEnd; index++) {
       const ratio = (index - fallbackStart) / range;
       nextNodeTopMap[groups[index].dayKey] =
-        MIXED_TIMELINE_EDGE_PADDING + ratio * (timelineHeight - MIXED_TIMELINE_EDGE_PADDING * 2);
+        visibleTimelineTopInBox + MIXED_TIMELINE_EDGE_PADDING + ratio * availableHeight;
     }
   }
 
