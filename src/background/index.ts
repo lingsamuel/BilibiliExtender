@@ -560,12 +560,15 @@ async function handleFollowAuthor(
   const mid = request.payload.mid;
   const follow = request.payload.follow;
   const csrf = request.payload.csrf?.trim();
+  const skipRemoteRequest = request.payload.skipRemoteRequest === true;
 
-  if (!mid || !csrf) {
+  if (!mid || (!skipRemoteRequest && !csrf)) {
     throw new Error('关注参数不完整');
   }
 
-  await modifyUserRelation(mid, follow, csrf);
+  if (!skipRemoteRequest) {
+    await modifyUserRelation(mid, follow, csrf);
+  }
 
   const authorCacheMap = await getAuthorCacheSnapshot();
   const existing = authorCacheMap[mid];

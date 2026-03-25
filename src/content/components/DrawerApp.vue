@@ -371,6 +371,7 @@ import type { AuthorFeed, GroupFeedResult, GroupSummary, OverviewFilterKey, Vide
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
+import { followAuthorViaPageContext } from '@/content/utils/page-context';
 import {
   buildMixedDayGroups,
   buildTimelineWindow,
@@ -1128,12 +1129,15 @@ async function toggleAuthorFollow(author: AuthorFeed): Promise<void> {
   });
 
   try {
+    await followAuthorViaPageContext(mid, nextFollowing, csrf);
+
     const resp = await sendMessage({
       type: 'FOLLOW_AUTHOR',
       payload: {
         mid,
         follow: nextFollowing,
-        csrf
+        csrf,
+        skipRemoteRequest: true
       }
     });
 

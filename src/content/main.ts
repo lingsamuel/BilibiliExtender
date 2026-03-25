@@ -1,5 +1,6 @@
 import { createApp } from 'vue';
 import DrawerApp from '@/content/components/DrawerApp.vue';
+import { ensurePageBridgeReady } from '@/content/utils/page-context';
 import { EXTENSION_EVENT } from '@/shared/constants';
 import '@/styles/content.css';
 
@@ -219,6 +220,7 @@ function bindUnreadDot(): void {
 
 function bootstrap(): void {
   bindUnreadDot();
+  void ensurePageBridgeReady();
   const root = createRoot();
   createApp(DrawerApp).mount(root);
   startInjectNavEntry();

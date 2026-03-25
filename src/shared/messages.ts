@@ -32,7 +32,7 @@ export type MessageRequest =
   | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
-  | { type: 'FOLLOW_AUTHOR'; payload: { mid: number; follow: boolean; csrf: string } }
+  | { type: 'FOLLOW_AUTHOR'; payload: { mid: number; follow: boolean; csrf: string; skipRemoteRequest?: boolean } }
   | { type: 'LIKE_VIDEO'; payload: { aid?: number; bvid?: string; like: boolean; csrf: string } }
   | { type: 'COIN_VIDEO'; payload: { aid?: number; bvid?: string; multiply: number; selectLike?: boolean; csrf: string } }
   | { type: 'BATCH_LIKE_VIDEOS'; payload: { authorMid: number; videos: Array<{ aid: number; bvid: string }>; csrf: string } }
