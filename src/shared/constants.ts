@@ -34,7 +34,7 @@ export const MIXED_LOAD_INCREMENT = 20;
 export const MAX_READ_MARK_COUNT = 10;
 export const CLICKED_VIDEO_EXPIRE_DAYS = 30;
 // 作者投稿接口每页条数（对应 getUploaderVideos 的 ps 参数）
-export const AUTHOR_VIDEOS_PAGE_SIZE = 20;
+export const AUTHOR_VIDEOS_PAGE_SIZE = 24;
 
 // 调度器每批任务数的默认值（可被设置项覆盖）
 export const BG_REFRESH_BATCH_SIZE_DEFAULT = 10;
