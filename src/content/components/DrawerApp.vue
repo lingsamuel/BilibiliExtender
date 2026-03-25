@@ -2021,9 +2021,14 @@ function updateByAuthorNavState(): void {
     const titleEl = sectionEl.querySelector('.bbe-author-title');
     if (titleEl instanceof HTMLElement) {
       const titleRect = titleEl.getBoundingClientRect();
-      const reachedStickyTop = titleRect.top <= stickyTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
-      const hasStickyRoom = sectionBottomPx - titleRect.height > stickyTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
-      nextStickyTitleMap[author.authorMid] = reachedStickyTop && hasStickyRoom;
+      /**
+       * sticky 视觉态的判定需要覆盖两个边界：
+       * 1. 作者分段顶部必须已经真正越过吸顶线，避免首个作者初始刚好贴线时被误判为 sticky；
+       * 2. 标题只要仍有一部分留在可视区内，就继续保留 sticky 样式，避免被下一段顶走的过渡阶段过早退化。
+       */
+      const sectionPassedStickyTop = sectionTopPx < stickyTopPx - AUTHOR_TITLE_STICKY_EPSILON_PX;
+      const titleStillVisible = titleRect.bottom > viewTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
+      nextStickyTitleMap[author.authorMid] = sectionPassedStickyTop && titleStillVisible;
     }
 
     if (activeMid === null && visibleRatio > BY_AUTHOR_VISIBLE_RATIO_THRESHOLD) {
