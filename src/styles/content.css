@@ -661,7 +661,6 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-like-toggle:disabled {
-  cursor: wait;
 }
 
 .bbe-like-toggle.pending {
@@ -825,7 +824,6 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-like-btn.loading {
   opacity: 0.65;
-  cursor: wait;
 }
 
 .bbe-author-grid {
