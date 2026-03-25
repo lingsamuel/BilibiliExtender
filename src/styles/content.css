@@ -5,6 +5,8 @@
   pointer-events: none;
   font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --bbe-by-author-nav-offset: 88px;
+  --bbe-brand-color: #00AEEC;
+  --bbe-brand-color-hover: #40C5F1;
   --bbe-theme-color: #fb7299;
   --bbe-theme-color-rgb: 251 114 153;
 }
@@ -784,10 +786,10 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-author-follow-btn {
-  border: 1px solid var(--bbe-theme-color);
-  border-radius: 999px;
-  background: #fff1f5;
-  color: var(--bbe-theme-color);
+  border: 1px solid var(--bbe-brand-color);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--bbe-brand-color);
   padding: 3px 10px;
   font-size: 12px;
   line-height: 1.5;
@@ -889,7 +891,9 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-author-follow-btn:hover {
-  background: #ffe5ee;
+  border-color: var(--bbe-brand-color-hover);
+  background: var(--bbe-brand-color-hover);
+  color: #fff;
 }
 
 .bbe-author-follow-btn.followed {
