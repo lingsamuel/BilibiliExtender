@@ -5,6 +5,7 @@
   pointer-events: none;
   font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --bbe-by-author-nav-offset: 88px;
+  --bbe-author-sticky-top: 8px;
   --bbe-brand-color: #00AEEC;
   --bbe-brand-color-hover: #40C5F1;
   --bbe-theme-color: #fb7299;
@@ -734,10 +735,19 @@ body.bbe-page-scroll-lock {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: 6px;
   font-size: 14px;
   font-weight: 600;
-  margin: 0 0 8px;
+  position: sticky;
+  top: var(--bbe-author-sticky-top);
+  z-index: 6;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #e4ebf3;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 0 8px 20px rgb(31 42 55 / 10%);
+  backdrop-filter: blur(10px);
 }
 
 .bbe-author-title-main {
@@ -752,7 +762,7 @@ body.bbe-page-scroll-lock {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -767,7 +777,8 @@ body.bbe-page-scroll-lock {
 .bbe-author-title-note {
   font-size: 12px;
   font-weight: 400;
-  color: #8f98a8;
+  color: #738097;
+  padding-left: 36px;
 }
 
 .bbe-author-link {
@@ -775,14 +786,19 @@ body.bbe-page-scroll-lock {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 0 1 auto;
-  max-width: 360px;
+  flex: 1 1 auto;
+  max-width: 420px;
   color: #1f2329;
   text-decoration: none;
 }
 
 .bbe-author-link:hover {
   color: #00a1d6;
+}
+
+.bbe-author-link .bbe-avatar,
+.bbe-author-link .bbe-avatar-placeholder {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px #dce6f2;
 }
 
 .bbe-author-follow-btn {
@@ -1073,7 +1089,9 @@ body.bbe-page-scroll-lock {
   align-items: center;
   gap: 6px;
   margin-top: auto;
-  padding-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid #f1f4f8;
+  min-height: 30px;
 }
 
 .bbe-card-author-info {
@@ -1107,7 +1125,8 @@ body.bbe-page-scroll-lock {
 
 .bbe-card-author-name {
   font-size: 12px;
-  color: #5a6577;
+  color: #4d5a6e;
+  font-weight: 500;
   line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1116,7 +1135,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-card-author-date {
   font-size: 11px;
-  color: #9aa4b5;
+  color: #8793a6;
   line-height: 1.3;
 }
 
@@ -1308,6 +1327,10 @@ body.bbe-page-scroll-lock {
     margin-left: 0;
     width: 100%;
     justify-content: flex-end;
+  }
+
+  .bbe-author-title-note {
+    padding-left: 0;
   }
 }
 
