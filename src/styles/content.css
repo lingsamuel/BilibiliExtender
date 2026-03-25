@@ -731,6 +731,11 @@ body.bbe-page-scroll-lock {
   margin-bottom: 18px;
 }
 
+.bbe-author-scroll-anchor {
+  height: 0;
+  pointer-events: none;
+}
+
 .bbe-author-title {
   display: flex;
   flex-direction: column;

@@ -212,6 +212,7 @@
                 :ref="(el) => bindByAuthorSection(author.authorMid, el)"
                 class="bbe-author-section"
               >
+                <div class="bbe-author-scroll-anchor" aria-hidden="true" />
                 <h3
                   class="bbe-author-title"
                   :class="{ 'is-stuck': isAuthorTitleStuck(author.authorMid) }"
@@ -1983,19 +1984,13 @@ function updateByAuthorNavState(): void {
     return;
   }
 
-  const listRect = container.getBoundingClientRect();
-  const listPaddingTopPx = Number.parseFloat(window.getComputedStyle(container).paddingTop) || 0;
   const mainEl = container.closest('.bbe-main');
   const toolbarEl = mainEl?.querySelector('.bbe-toolbar');
+  const listRect = container.getBoundingClientRect();
   const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
   const viewTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
   const viewBottomPx = listRect.bottom;
-  /**
-   * sticky 标题的 top 是相对于滚动容器的 padding box，而不是容器边框。
-   * `.bbe-list` 自身有 `padding-top: 12px`，因此若这里只加 top: 8px，
-   * 会比真实吸顶位置少算 12px，导致标题已经 sticky 但样式状态仍未切换。
-   */
-  const stickyTopPx = listRect.top + listPaddingTopPx + AUTHOR_TITLE_STICKY_TOP_OFFSET_PX;
+  const stickyTopPx = resolveByAuthorStickyTopPx(container, toolbarEl);
 
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
@@ -2069,6 +2064,20 @@ function updateByAuthorNavState(): void {
 
 function isAuthorTitleStuck(authorMid: number): boolean {
   return byAuthorStickyTitleMap.value[authorMid] === true;
+}
+
+/**
+ * 统一计算“按作者”标题真正的 sticky 停靠线：
+ * - 先扣除工具栏遮挡；
+ * - 再加上滚动容器自身的 padding-top；
+ * - 最后叠加标题的 sticky top 偏移。
+ */
+function resolveByAuthorStickyTopPx(container: HTMLElement, toolbarEl: Element | null): number {
+  const listRect = container.getBoundingClientRect();
+  const listPaddingTopPx = Number.parseFloat(window.getComputedStyle(container).paddingTop) || 0;
+  const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
+  const visibleTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
+  return visibleTopPx + listPaddingTopPx + AUTHOR_TITLE_STICKY_TOP_OFFSET_PX;
 }
 
 function startAuthorPagePoll(maxAttempts: number): void {
@@ -2880,21 +2889,21 @@ function scrollToAuthor(authorMid: number): void {
     return;
   }
 
-  const titleEl = sectionEl.querySelector('.bbe-author-title');
-  const anchorEl = titleEl instanceof HTMLElement ? titleEl : sectionEl;
-  const listRect = container.getBoundingClientRect();
   const mainEl = container.closest('.bbe-main');
   const toolbarEl = mainEl?.querySelector('.bbe-toolbar');
+  const anchorEl = sectionEl.querySelector('.bbe-author-scroll-anchor');
+  if (!(anchorEl instanceof HTMLElement)) {
+    return;
+  }
   /**
-   * 修正“按作者跳转”被工具栏遮挡的问题：
-   * - 不依赖 offsetTop 链路，直接使用实时几何坐标计算目标滚动量；
-   * - 可见区顶部取 max(list 顶部, toolbar 底部)，自动兼容“重叠/不重叠”两种布局；
-   * - 以作者标题为锚点，保证跳转后标题落在真实可见区。
+   * 作者导航跳转不能再读取 sticky 标题当前坐标：
+   * 一旦标题进入过 sticky，它的 rect 就不再代表自然文档位置。
+   * 这里改为对齐一个零高度的静态锚点，保证无论标题是否曾 sticky，
+   * 跳转都落到“标题应当吸附到的位置”。
    */
-  const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
   const anchorRect = anchorEl.getBoundingClientRect();
-  const visibleTop = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top) + 8;
-  const delta = anchorRect.top - visibleTop;
+  const stickyTopPx = resolveByAuthorStickyTopPx(container, toolbarEl);
+  const delta = anchorRect.top - stickyTopPx;
   const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
   const targetTop = Math.max(0, Math.min(maxScrollTop, container.scrollTop + delta));
   container.scrollTo({ top: targetTop, behavior: 'smooth' });
