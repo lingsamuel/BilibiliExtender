@@ -426,10 +426,6 @@ body.bbe-page-scroll-lock {
   transition: none;
 }
 
-.bbe-timeline-item:not(.is-in-view) {
-  transition: top 0.2s ease;
-}
-
 .bbe-timeline-label {
   border: 0;
   background: transparent;
