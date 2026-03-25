@@ -5,7 +5,12 @@ import {
   getUserCard,
   modifyUserRelation
 } from '@/shared/api/bilibili';
-import type { MessageRequest, MessageResponse, ResponseMap } from '@/shared/messages';
+import type {
+  AuthorPageStatusMessage,
+  MessageRequest,
+  MessageResponse,
+  ResponseMap
+} from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import {
   appendGroupReadMark,
@@ -52,6 +57,7 @@ import {
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
+  observeBurstTaskFirstResult,
   getStatus,
   reportAuthorPageUsage,
   runSchedulerNow,
@@ -88,6 +94,26 @@ interface MissingAuthorTaskBuckets {
 }
 
 const ALL_GROUP_ID = VIRTUAL_GROUP_ID.ALL;
+
+async function sendAuthorPageStatusMessage(
+  sender: chrome.runtime.MessageSender,
+  message: AuthorPageStatusMessage
+): Promise<void> {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== 'number') {
+    return;
+  }
+
+  try {
+    if (typeof sender.frameId === 'number') {
+      await ext.tabs.sendMessage(tabId, message, { frameId: sender.frameId });
+      return;
+    }
+    await ext.tabs.sendMessage(tabId, message);
+  } catch {
+    // 页面已关闭、content script 不在场等情况直接忽略，前台仍有轮询兜底。
+  }
+}
 
 /**
  * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”并按队列分流：
@@ -823,7 +849,8 @@ async function handleClearAuthorReadMark(
  * - 具体拉取时机/顺序由调度器决定，接口本身不等待执行完成。
  */
 async function handleRequestAuthorPage(
-  request: Extract<MessageRequest, { type: 'REQUEST_AUTHOR_PAGE' }>
+  request: Extract<MessageRequest, { type: 'REQUEST_AUTHOR_PAGE' }>,
+  sender: chrome.runtime.MessageSender
 ): Promise<ResponseMap['REQUEST_AUTHOR_PAGE']> {
   const groupId = request.payload.groupId;
   const mid = Math.max(1, Number(request.payload.mid) || 0);
@@ -868,6 +895,30 @@ async function handleRequestAuthorPage(
       maxCachedPn: cache.maxCachedPn
     };
   }
+
+  observeBurstTaskFirstResult(
+    {
+      mid,
+      name: cache?.name?.trim() || String(mid),
+      groupId,
+      pn,
+      reason: 'load-more-boundary',
+      trigger: 'request-author-page',
+      failFast: false
+    },
+    (result) => {
+      void sendAuthorPageStatusMessage(sender, {
+        type: 'AUTHOR_PAGE_STATUS',
+        payload: {
+          groupId,
+          mid,
+          pn,
+          status: result.ok ? 'ready' : 'failed',
+          error: result.error
+        }
+      });
+    }
+  );
 
   enqueueBurst([
     {
@@ -986,7 +1037,7 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
     case 'CLEAR_AUTHOR_READ_MARK':
       return ok(await handleClearAuthorReadMark(request));
     case 'REQUEST_AUTHOR_PAGE':
-      return ok(await handleRequestAuthorPage(request));
+      return ok(await handleRequestAuthorPage(request, sender));
     case 'GET_AUTHOR_PREFERENCES':
       return ok(await handleGetAuthorPreferences(request));
     case 'MANUAL_REFRESH':

@@ -213,6 +213,28 @@ interface LikeActionTask extends SchedulerTaskBase {
   5. 构造成功后，按作者回报“本次实际使用到的最大页码 K”（仅统计实际参与目标页组构造的数据页），供常规预取判定是否推进到 `K+1`。
   6. `hasMoreForMixed` 的判定必须与第 2 条保持同口径，避免出现“按钮可点但无增量”或“仍有增量却提前显示无更多”。
 
+#### 3.4.1.1 REQUEST_AUTHOR_PAGE
+
+`REQUEST_AUTHOR_PAGE(groupId, mid, pn)` 的行为统一为“提交作者分页意图 + 建立一次前台等待会话”：
+1. 若目标页已缓存：立即返回 `{ accepted: true, status: 'cached' }`，不建立等待会话，也不发送后续通知。
+2. 若已确认作者不存在更多页：立即返回 `{ accepted: false, status: 'no-more' }`，不建立等待会话，也不发送后续通知。
+3. 若目标页未缓存且仍可能存在：立即返回 `{ accepted: true, status: 'queued' }`，并向 Burst 队列提交该页任务。
+4. 对 `status: 'queued'` 的分页请求：
+   - 调度器必须记录“发起页面 + groupId + mid + pn”的等待会话，仅用于该次作者分页反馈；
+   - 当目标页任务成功写入缓存后，向对应内容页发送“页已就绪”通知；
+   - 当目标页任务首次执行失败时，即按该次前台等待会话的终态失败处理：向对应内容页发送“页失败”通知，并结束该次等待会话。
+5. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `MANUAL_REFRESH`、时间流边界补页或收藏夹刷新链路。
+6. 前台收到“页已就绪”通知后，应立即补发一次 `GET_GROUP_FEED`；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
+7. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
+
+作者分页前台等待策略：
+1. `status: 'queued'` 后立即启动兜底轮询，但轮询只用于作者分页当前等待会话。
+2. 轮询节奏固定为：前三次 `500ms`，后续每次 `1000ms`。
+3. 满足以下任一条件即停止轮询：
+   - 收到匹配当前 pending 目标的“页已就绪”通知，并完成一次成功的 `GET_GROUP_FEED`；
+   - 收到匹配当前 pending 目标的“页失败”通知；
+   - 当前 pending 目标失效（分组切换、模式切换、筛选切换、用户取消等待等）。
+
 #### 3.4.2 MANUAL_REFRESH
 
 `MANUAL_REFRESH(groupId)` 的行为统一为“立即入列两段刷新链路”：
@@ -393,6 +415,24 @@ interface RequestAuthorPageResponse {
   maxCachedPn?: number;
 }
 ```
+
+新增作者分页结果通知消息（后台主动发送到内容页，仅服务于 `REQUEST_AUTHOR_PAGE`）：
+
+```ts
+| { type: 'AUTHOR_PAGE_STATUS'; payload: {
+    groupId: string;
+    mid: number;
+    pn: number;
+    status: 'ready' | 'failed';
+    error?: string;
+  } }
+```
+
+约束：
+1. `status: 'ready'` 表示目标页已成功写入缓存，前台应立即拉一次 `GET_GROUP_FEED`。
+2. `status: 'failed'` 表示该次作者分页等待会话已终态失败，前台必须停止该次兜底轮询、清除 pending 状态，并提示错误。
+3. 该通知仅发给触发本次 `REQUEST_AUTHOR_PAGE` 的内容页；若页面上下文已失效，可直接丢弃，不要求补发。
+4. 该通知不承载分页数据本体，不替代 `GET_GROUP_FEED`。
 
 新增调试触发消息：
 

@@ -86,6 +86,19 @@ export type MessageResponse<T = unknown> = {
   error?: string;
 };
 
+export interface AuthorPageStatusPayload {
+  groupId: string;
+  mid: number;
+  pn: number;
+  status: 'ready' | 'failed';
+  error?: string;
+}
+
+export interface AuthorPageStatusMessage {
+  type: 'AUTHOR_PAGE_STATUS';
+  payload: AuthorPageStatusPayload;
+}
+
 export type SchedulerAuthorTaskReason = 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
 export type SchedulerTaskReason =
   | SchedulerAuthorTaskReason

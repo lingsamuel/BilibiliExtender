@@ -183,6 +183,7 @@ let pendingGroupFavRoutineAfterBurst = false;
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
 const burstTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
+const burstTaskFirstResultListeners = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
 const likeTaskWaiters = new Map<string, Array<(result: LikeTaskWaiterResult) => void>>();
 void ensureHistoryHydrated();
 
@@ -223,6 +224,18 @@ function notifyBurstTaskFinished(task: AuthorTask, result: { ok: boolean; error?
   burstTaskWaiters.delete(key);
   for (const waiter of waiters) {
     waiter(result);
+  }
+}
+
+function notifyBurstTaskFirstResult(task: AuthorTask, result: { ok: boolean; error?: string }): void {
+  const key = keyOfAuthorTask(task);
+  const listeners = burstTaskFirstResultListeners.get(key);
+  if (!listeners || listeners.length === 0) {
+    return;
+  }
+  burstTaskFirstResultListeners.delete(key);
+  for (const listener of listeners) {
+    listener(result);
   }
 }
 
@@ -1166,6 +1179,7 @@ async function runBurstLoop(): Promise<void> {
         trigger: task.trigger
       });
       await saveAuthorVideoCacheMap(authorCacheMap);
+      notifyBurstTaskFirstResult(task, { ok: true });
       notifyBurstTaskFinished(task, { ok: true });
     } catch (error) {
       if (isWbiRatelimitError(error)) {
@@ -1184,6 +1198,10 @@ async function runBurstLoop(): Promise<void> {
         error: error instanceof Error ? error.message : String(error)
       });
       console.warn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
+      notifyBurstTaskFirstResult(task, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
 
       if (task.failFast) {
         burstState.queue.shift();
@@ -1264,6 +1282,32 @@ export function enqueueBurst(tasks: SchedulerTask[]): number {
     startBurstLoopIfIdle();
   }
   return added;
+}
+
+export function observeBurstTaskFirstResult(
+  task: SchedulerTask,
+  listener: (result: { ok: boolean; error?: string }) => void
+): () => void {
+  const normalizedTask = normalizeAuthorTask(task);
+  const key = keyOfAuthorTask(normalizedTask);
+  const listeners = burstTaskFirstResultListeners.get(key) ?? [];
+  listeners.push(listener);
+  burstTaskFirstResultListeners.set(key, listeners);
+
+  return () => {
+    const nextListeners = burstTaskFirstResultListeners.get(key);
+    if (!nextListeners || nextListeners.length === 0) {
+      return;
+    }
+    const index = nextListeners.indexOf(listener);
+    if (index < 0) {
+      return;
+    }
+    nextListeners.splice(index, 1);
+    if (nextListeners.length === 0) {
+      burstTaskFirstResultListeners.delete(key);
+    }
+  };
 }
 
 function waitForBurstTask(task: AuthorTask): Promise<{ ok: boolean; error?: string }> {

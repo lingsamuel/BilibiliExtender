@@ -371,7 +371,8 @@ import {
   POLL_MAX_REFRESHING,
   VIRTUAL_GROUP_ID
 } from '@/shared/constants';
-import { sendMessage } from '@/shared/messages';
+import { sendMessage, type AuthorPageStatusMessage } from '@/shared/messages';
+import { ext } from '@/shared/platform/webext';
 import type { AuthorFeed, GroupFeedResult, GroupSummary, OverviewFilterKey, VideoItem, ViewMode } from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
@@ -395,6 +396,9 @@ const MIXED_TIMELINE_OUTSIDE_GAP = 18;
 const MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_FALLBACK_VISIBLE_RATIO_THRESHOLD = 0.1;
+const AUTHOR_PAGE_POLL_FAST_ATTEMPTS = 3;
+const AUTHOR_PAGE_POLL_FAST_INTERVAL_MS = 500;
+const AUTHOR_PAGE_POLL_SLOW_INTERVAL_MS = 1000;
 const ENTRY_ID = {
   ALL: VIRTUAL_GROUP_ID.ALL,
   SETTINGS: '__bbe_settings__',
@@ -471,6 +475,7 @@ const toasts = ref<Array<{ id: number; message: string }>>([]);
 let toastSeq = 0;
 let summaryTimer: number | null = null;
 let pollTimer: number | null = null;
+let authorPagePollTimer: number | null = null;
 let userExplicitlyChoseAll = false;
 const lastGroupIdFromSummary = ref('');
 
@@ -966,7 +971,7 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
 
       setPendingAuthorPageTarget(author.authorMid, nextPage);
       showErrorToast(`第 ${nextPage} 页缓存中，已提交分页任务`);
-      startPoll(POLL_MAX_REFRESHING);
+      startAuthorPagePoll(POLL_MAX_REFRESHING);
       return;
     }
 
@@ -1361,6 +1366,25 @@ function applyFeedWarning(data: GroupFeedResult | null | undefined): void {
   warningMsg.value = data?.warningMsg?.trim() || '';
 }
 
+function applyFeedSnapshot(data: GroupFeedResult): void {
+  feed.value = data;
+  syncAuthorPaginationStateWithFeed();
+  applyFeedWarning(data);
+  readMarkTimestamps.value = data.readMarkTimestamps;
+  graceReadMarkTs.value = data.graceReadMarkTs;
+}
+
+function hasPendingAuthorPageTargets(): boolean {
+  return Object.keys(pendingAuthorPageTargetMap.value).length > 0;
+}
+
+function getAuthorPagePollDelay(attempt: number): number {
+  if (attempt < AUTHOR_PAGE_POLL_FAST_ATTEMPTS) {
+    return AUTHOR_PAGE_POLL_FAST_INTERVAL_MS;
+  }
+  return AUTHOR_PAGE_POLL_SLOW_INTERVAL_MS;
+}
+
 const hasRenderableFeed = computed(() => hasRenderableFeedData(feed.value));
 const showGeneratingPlaceholder = computed(() => generating.value && !hasRenderableFeed.value);
 const isUpdating = computed(() => refreshing.value || (generating.value && hasRenderableFeed.value));
@@ -1503,6 +1527,53 @@ function stopPoll(): void {
   }
 }
 
+function stopAuthorPagePoll(): void {
+  if (authorPagePollTimer) {
+    window.clearTimeout(authorPagePollTimer);
+    authorPagePollTimer = null;
+  }
+}
+
+async function refreshFeedForPendingAuthorPages(): Promise<void> {
+  if (!activeGroupId.value || !hasPendingAuthorPageTargets()) {
+    return;
+  }
+
+  const pendingBefore = new Set(
+    Object.keys(pendingAuthorPageTargetMap.value).map((rawMid) => Math.max(1, Number(rawMid) || 0))
+  );
+
+  const resp = await sendMessage({
+    type: 'GET_GROUP_FEED',
+    payload: {
+      groupId: activeGroupId.value,
+      mode: mode.value,
+      selectedReadMarkTs: selectedReadMarkTs.value,
+      overviewFilter: getOverviewFilterForRequest(),
+      byAuthorSortByLatest: byAuthorSortByLatest.value
+    }
+  });
+
+  if (!resp.ok || !resp.data) {
+    throw new Error(resp.error ?? '刷新分页内容失败');
+  }
+
+  if (resp.data.cacheStatus === 'ready' || hasRenderableFeedData(resp.data)) {
+    applyFeedSnapshot(resp.data);
+
+    const resolvedPending = Array.from(pendingBefore).filter(
+      (mid) => pendingAuthorPageTargetMap.value[mid] === undefined
+    );
+    if (resolvedPending.length > 0) {
+      await fetchClickedVideos();
+    }
+  }
+
+  if (!hasPendingAuthorPageTargets()) {
+    stopAuthorPagePoll();
+  }
+}
+
 /**
  * 记录每个日期分段对应的 DOM 节点，供滚动时判断“是否在可视区”以及“当前焦点日期”。
  */
@@ -1543,6 +1614,7 @@ function resetByAuthorNavState(): void {
 }
 
 function resetAuthorPaginationState(): void {
+  stopAuthorPagePoll();
   byAuthorPageMap.value = {};
   byAuthorPageJumpInputMap.value = {};
   byAuthorPageLoadingMap.value = {};
@@ -1900,6 +1972,72 @@ function updateByAuthorNavState(): void {
     activeMid = fallbackMid ?? nextMid ?? sections[sections.length - 1]?.authorMid ?? null;
   }
   byAuthorActiveMid.value = activeMid;
+}
+
+function startAuthorPagePoll(maxAttempts: number): void {
+  stopAuthorPagePoll();
+
+  let attempts = 0;
+
+  const scheduleNext = (): void => {
+    if (!hasPendingAuthorPageTargets()) {
+      stopAuthorPagePoll();
+      return;
+    }
+
+    if (attempts >= maxAttempts) {
+      stopAuthorPagePoll();
+      pendingAuthorPageTargetMap.value = {};
+      byAuthorPageLoadingMap.value = {};
+      showErrorToast('分页任务仍在执行，请稍后重试目标页');
+      return;
+    }
+
+    authorPagePollTimer = window.setTimeout(() => {
+      authorPagePollTimer = null;
+      attempts += 1;
+
+      void refreshFeedForPendingAuthorPages()
+        .catch(() => {
+          // 分页兜底轮询中的错误静默忽略，等待下一次重试或后台通知。
+        })
+        .finally(() => {
+          scheduleNext();
+        });
+    }, getAuthorPagePollDelay(attempts));
+  };
+
+  scheduleNext();
+}
+
+function handleAuthorPageStatusMessage(message: AuthorPageStatusMessage): void {
+  if (!visible.value) {
+    return;
+  }
+
+  const { groupId, mid, pn, status, error } = message.payload;
+  if (activeGroupId.value !== groupId) {
+    return;
+  }
+
+  const pendingTarget = pendingAuthorPageTargetMap.value[mid];
+  if (pendingTarget !== pn) {
+    return;
+  }
+
+  if (status === 'failed') {
+    setPendingAuthorPageTarget(mid);
+    setAuthorPageLoading(mid, false);
+    if (!hasPendingAuthorPageTargets()) {
+      stopAuthorPagePoll();
+    }
+    showErrorToast(error ?? `第 ${pn} 页加载失败`);
+    return;
+  }
+
+  void refreshFeedForPendingAuthorPages().catch(() => {
+    // 通知到达后的即时刷新失败时，保留兜底轮询继续等待。
+  });
 }
 
 /**
@@ -2741,6 +2879,19 @@ function onOpenDrawer(): void {
   void openDrawer();
 }
 
+function onRuntimeMessage(message: unknown): void {
+  if (!message || typeof message !== 'object') {
+    return;
+  }
+
+  const nextMessage = message as Partial<AuthorPageStatusMessage>;
+  if (nextMessage.type !== 'AUTHOR_PAGE_STATUS' || !nextMessage.payload) {
+    return;
+  }
+
+  handleAuthorPageStatusMessage(nextMessage as AuthorPageStatusMessage);
+}
+
 watch(visible, (nextVisible) => {
   setPageScrollLock(nextVisible);
   if (!nextVisible && listRef.value) {
@@ -2802,6 +2953,7 @@ onMounted(() => {
   window.addEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.addEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
   window.addEventListener('resize', onWindowResize);
+  ext.runtime.onMessage.addListener(onRuntimeMessage);
 
   void loadSummary().catch((error) => {
     console.warn('[BBE] preload summary failed:', error);
@@ -2819,6 +2971,7 @@ onUnmounted(() => {
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
   window.removeEventListener('resize', onWindowResize);
+  ext.runtime.onMessage.removeListener(onRuntimeMessage);
   disconnectMixedTimelineResizeObserver();
 
   if (summaryTimer) {
@@ -2826,5 +2979,6 @@ onUnmounted(() => {
     summaryTimer = null;
   }
   stopPoll();
+  stopAuthorPagePoll();
 });
 </script>
