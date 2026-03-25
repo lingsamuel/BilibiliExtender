@@ -2,6 +2,10 @@ import { ext } from '@/shared/platform/webext';
 
 const DNR_RULE_PRIORITY = 10;
 const RULE_ID_START = 10_000;
+const DNR_ACTION_MODIFY_HEADERS = 'modifyHeaders' as chrome.declarativeNetRequest.RuleActionType;
+const DNR_HEADER_OPERATION_SET = 'set' as chrome.declarativeNetRequest.HeaderOperation;
+const DNR_REQUEST_METHOD_POST = 'post' as chrome.declarativeNetRequest.RequestMethod;
+const DNR_RESOURCE_XMLHTTPREQUEST = 'xmlhttprequest' as chrome.declarativeNetRequest.ResourceType;
 
 const ruleIdByKey = new Map<string, number>();
 const ruleKeysByTabId = new Map<number, Set<string>>();
@@ -59,29 +63,29 @@ async function installRequestHeaderRule(options: {
         id: ruleId,
         priority: DNR_RULE_PRIORITY,
         action: {
-          type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+          type: DNR_ACTION_MODIFY_HEADERS,
           requestHeaders: [
             {
               header: 'origin',
-              operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+              operation: DNR_HEADER_OPERATION_SET,
               value: safeOrigin
             },
             {
               header: 'referer',
-              operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+              operation: DNR_HEADER_OPERATION_SET,
               value: refererUrl.toString()
             },
             {
               header: 'sec-fetch-site',
-              operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+              operation: DNR_HEADER_OPERATION_SET,
               value: 'same-site'
             }
           ]
         },
         condition: {
           regexFilter: options.regexFilter,
-          requestMethods: [chrome.declarativeNetRequest.RequestMethod.POST],
-          resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST],
+          requestMethods: [DNR_REQUEST_METHOD_POST],
+          resourceTypes: [DNR_RESOURCE_XMLHTTPREQUEST],
           tabIds: [options.tabId]
         }
       }
