@@ -413,15 +413,6 @@ export async function coinVideo(
   return { like: payload.data?.like };
 }
 
-/**
- * 查询视频近期点赞状态（仅“近期口径”，不保证覆盖历史点赞）。
- */
-export async function getVideoRecentLikeState(target: VideoActionTarget): Promise<boolean> {
-  const params = buildVideoActionParams(target);
-  const payload = await fetchApi<number>('/x/web-interface/archive/has/like', params);
-  return Number(payload.data) === 1;
-}
-
 interface AccInfoData {
   face: string;
 }

@@ -36,7 +36,6 @@ export type MessageRequest =
   | { type: 'LIKE_VIDEO'; payload: { aid?: number; bvid?: string; like: boolean; csrf: string } }
   | { type: 'COIN_VIDEO'; payload: { aid?: number; bvid?: string; multiply: number; selectLike?: boolean; csrf: string } }
   | { type: 'BATCH_LIKE_VIDEOS'; payload: { authorMid: number; videos: Array<{ aid: number; bvid: string }>; csrf: string } }
-  | { type: 'GET_VIDEOS_LIKE_STATE'; payload: { videos: Array<{ aid: number; bvid: string }> } }
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
@@ -45,7 +44,6 @@ export type MessageRequest =
   | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
   | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
-  | { type: 'ENSURE_AUTHOR_PAGE'; payload: { mid: number; pn: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
   | { type: 'MARK_ALL_GROUPS_READ' }
   | { type: 'GET_SCHEDULER_STATUS' }
@@ -67,7 +65,6 @@ export type SchedulerTaskTrigger =
   | 'get-group-feed-missing-fav-cache'
   | 'get-group-feed-missing-author-cache'
   | 'get-group-feed-boundary'
-  | 'ensure-author-page'
   | 'group-fav-chain';
 
 export interface SchedulerStatusResponse {
@@ -203,9 +200,6 @@ export interface ResponseMap {
     failedCount: number;
     failedBvids: string[];
   };
-  GET_VIDEOS_LIKE_STATE: {
-    likedMap: Record<string, boolean>;
-  };
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
@@ -214,15 +208,6 @@ export interface ResponseMap {
   SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };
   SET_AUTHOR_READ_MARK: { preference: AuthorPreference };
   CLEAR_AUTHOR_READ_MARK: { preference: AuthorPreference };
-  ENSURE_AUTHOR_PAGE: {
-    mid: number;
-    pn: number;
-    maxCachedPn: number;
-    hasMore: boolean;
-    totalCount?: number;
-    pageSize: number;
-    warningMsg?: string;
-  };
   GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };
   MARK_ALL_GROUPS_READ: { marks: Record<string, GroupReadMark>; readMarkTs: number };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;

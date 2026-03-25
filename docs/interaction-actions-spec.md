@@ -21,7 +21,7 @@
 ### 2.2 非目标
 - 不新增桌面系统通知。
 - 不做“一键三连”能力。
-- 不做历史全量点赞状态回溯（`has/like` 仅作为近期口径）。
+- 不做历史全量点赞状态回溯。
 
 ## 3. 功能需求
 
@@ -62,11 +62,6 @@
 - 端点：`POST /x/web-interface/coin/add`
 - 入参：`aid|bvid`（二选一）、`multiply`（1/2）、`select_like`（0/1）、`csrf`
 
-#### 3.3.3 点赞状态查询 API（近期口径）
-- 端点：`GET /x/web-interface/archive/has/like`
-- 入参：`aid|bvid`（二选一）
-- 语义：仅用于“近期是否点赞”判断，不保证覆盖历史点赞。
-
 ### 3.4 作者区域“一键点赞”按钮
 
 1. 在“未观看（byAuthor）”作者标题左侧操作组中，紧邻关注按钮新增“一键点赞”按钮。
@@ -87,7 +82,6 @@
 3. 已点赞：显示粉色拇指图标。
 4. 状态来源优先级：
    - 本地点赞成功回写状态（最高优先）；
-   - `has/like` 查询结果（近期口径）；
    - 默认未点赞。
 
 ## 4. 消息协议变更
@@ -95,7 +89,6 @@
 新增消息类型（命名可按现有风格调整）：
 - `LIKE_VIDEO`
 - `COIN_VIDEO`
-- `GET_VIDEOS_LIKE_STATE`
 - `ENQUEUE_AUTHOR_VISIBLE_LIKES`
 - `GET_LIKE_SCHEDULER_STATUS`（调试可选）
 
@@ -162,7 +155,7 @@ type VideoInteractionStateMap = Record<string, VideoInteractionState>; // key: b
 1. 任何接口失败均使用 toast 提示，不替换主内容区域。
 2. 关注失败：回滚按钮状态。
 3. 点赞批次部分失败：成功项保留，失败项记录并汇总提示。
-4. `has/like` 查询失败：不阻断页面渲染，点赞角标按已知本地状态展示。
+4. 点赞态未命中本地状态时：不阻断页面渲染，角标按未点赞展示。
 
 ## 9. 验收标准
 

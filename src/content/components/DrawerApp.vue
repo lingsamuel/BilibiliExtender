@@ -877,24 +877,20 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
 
   setAuthorPageLoading(author.authorMid, true);
   try {
-    // 作者分页按“页号”按需补齐：仅当目标页尚未缓存时才触发后台 Burst 拉取，避免每次翻页都全量重载。
+    // 前台不再指定页号触发补页：目标页未缓存时只提交“刷新意图”，由调度器自主决定拉取策略。
     const cachedPages = new Set(author.cachedPagePns ?? []);
     const hasCachedPage = cachedPages.has(nextPage);
     if (!hasCachedPage) {
       const resp = await sendMessage({
-        type: 'ENSURE_AUTHOR_PAGE',
-        payload: {
-          mid: author.authorMid,
-          pn: nextPage
-        }
+        type: 'MANUAL_REFRESH',
+        payload: { groupId: activeGroupId.value }
       });
-      if (!resp.ok || !resp.data) {
-        throw new Error(resp.error ?? '作者分页加载失败');
+      if (!resp.ok || !resp.data?.accepted) {
+        throw new Error(resp.error ?? '提交刷新失败');
       }
-      if (resp.data.warningMsg) {
-        warningMsg.value = resp.data.warningMsg;
-      }
-      await reloadFeedWithReadMark({ silent: true });
+      showErrorToast('目标页尚未缓存，已提交刷新任务，请稍后重试');
+      startPoll(POLL_MAX_REFRESHING);
+      return;
     }
 
     byAuthorPageMap.value = {
@@ -1264,37 +1260,8 @@ function collectAllBvids(): string[] {
   return Array.from(bvids);
 }
 
-function collectAllVideosForLikeState(): Array<{ aid: number; bvid: string }> {
-  if (!feed.value) {
-    return [];
-  }
-  const dedup = new Map<string, { aid: number; bvid: string }>();
-
-  const collect = (video: VideoItem): void => {
-    if (!video.bvid || !video.aid || dedup.has(video.bvid)) {
-      return;
-    }
-    dedup.set(video.bvid, {
-      aid: video.aid,
-      bvid: video.bvid
-    });
-  };
-
-  for (const video of feed.value.mixedVideos) {
-    collect(video);
-  }
-  for (const author of feed.value.videosByAuthor) {
-    for (const video of author.videos) {
-      collect(video);
-    }
-  }
-
-  return Array.from(dedup.values());
-}
-
 async function fetchClickedVideos(): Promise<void> {
   const bvids = collectAllBvids();
-  const videos = collectAllVideosForLikeState();
   if (bvids.length === 0) {
     clickedMap.value = {};
     reviewedOverrideMap.value = {};
@@ -1302,10 +1269,9 @@ async function fetchClickedVideos(): Promise<void> {
     return;
   }
 
-  const [clickedResp, reviewedResp, likedResp] = await Promise.all([
+  const [clickedResp, reviewedResp] = await Promise.all([
     sendMessage({ type: 'GET_CLICKED_VIDEOS', payload: { bvids } }),
-    sendMessage({ type: 'GET_VIDEO_REVIEWED_OVERRIDES', payload: { bvids } }),
-    sendMessage({ type: 'GET_VIDEOS_LIKE_STATE', payload: { videos } })
+    sendMessage({ type: 'GET_VIDEO_REVIEWED_OVERRIDES', payload: { bvids } })
   ]);
 
   if (clickedResp.ok && clickedResp.data) {
@@ -1314,9 +1280,15 @@ async function fetchClickedVideos(): Promise<void> {
   if (reviewedResp.ok && reviewedResp.data) {
     reviewedOverrideMap.value = reviewedResp.data.overrides;
   }
-  if (likedResp.ok && likedResp.data) {
-    likedMap.value = likedResp.data.likedMap;
+  // 点赞态仅使用本地已知结果（手动点赞/批量点赞成功后写入），不在读取链路触发远端查询。
+  const keepBvids = new Set(bvids);
+  const nextLikedMap: Record<string, boolean> = {};
+  for (const [bvid, liked] of Object.entries(likedMap.value)) {
+    if (liked === true && keepBvids.has(bvid)) {
+      nextLikedMap[bvid] = true;
+    }
   }
+  likedMap.value = nextLikedMap;
 }
 
 function stopPoll(): void {

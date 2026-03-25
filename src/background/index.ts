@@ -3,7 +3,6 @@ import {
   coinVideo,
   getMyCreatedFolders,
   getUserCard,
-  getVideoRecentLikeState,
   likeVideo,
   modifyUserRelation
 } from '@/shared/api/bilibili';
@@ -36,7 +35,6 @@ import {
 } from '@/shared/storage/repository';
 import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
-  hasAuthorMorePages,
   increaseMixedTarget,
   makeSummary,
   markGroupRead,
@@ -46,7 +44,6 @@ import {
 } from '@/background/feed-service';
 import {
   enqueueBurst,
-  enqueueBurstHeadAndWait,
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
@@ -85,7 +82,6 @@ interface MissingAuthorTaskBuckets {
   priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
 }
 
-const MAX_SYNC_BURST_ROUNDS = 12;
 const ALL_GROUP_ID = VIRTUAL_GROUP_ID.ALL;
 
 /**
@@ -426,7 +422,10 @@ async function handleGetGroupFeed(
 
   const runtimeBefore = JSON.stringify(runtimeMap[group.groupId] ?? null);
   let authorCacheMap = initialAuthorCacheMap;
-  let result: Omit<ResponseMap['GET_GROUP_FEED'], 'cacheStatus'> = {
+  const diagnostics: MixedBuildDiagnostics | undefined = request.payload.mode === 'mixed'
+    ? { usedPages: [], boundaryTasks: [] }
+    : undefined;
+  const result: Omit<ResponseMap['GET_GROUP_FEED'], 'cacheStatus'> = {
     ...toFeedResult(
       group,
       request.payload.mode,
@@ -440,93 +439,27 @@ async function handleGetGroupFeed(
       authorPreferences,
       selectedReadMarkTs,
       overviewFilter,
-      request.payload.byAuthorSortByLatest
+      request.payload.byAuthorSortByLatest,
+      diagnostics
     ),
     warningMsg: undefined
   };
-  const warningMessages: string[] = [];
 
-  if (request.payload.mode === 'mixed') {
-    for (let round = 0; round < MAX_SYNC_BURST_ROUNDS; round++) {
-      const diagnostics: MixedBuildDiagnostics = {
-        usedPages: [],
-        boundaryTasks: []
-      };
-      result = {
-        ...toFeedResult(
-          group,
-        request.payload.mode,
-        settings,
-        runtimeMap,
-        mergedFeedCacheMap,
-        authorCacheMap,
-        readMarks,
-        clickedVideos,
-        reviewedOverrides,
-        authorPreferences,
-        selectedReadMarkTs,
-        overviewFilter,
-        request.payload.byAuthorSortByLatest,
-        diagnostics
-      ),
-        warningMsg: warningMessages.length > 0 ? warningMessages.join('；') : undefined
-      };
+  if (diagnostics && diagnostics.usedPages.length > 0) {
+    await reportAuthorPageUsage(group.groupId, diagnostics.usedPages);
+    // 仅更新页级使用反馈，不改变本次读取返回的内容。
+    authorCacheMap = await getAuthorCacheSnapshot();
+  }
 
-      if (diagnostics.usedPages.length > 0) {
-        await reportAuthorPageUsage(group.groupId, diagnostics.usedPages);
-      }
-
-      if (diagnostics.boundaryTasks.length === 0) {
-        break;
-      }
-
-      const burstResult = await enqueueBurstHeadAndWait(
-        diagnostics.boundaryTasks.map((task) => ({
-          ...task,
-          reason: 'load-more-boundary',
-          trigger: 'get-group-feed-boundary',
-          failFast: true
-        }))
-      );
-
-      if (burstResult.failed.length > 0) {
-        const taskNameMap = new Map(diagnostics.boundaryTasks.map((task) => [`${task.mid}:${task.pn}`, task.name]));
-        const failedNames = burstResult.failed.map((item) => {
-          const key = `${item.mid}:${item.pn}`;
-          const displayName = taskNameMap.get(key)?.trim() || authorCacheMap[item.mid]?.name?.trim() || String(item.mid);
-          return `${displayName}(p${item.pn})`;
-        });
-        warningMessages.push(`部分作者补页失败: ${failedNames.join(', ')}`);
-      }
-
-      if (burstResult.success.length === 0) {
-        break;
-      }
-
-      authorCacheMap = await getAuthorCacheSnapshot();
-    }
-    if (warningMessages.length > 0) {
-      result.warningMsg = warningMessages.join('；');
-    }
-  } else {
-    result = {
-      ...toFeedResult(
-        group,
-        request.payload.mode,
-        settings,
-        runtimeMap,
-        mergedFeedCacheMap,
-        authorCacheMap,
-        readMarks,
-        clickedVideos,
-        reviewedOverrides,
-        authorPreferences,
-        selectedReadMarkTs,
-        overviewFilter,
-        request.payload.byAuthorSortByLatest
-      ),
-      warningMsg: undefined
-    };
+  const hasBoundaryIntent = Boolean(diagnostics && diagnostics.boundaryTasks.length > 0);
+  if (hasBoundaryIntent) {
+    enqueueBurst(
+      diagnostics!.boundaryTasks.map((task) => ({
+        ...task,
+        reason: 'load-more-boundary',
+        trigger: 'get-group-feed-boundary'
+      }))
+    );
   }
 
   const runtimeAfter = JSON.stringify(runtimeMap[group.groupId] ?? null);
@@ -543,6 +476,13 @@ async function handleGetGroupFeed(
   }
 
   if (isAllGroup && missingFavGroupIds.length > 0) {
+    if (runtimeChanged || runtimeMutatedByLoadMore) {
+      await saveRuntimeStateMap(runtimeMap);
+    }
+    return { ...result, cacheStatus: 'generating' };
+  }
+
+  if (hasBoundaryIntent) {
     if (runtimeChanged || runtimeMutatedByLoadMore) {
       await saveRuntimeStateMap(runtimeMap);
     }
@@ -750,39 +690,6 @@ async function handleBatchLikeVideos(
   return enqueueLikeBatchAndWait(authorMid, videos, csrf);
 }
 
-/**
- * 批量读取视频近期点赞状态。
- * 单条查询失败时忽略该条，不阻断整体结果返回。
- */
-async function handleGetVideosLikeState(
-  request: Extract<MessageRequest, { type: 'GET_VIDEOS_LIKE_STATE' }>
-): Promise<ResponseMap['GET_VIDEOS_LIKE_STATE']> {
-  const likedMap: Record<string, boolean> = {};
-  const dedup = new Map<string, { aid: number; bvid: string }>();
-
-  for (const video of request.payload.videos ?? []) {
-    const aid = Math.max(0, Math.floor(Number(video.aid) || 0));
-    const bvid = video.bvid?.trim() || '';
-    if (!aid || !bvid || dedup.has(bvid)) {
-      continue;
-    }
-    dedup.set(bvid, { aid, bvid });
-  }
-
-  for (const video of dedup.values()) {
-    try {
-      likedMap[video.bvid] = await getVideoRecentLikeState({
-        aid: video.aid,
-        bvid: video.bvid
-      });
-    } catch {
-      // 单条失败静默降级
-    }
-  }
-
-  return { likedMap };
-}
-
 async function handleRecordVideoClick(
   request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
 ): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
@@ -849,67 +756,6 @@ async function handleClearAuthorReadMark(
 ): Promise<ResponseMap['CLEAR_AUTHOR_READ_MARK']> {
   const preference = await clearAuthorReadMark(request.payload.mid);
   return { preference };
-}
-
-async function handleEnsureAuthorPage(
-  request: Extract<MessageRequest, { type: 'ENSURE_AUTHOR_PAGE' }>
-): Promise<ResponseMap['ENSURE_AUTHOR_PAGE']> {
-  const mid = Math.max(1, Number(request.payload.mid) || 0);
-  const pn = Math.max(1, Number(request.payload.pn) || 1);
-  if (!mid) {
-    throw new Error('作者参数不合法');
-  }
-
-  let authorCacheMap = await getAuthorCacheSnapshot();
-  let cache = authorCacheMap[mid];
-  const name = cache?.name?.trim() || String(mid);
-
-  // 只补目标页：前台按页号直接跳转时，使用 Burst 队首同步等待该页完成，避免“级联拉满中间页”。
-  if (!cache || !cache.pageState[pn]) {
-    if (cache && !hasAuthorMorePages(cache) && pn > cache.maxCachedPn) {
-      return {
-        mid,
-        pn,
-        maxCachedPn: cache.maxCachedPn,
-        hasMore: false,
-        totalCount: cache.totalCount,
-        pageSize: cache.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE,
-        warningMsg: '该作者没有更多分页数据'
-      };
-    }
-
-    const burstResult = await enqueueBurstHeadAndWait([
-      {
-        mid,
-        name,
-        pn,
-        reason: 'load-more-boundary',
-        trigger: 'ensure-author-page',
-        failFast: true
-      }
-    ]);
-
-    if (burstResult.failed.length > 0) {
-      const failed = burstResult.failed[0];
-      throw new Error(failed?.error || '作者分页加载失败');
-    }
-
-    authorCacheMap = await getAuthorCacheSnapshot();
-    cache = authorCacheMap[mid];
-  }
-
-  if (!cache) {
-    throw new Error('作者缓存不存在');
-  }
-
-  return {
-    mid,
-    pn,
-    maxCachedPn: cache.maxCachedPn,
-    hasMore: hasAuthorMorePages(cache),
-    totalCount: cache.totalCount,
-    pageSize: cache.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE
-  };
 }
 
 async function handleGetAuthorPreferences(
@@ -991,8 +837,6 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleCoinVideo(request));
     case 'BATCH_LIKE_VIDEOS':
       return ok(await handleBatchLikeVideos(request));
-    case 'GET_VIDEOS_LIKE_STATE':
-      return ok(await handleGetVideosLikeState(request));
     case 'GET_GROUP_READ_MARKS':
       return ok(await handleGetGroupReadMarks(request));
     case 'RECORD_VIDEO_CLICK':
@@ -1009,8 +853,6 @@ async function routeMessage(request: MessageRequest): Promise<MessageResponse> {
       return ok(await handleSetAuthorReadMark(request));
     case 'CLEAR_AUTHOR_READ_MARK':
       return ok(await handleClearAuthorReadMark(request));
-    case 'ENSURE_AUTHOR_PAGE':
-      return ok(await handleEnsureAuthorPage(request));
     case 'GET_AUTHOR_PREFERENCES':
       return ok(await handleGetAuthorPreferences(request));
     case 'MANUAL_REFRESH':
