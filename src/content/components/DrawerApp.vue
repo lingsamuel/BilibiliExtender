@@ -212,7 +212,10 @@
                 :ref="(el) => bindByAuthorSection(author.authorMid, el)"
                 class="bbe-author-section"
               >
-                <h3 class="bbe-author-title">
+                <h3
+                  class="bbe-author-title"
+                  :class="{ 'is-stuck': isAuthorTitleStuck(author.authorMid) }"
+                >
                   <div class="bbe-author-title-main">
                     <div class="bbe-author-title-left">
                       <a
@@ -401,6 +404,8 @@ const MIXED_TIMELINE_OUTSIDE_GAP = 18;
 const MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_FALLBACK_VISIBLE_RATIO_THRESHOLD = 0.1;
+const AUTHOR_TITLE_STICKY_TOP_OFFSET_PX = 8;
+const AUTHOR_TITLE_STICKY_EPSILON_PX = 1;
 const AUTHOR_PAGE_POLL_FAST_ATTEMPTS = 3;
 const AUTHOR_PAGE_POLL_FAST_INTERVAL_MS = 500;
 const AUTHOR_PAGE_POLL_SLOW_INTERVAL_MS = 1000;
@@ -512,6 +517,7 @@ const byAuthorSectionElements = new Map<number, HTMLElement>();
 const byAuthorNavItemElements = new Map<number, HTMLElement>();
 const byAuthorSectionsRef = ref<HTMLElement | null>(null);
 const byAuthorActiveMid = ref<number | null>(null);
+const byAuthorStickyTitleMap = ref<Record<number, boolean>>({});
 const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
 const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
 
@@ -1675,6 +1681,7 @@ function resetMixedTimelineState(): void {
 
 function resetByAuthorNavState(): void {
   byAuthorActiveMid.value = null;
+  byAuthorStickyTitleMap.value = {};
 }
 
 function resetAuthorPaginationState(): void {
@@ -1982,11 +1989,13 @@ function updateByAuthorNavState(): void {
   const toolbarRect = toolbarEl instanceof HTMLElement ? toolbarEl.getBoundingClientRect() : null;
   const viewTopPx = Math.max(listRect.top, toolbarRect?.bottom ?? listRect.top);
   const viewBottomPx = listRect.bottom;
+  const stickyTopPx = viewTopPx + AUTHOR_TITLE_STICKY_TOP_OFFSET_PX;
 
   let activeMid: number | null = null;
   let fallbackMid: number | null = null;
   let nextMid: number | null = null;
   let measuredCount = 0;
+  const nextStickyTitleMap: Record<number, boolean> = {};
 
   for (const author of sections) {
     const sectionEl = byAuthorSectionElements.get(author.authorMid);
@@ -2003,6 +2012,13 @@ function updateByAuthorNavState(): void {
     const visibleHeight = Math.max(0, visibleBottomPx - visibleTopPx);
     const sectionHeight = Math.max(1, sectionRect.height);
     const visibleRatio = visibleHeight / sectionHeight;
+    const titleEl = sectionEl.querySelector('.bbe-author-title');
+    if (titleEl instanceof HTMLElement) {
+      const titleRect = titleEl.getBoundingClientRect();
+      const reachedStickyTop = titleRect.top <= stickyTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
+      const hasStickyRoom = sectionBottomPx - titleRect.height > stickyTopPx + AUTHOR_TITLE_STICKY_EPSILON_PX;
+      nextStickyTitleMap[author.authorMid] = reachedStickyTop && hasStickyRoom;
+    }
 
     if (activeMid === null && visibleRatio > BY_AUTHOR_VISIBLE_RATIO_THRESHOLD) {
       activeMid = author.authorMid;
@@ -2024,6 +2040,7 @@ function updateByAuthorNavState(): void {
   if (measuredCount === 0) {
     // 初始渲染时 section 引用可能尚未挂载，先稳定选第一个，下一帧再按真实可见比例重算。
     byAuthorActiveMid.value = byAuthorActiveMid.value ?? sections[0]?.authorMid ?? null;
+    byAuthorStickyTitleMap.value = {};
     requestAnimationFrame(() => {
       if (visible.value && mode.value !== 'mixed') {
         updateByAuthorNavState();
@@ -2036,6 +2053,11 @@ function updateByAuthorNavState(): void {
     activeMid = fallbackMid ?? nextMid ?? sections[sections.length - 1]?.authorMid ?? null;
   }
   byAuthorActiveMid.value = activeMid;
+  byAuthorStickyTitleMap.value = nextStickyTitleMap;
+}
+
+function isAuthorTitleStuck(authorMid: number): boolean {
+  return byAuthorStickyTitleMap.value[authorMid] === true;
 }
 
 function startAuthorPagePoll(maxAttempts: number): void {
