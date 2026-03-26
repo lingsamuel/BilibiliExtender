@@ -2746,7 +2746,7 @@ async function markCurrentGroupRead(): Promise<void> {
 
 async function markReadToMixedDay(dayKey: string): Promise<void> {
   const readMarkTs = getNextDayStartSecondsFromDayKey(dayKey);
-  if (!readMarkTs || readMarkTs <= 0 || latestGroupReadMarkTs.value === readMarkTs) {
+  if (!readMarkTs || readMarkTs <= 0) {
     return;
   }
   await setGroupReadMarkByTs(readMarkTs, '设置按日已阅失败');

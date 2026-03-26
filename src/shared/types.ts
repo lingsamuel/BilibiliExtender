@@ -198,7 +198,8 @@ export interface AuthorPreference {
   ignoreUnreadCount?: boolean;
   // 作者级已阅时间点（秒级，跨组共享）；等于 readMarkTimestamps[0]。
   readMarkTs?: number;
-  // 作者级已阅历史栈，按时间倒序（最新在前），最多保留 10 条。
+  // 作者级已阅历史栈，按最近一次写入顺序倒序排列（栈顶在前），
+  // 同值允许重复入栈，撤销时按操作次数逐次回退。
   readMarkTimestamps?: number[];
   updatedAt?: number;
 }

@@ -368,9 +368,9 @@ export async function appendGroupReadMark(groupId: string, readMarkTs?: number):
     marks[groupId] = { groupId, timestamps: [] };
   }
 
-  // 去重后将最新值插入头部，保证下拉列表与“最近一次已阅”语义一致。
-  const deduped = marks[groupId].timestamps.filter((item) => item !== ts);
-  marks[groupId].timestamps = [ts, ...deduped].slice(0, MAX_READ_MARK_COUNT);
+  // 这里保留真实“操作栈”语义：每次点击都是一次独立写入，
+  // 即使时间点数值相同，也要允许重复入栈，撤销时按操作次数逐次回退。
+  marks[groupId].timestamps = [ts, ...marks[groupId].timestamps].slice(0, MAX_READ_MARK_COUNT);
 
   await saveGroupReadMarks(marks);
   return marks;
@@ -614,8 +614,8 @@ export async function setAuthorReadMark(mid: number, readMarkTs: number): Promis
   const map = await loadAuthorPreferences();
   const prev = normalizeAuthorPreference(mid, map[mid]);
   const normalizedTs = Math.floor(readMarkTs);
-  const deduped = (prev.readMarkTimestamps ?? []).filter((item) => item !== normalizedTs);
-  const nextReadMarkTimestamps = [normalizedTs, ...deduped].slice(0, MAX_AUTHOR_READ_MARK_COUNT);
+  // 作者级已阅也必须保留真实操作历史，而不是“去重后的值集合”。
+  const nextReadMarkTimestamps = [normalizedTs, ...(prev.readMarkTimestamps ?? [])].slice(0, MAX_AUTHOR_READ_MARK_COUNT);
   const next: AuthorPreference = {
     ...prev,
     readMarkTs: nextReadMarkTimestamps[0],
