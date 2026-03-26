@@ -1206,6 +1206,7 @@ export function makeSummary(
       groupId: group.groupId,
       title: getGroupTitle(group),
       unreadCount,
+      excludeFromUnreadCount: group.excludeFromUnreadCount === true,
       syncStatus: buildGroupSyncStatus(authorMids, authorCacheMap, settings),
       lastRefreshAt: runtime.lastRefreshAt,
       enabled: group.enabled,

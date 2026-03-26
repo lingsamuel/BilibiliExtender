@@ -288,6 +288,26 @@ async function handleDeleteGroup(
   return { groups: nextGroups };
 }
 
+async function handleSetGroupExcludeUnread(
+  request: Extract<MessageRequest, { type: 'SET_GROUP_EXCLUDE_UNREAD' }>
+): Promise<ResponseMap['SET_GROUP_EXCLUDE_UNREAD']> {
+  const groups = await loadGroups();
+  const index = groups.findIndex((item) => item.groupId === request.payload.groupId);
+  if (index < 0) {
+    throw new Error('分组不存在');
+  }
+
+  const previous = groups[index];
+  const nextGroup: GroupConfig = {
+    ...previous,
+    excludeFromUnreadCount: request.payload.excludeFromUnreadCount === true,
+    updatedAt: Date.now()
+  };
+  groups[index] = nextGroup;
+  await saveGroups(groups);
+  return { group: nextGroup };
+}
+
 async function handleSaveSettings(
   request: Extract<MessageRequest, { type: 'SAVE_SETTINGS' }>
 ): Promise<ResponseMap['SAVE_SETTINGS']> {
@@ -1146,6 +1166,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleUpsertGroup(request));
     case 'DELETE_GROUP':
       return ok(await handleDeleteGroup(request));
+    case 'SET_GROUP_EXCLUDE_UNREAD':
+      return ok(await handleSetGroupExcludeUnread(request));
     case 'SAVE_SETTINGS':
       return ok(await handleSaveSettings(request));
     case 'GET_GROUP_SUMMARY':

@@ -75,6 +75,15 @@
             撤销上次看到
           </button>
           <button v-if="mode !== 'overview'" class="bbe-btn" :disabled="loading" @click="markCurrentGroupRead">{{ markReadButtonText }}</button>
+          <button
+            v-if="activeGroupSummary && !isAllGroupEntry"
+            class="bbe-btn"
+            :class="{ active: activeGroupSummary.excludeFromUnreadCount }"
+            :disabled="loading"
+            @click="toggleGroupExcludeUnread"
+          >
+            {{ activeGroupSummary.excludeFromUnreadCount ? '不计算未读（开）' : '不计算未读' }}
+          </button>
         </div>
 
         <div class="bbe-toolbar-right">
@@ -2837,6 +2846,29 @@ async function toggleAuthorIgnoreUnread(author: AuthorFeed): Promise<void> {
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '设置作者不计算未读失败');
+  }
+}
+
+async function toggleGroupExcludeUnread(): Promise<void> {
+  const summary = activeGroupSummary.value;
+  if (!summary || isAllGroupEntry.value) {
+    return;
+  }
+
+  try {
+    const resp = await sendMessage({
+      type: 'SET_GROUP_EXCLUDE_UNREAD',
+      payload: {
+        groupId: summary.groupId,
+        excludeFromUnreadCount: summary.excludeFromUnreadCount !== true
+      }
+    });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '设置分组不计算未读失败');
+    }
+    await reloadFeedWithReadMark({ silent: true });
+  } catch (error) {
+    showErrorToast(error instanceof Error ? error.message : '设置分组不计算未读失败');
   }
 }
 

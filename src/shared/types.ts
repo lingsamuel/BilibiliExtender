@@ -131,6 +131,7 @@ export interface GroupSummary {
   groupId: string;
   title: string;
   unreadCount: number;
+  excludeFromUnreadCount: boolean;
   syncStatus: GroupSyncStatus;
   lastRefreshAt?: number;
   enabled: boolean;

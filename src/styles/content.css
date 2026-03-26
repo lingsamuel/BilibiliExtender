@@ -1248,7 +1248,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-settings-grid {
   display: grid;
-  grid-template-columns: 2fr 2fr 60px 1fr 1fr 1fr;
+  grid-template-columns: 2fr 2fr 60px 1fr 1fr;
   gap: 4px 8px;
   align-items: center;
 }
