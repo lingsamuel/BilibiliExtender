@@ -457,7 +457,7 @@ function isGroupRefreshing(groupId: string): boolean {
 
 /**
  * 设置页中的“立即刷新”与抽屉手动刷新保持同语义：
- * 始终提交 MANUAL_REFRESH，由后台先刷新收藏夹缓存再刷新作者缓存。
+ * 始终提交 MANUAL_REFRESH，由后台先刷新收藏夹缓存，再强制刷新该分组作者首页。
  */
 async function refreshGroupNow(groupId: string): Promise<void> {
   if (refreshingGroups.value.has(groupId)) return;

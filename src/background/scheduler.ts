@@ -758,7 +758,8 @@ async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): 
 
 /**
  * 刷新单个分组的收藏夹缓存：重建作者列表并同步收藏夹标题。
- * 完成后会把该分组作者任务优先插入作者通道。
+ * 完成后会把该分组作者任务插入作者通道。
+ * 手动刷新场景下需要强制刷新该分组作者首页，因此会忽略作者缓存新鲜度判定。
  */
 async function runGroupFavTask(task: GroupFavTask): Promise<void> {
   const [groups, feedCacheMap, authorCacheMap, settings] = await Promise.all([
@@ -801,6 +802,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
 
   const burstTasks: AuthorTask[] = [];
   const priorityTasks: AuthorTask[] = [];
+  const forceAuthorRefresh = task.trigger === 'manual-refresh';
   for (const author of authors) {
     const cache = authorCacheMap[author.mid];
     const task: AuthorTask = {
@@ -809,7 +811,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       groupId: group.groupId,
       pn: 1,
       reason: 'first-page-refresh',
-      trigger: 'group-fav-chain',
+      trigger: forceAuthorRefresh ? 'manual-refresh' : 'group-fav-chain',
       failFast: false
     };
 
@@ -818,8 +820,8 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       continue;
     }
 
-    // group-fav 衔接作者任务时，只补“已有缓存但已过期”的目标，避免把未过期作者大量挤入常规队列。
-    if (isAuthorCacheExpired(cache, settings)) {
+    // 手动刷新需要强制刷新该分组作者首页；自动链路仍只补“已有缓存但已过期”的目标。
+    if (forceAuthorRefresh || isAuthorCacheExpired(cache, settings)) {
       priorityTasks.push(task);
     }
   }

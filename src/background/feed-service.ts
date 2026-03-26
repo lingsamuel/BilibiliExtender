@@ -12,6 +12,8 @@ import type {
   GroupFeedResult,
   GroupReadMark,
   GroupRuntimeState,
+  GroupSummary,
+  GroupSyncStatus,
   VideoItem,
   ViewMode
 } from '@/shared/types';
@@ -363,6 +365,44 @@ function normalizeAllPostsFilter(value: AllPostsFilterKey | undefined): AllPosts
 
 function getRecentDaysTs(recentDays: number): number {
   return Math.floor(Date.now() / 1000) - normalizeRecentDays(recentDays) * 24 * 60 * 60;
+}
+
+function isFreshByFirstPageFetchedAt(
+  fetchedAt: number | undefined,
+  settings: ExtensionSettings
+): boolean {
+  if (!fetchedAt || fetchedAt <= 0) {
+    return false;
+  }
+  return Date.now() - fetchedAt <= settings.refreshIntervalMinutes * 60 * 1000;
+}
+
+export function buildGroupSyncStatus(
+  authorMids: number[],
+  authorCacheMap: AuthorCacheMap,
+  settings: ExtensionSettings
+): GroupSyncStatus {
+  let staleAuthors = 0;
+  let oldestFreshFetchedAt: number | undefined;
+
+  for (const mid of authorMids) {
+    const cache = authorCacheMap[mid];
+    const fetchedAt = cache?.firstPageFetchedAt || cache?.lastFetchedAt;
+    if (!isFreshByFirstPageFetchedAt(fetchedAt, settings)) {
+      staleAuthors++;
+      continue;
+    }
+
+    if (!oldestFreshFetchedAt || fetchedAt < oldestFreshFetchedAt) {
+      oldestFreshFetchedAt = fetchedAt;
+    }
+  }
+
+  return {
+    totalAuthors: authorMids.length,
+    staleAuthors,
+    oldestFreshFetchedAt
+  };
 }
 
 function collectReadMarkTimestamps(groupId: string, readMarks: ReadMarkMap): number[] {
@@ -1103,6 +1143,7 @@ export function toFeedResult(
     mode,
     mixedVideos,
     videosByAuthor,
+    syncStatus: buildGroupSyncStatus(authorMids, authorCacheMap, settings),
     lastRefreshAt: runtime.lastRefreshAt,
     lastReadAt: runtime.lastReadAt,
     unreadCount: runtime.unreadCount,
@@ -1137,23 +1178,13 @@ export function makeSummary(
   reviewedOverrides: ReviewedOverrideMap,
   authorPreferences: AuthorPreferenceMap
 ): {
-  summaries: Array<{
-    groupId: string;
-    title: string;
-    unreadCount: number;
-    lastRefreshAt?: number;
-    enabled: boolean;
-    savedMode?: ViewMode;
-    savedReadMarkTs?: number;
-    savedRecentDays?: number;
-    savedAllPostsFilter?: AllPostsFilterKey;
-    savedByAuthorSortByLatest?: boolean;
-  }>;
+  summaries: GroupSummary[];
   totalUnreadCount: number;
 } {
   const summaries = groups.map((group) => {
     const runtime = ensureRuntimeState(runtimeMap, group.groupId, settings);
     const feedCache = feedCacheMap[group.groupId];
+    const authorMids = feedCache?.authorMids ?? [];
     let unreadCount = 0;
 
     if (feedCache) {
@@ -1175,6 +1206,7 @@ export function makeSummary(
       groupId: group.groupId,
       title: getGroupTitle(group),
       unreadCount,
+      syncStatus: buildGroupSyncStatus(authorMids, authorCacheMap, settings),
       lastRefreshAt: runtime.lastRefreshAt,
       enabled: group.enabled,
       savedMode: runtime.savedMode,

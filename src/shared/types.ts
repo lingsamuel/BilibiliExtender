@@ -45,6 +45,13 @@ export interface GroupRuntimeState {
   savedByAuthorSortByLatest?: boolean;
 }
 
+export interface GroupSyncStatus {
+  totalAuthors: number;
+  staleAuthors: number;
+  // 所有作者都新鲜时，取最老的一份首页缓存时间（ms）。
+  oldestFreshFetchedAt?: number;
+}
+
 export interface VideoItem {
   bvid: string;
   aid: number;
@@ -105,6 +112,7 @@ export interface GroupFeedResult {
   mode: ViewMode;
   mixedVideos: VideoItem[];
   videosByAuthor: AuthorFeed[];
+  syncStatus: GroupSyncStatus;
   lastRefreshAt?: number;
   lastReadAt?: number;
   unreadCount: number;
@@ -123,6 +131,7 @@ export interface GroupSummary {
   groupId: string;
   title: string;
   unreadCount: number;
+  syncStatus: GroupSyncStatus;
   lastRefreshAt?: number;
   enabled: boolean;
   savedMode?: ViewMode;

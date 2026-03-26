@@ -47,6 +47,7 @@ import {
 } from '@/shared/storage/repository';
 import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
+  buildGroupSyncStatus,
   hasAuthorMorePages,
   increaseMixedTarget,
   makeSummary,
@@ -334,10 +335,16 @@ async function handleGetGroupSummary(
   const summaries = allSummaries.filter((item) => item.enabled);
   if (settings.enableAllGroup && summaries.length > 0) {
     const allRuntime = runtimeMap[ALL_GROUP_ID];
+    const allAuthorMids = Array.from(new Set(
+      groups
+        .filter((item) => item.enabled)
+        .flatMap((item) => feedCacheMap[item.groupId]?.authorMids ?? [])
+    ));
     summaries.unshift({
       groupId: ALL_GROUP_ID,
       title: '全部',
       unreadCount: totalUnreadCount,
+      syncStatus: buildGroupSyncStatus(allAuthorMids, authorCacheMap, settings),
       lastRefreshAt: allRuntime?.lastRefreshAt,
       enabled: true,
       savedMode: allRuntime?.savedMode,
@@ -459,6 +466,7 @@ async function handleGetGroupFeed(
       mode: request.payload.mode,
       mixedVideos: [],
       videosByAuthor: [],
+      syncStatus: { totalAuthors: 0, staleAuthors: 0 },
       unreadCount: 0,
       hasMoreForMixed: false,
       readMarkTimestamps: [],
@@ -1094,7 +1102,7 @@ async function handleGetAuthorPreferences(
 
 /**
  * 手动刷新：优先提交“收藏夹刷新任务”。
- * 收藏夹任务完成后会自动衔接作者任务，前台通过轮询 GET_GROUP_FEED 等待缓存就绪。
+ * 收藏夹任务完成后会强制刷新该分组作者首页，前台通过轮询 GET_GROUP_FEED 等待缓存就绪。
  */
 async function handleManualRefresh(
   request: Extract<MessageRequest, { type: 'MANUAL_REFRESH' }>

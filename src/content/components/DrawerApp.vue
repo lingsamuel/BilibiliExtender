@@ -399,7 +399,7 @@ import type {
   VideoItem,
   ViewMode
 } from '@/shared/types';
-import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
+import { formatDaysAgo, formatGroupSyncStatus, formatReadMarkTs } from '@/shared/utils/format';
 import { isBuiltInRecentDay, normalizeDefaultReadMarkDays, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
@@ -1489,11 +1489,12 @@ function getAuthorPagePollDelay(attempt: number): number {
 const hasRenderableFeed = computed(() => hasRenderableFeedData(feed.value));
 const showGeneratingPlaceholder = computed(() => generating.value && !hasRenderableFeed.value);
 const isUpdating = computed(() => refreshing.value || (generating.value && hasRenderableFeed.value));
+const activeGroupSummary = computed(() => summaries.value.find((item) => item.groupId === activeGroupId.value));
 
 const refreshText = computed(() => {
   if (isUpdating.value) return '正在更新中';
   if (generating.value) return '正在生成缓存...';
-  return formatRelativeMinutes(feed.value?.lastRefreshAt);
+  return formatGroupSyncStatus(feed.value?.syncStatus ?? activeGroupSummary.value?.syncStatus);
 });
 
 const isAllGroupEntry = computed(() => activeGroupId.value === ENTRY_ID.ALL);

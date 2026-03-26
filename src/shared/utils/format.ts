@@ -1,3 +1,5 @@
+import type { GroupSyncStatus } from '@/shared/types';
+
 export function formatRelativeMinutes(timestampMs?: number): string {
   if (!timestampMs) {
     return '从未刷新';
@@ -20,6 +22,26 @@ export function formatRelativeMinutes(timestampMs?: number): string {
 
   const days = Math.floor(hours / 24);
   return `${days} 天前刷新`;
+}
+
+export function formatGroupSyncStatus(status?: GroupSyncStatus): string {
+  if (!status || status.totalAuthors <= 0) {
+    return '暂无作者';
+  }
+
+  if (status.staleAuthors > 0) {
+    return `待刷新：${status.staleAuthors}/${status.totalAuthors}`;
+  }
+
+  if (!status.oldestFreshFetchedAt) {
+    return `待刷新：${status.totalAuthors}/${status.totalAuthors}`;
+  }
+
+  const diffMinutes = Math.max(0, Math.floor((Date.now() - status.oldestFreshFetchedAt) / (60 * 1000)));
+  if (diffMinutes <= 0) {
+    return '上次同步：刚刚';
+  }
+  return `上次同步：${diffMinutes}分钟前`;
 }
 
 export function formatPubdate(seconds: number): string {
