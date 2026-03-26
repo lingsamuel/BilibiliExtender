@@ -2,14 +2,29 @@
   <article class="bbe-card" :class="{ 'is-dimmed': dimmed }">
     <div class="bbe-card-cover">
       <a
-        class="bbe-card-cover-link"
+        class="bbe-card-cover-link bili-cover-card"
         :href="videoUrl"
         target="_blank"
         rel="noreferrer"
         @click="onVideoLinkClick"
         @auxclick="onVideoLinkAuxClick"
       >
-        <img :src="video.cover" :alt="video.title" />
+        <div class="">
+          <img :src="video.cover" :alt="video.title" />
+        </div>
+        <div v-if="hasCoverStats" class="bili-cover-card__stats">
+          <div v-if="formattedPlayCount" class="bili-cover-card__stat">
+            <i class="sic-BDC-playdata_square_line" />
+            <span>{{ formattedPlayCount }}</span>
+          </div>
+          <div v-if="formattedDanmakuCount" class="bili-cover-card__stat">
+            <i class="sic-BDC-danmu_square_line" />
+            <span>{{ formattedDanmakuCount }}</span>
+          </div>
+          <div v-if="video.durationText" class="bili-cover-card__stat">
+            <span>{{ video.durationText }}</span>
+          </div>
+        </div>
         <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
         <div v-if="playbackPercent > 0" class="bbe-progress-bar">
           <div class="bbe-progress-fill" :style="{ width: playbackPercent + '%' }" />
@@ -77,7 +92,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { VideoItem } from '@/shared/types';
-import { formatPubdate } from '@/shared/utils/format';
+import { formatPubdate, formatVideoPlayCount } from '@/shared/utils/format';
 
 const props = defineProps<{
   video: VideoItem;
@@ -96,6 +111,16 @@ const emit = defineEmits<{
 
 const playbackPercent = computed(() => props.video.playbackPosiiton ?? 0);
 const watchFinished = computed(() => playbackPercent.value >= 90);
+const formattedPlayCount = computed(() => formatVideoPlayCount(props.video.playCount));
+const formattedDanmakuCount = computed(() => {
+  if (!Number.isFinite(props.video.danmakuCount) || props.video.danmakuCount === undefined || props.video.danmakuCount < 0) {
+    return undefined;
+  }
+  return String(Math.floor(props.video.danmakuCount));
+});
+const hasCoverStats = computed(() =>
+  Boolean(formattedPlayCount.value || formattedDanmakuCount.value || props.video.durationText)
+);
 const reviewedState = computed(() => {
   if (props.reviewed !== undefined) {
     return props.reviewed;

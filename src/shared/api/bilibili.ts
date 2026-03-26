@@ -76,6 +76,9 @@ interface ArcSearchItem {
   created: number;
   author: string;
   mid: number;
+  play?: number;
+  video_review?: number;
+  length?: string;
   playback_position?: number;
 }
 
@@ -311,6 +314,9 @@ export async function getUploaderVideos(
         pubdate: item.created,
         authorMid: item.mid || mid,
         authorName: item.author,
+        playCount: Number.isFinite(item.play) ? item.play : undefined,
+        danmakuCount: Number.isFinite(item.video_review) ? item.video_review : undefined,
+        durationText: item.length?.trim() || undefined,
         playbackPosiiton: item.playback_position
       }));
 

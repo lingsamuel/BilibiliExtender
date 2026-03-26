@@ -54,6 +54,9 @@ export interface VideoItem {
   authorMid: number;
   authorName: string;
   authorFace?: string;
+  playCount?: number;
+  danmakuCount?: number;
+  durationText?: string;
   playbackPosiiton?: number;
   // 分页缓存元信息：
   // - updatedAt: 当前这条视频元数据最后一次刷新时间；

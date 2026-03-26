@@ -45,3 +45,18 @@ export function formatDaysAgo(seconds: number): string {
   const days = Math.floor(diffSeconds / (24 * 60 * 60));
   return `${days} 天前`;
 }
+
+/**
+ * B 站封面播放量在超过 1 万后转为 “N万” 形式，且固定保留 1 位小数。
+ */
+export function formatVideoPlayCount(playCount?: number): string | undefined {
+  if (!Number.isFinite(playCount) || playCount === undefined || playCount < 0) {
+    return undefined;
+  }
+
+  if (playCount > 10000) {
+    return `${(playCount / 10000).toFixed(1)}万`;
+  }
+
+  return String(Math.floor(playCount));
+}
