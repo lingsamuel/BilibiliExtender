@@ -77,12 +77,17 @@
           <button v-if="mode !== 'overview'" class="bbe-btn" :disabled="loading" @click="markCurrentGroupRead">{{ markReadButtonText }}</button>
           <button
             v-if="activeGroupSummary && !isAllGroupEntry"
-            class="bbe-btn"
+            type="button"
+            class="bbe-toolbar-switch"
             :class="{ active: activeGroupSummary.excludeFromUnreadCount }"
+            :aria-pressed="activeGroupSummary.excludeFromUnreadCount"
             :disabled="loading"
             @click="toggleGroupExcludeUnread"
           >
-            {{ activeGroupSummary.excludeFromUnreadCount ? '不计算未读（开）' : '不计算未读' }}
+            <span class="bbe-toolbar-switch-track" aria-hidden="true">
+              <span class="bbe-toolbar-switch-thumb" />
+            </span>
+            <span>{{ activeGroupSummary.excludeFromUnreadCount ? '不计算未读' : '不计算未读' }}</span>
           </button>
         </div>
 
@@ -239,7 +244,12 @@
                       >
                         <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
                         <span v-else class="bbe-avatar bbe-avatar-placeholder" aria-hidden="true" />
-                        <span>{{ author.authorName }}</span>
+                        <span class="bbe-author-info">
+                          <span class="bbe-author-name">{{ author.authorName }}</span>
+                          <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
+                            {{ getAuthorLatestUpdateNote(author) }}
+                          </span>
+                        </span>
                       </a>
                       <button
                         type="button"
@@ -281,9 +291,6 @@
                       </button>
                     </div>
                   </div>
-                  <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
-                    {{ getAuthorLatestUpdateNote(author) }}
-                  </span>
                 </h3>
                 <div class="bbe-grid bbe-author-grid">
                   <div
@@ -942,7 +949,7 @@ function getAuthorLatestUpdateNote(author: AuthorFeed): string {
   if (!author.latestPubdate) {
     return '';
   }
-  return `最近更新：${formatDaysAgo(author.latestPubdate)}`;
+  return `${formatDaysAgo(author.latestPubdate).replace(' 天前', '天前')}更新`;
 }
 
 function isAuthorPageLoading(authorMid: number): boolean {
@@ -1197,7 +1204,7 @@ function getFollowButtonText(author: AuthorFeed): string {
 }
 
 function getAuthorIgnoreUnreadButtonText(author: AuthorFeed): string {
-  return author.ignoreUnreadCount ? '不计算未读（开）' : '不计算未读';
+  return author.ignoreUnreadCount ? '不计算未读' : '不计算未读';
 }
 
 function getCsrfFromCookie(): string | null {
