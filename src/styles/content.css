@@ -313,7 +313,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-mixed-grid .bbe-read-boundary-row {
   grid-column: 1 / -1;
-  margin: 2px 0 12px;
+  margin: 0 0 12px;
 }
 
 .bbe-by-author-layout {
