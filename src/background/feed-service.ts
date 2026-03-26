@@ -439,7 +439,10 @@ export function buildGroupSyncStatus(
 
 function collectReadMarkTimestamps(groupId: string, readMarks: ReadMarkMap): number[] {
   const timestamps = readMarks[groupId]?.timestamps ?? [];
-  return [...timestamps].sort((a, b) => b - a);
+  // 这里必须保留“最近一次写入在前”的栈顺序：
+  // 用户重新选择更早的时间点时，会把该时间点移回栈顶；
+  // 若按数值重新排序，会破坏撤销语义，并导致前端误判“当前最新时间点”。
+  return [...timestamps];
 }
 
 function getLatestGroupReadMarkTs(groupId: string, readMarks: ReadMarkMap): number {

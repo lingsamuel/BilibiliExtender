@@ -186,7 +186,8 @@ export interface GroupFeedCache {
 // 每个分组的已阅记录，按 groupId 索引，不跨分组共享
 export interface GroupReadMark {
   groupId: string;
-  // 最多保留 10 条，按时间倒序排列（最新在前）
+  // 最多保留 10 条，按最近一次写入顺序倒序排列（栈顶在前），
+  // 不按时间戳数值重新排序；这样撤销才能回到上一个用户操作的时间点。
   // 每条记录为 Unix 时间戳（秒），表示该时间点及之前的视频已阅
   timestamps: number[];
 }
