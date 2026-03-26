@@ -459,7 +459,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-timeline {
   position: sticky;
-  top: 6px;
+  top: 0;
   align-self: start;
   padding-right: 6px;
   min-height: 120px;

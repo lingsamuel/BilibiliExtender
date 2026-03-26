@@ -2632,6 +2632,7 @@ async function onTrackingReadFilterChange(): Promise<void> {
   }
   resetAuthorPaginationState();
   try {
+    await refreshMixedTimelineAfterReadBoundaryChange();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '切换近期范围失败');
@@ -2744,6 +2745,7 @@ async function markCurrentGroupRead(): Promise<void> {
       }
     }
     syncSelectedReadFilterKey();
+    await refreshMixedTimelineAfterReadBoundaryChange();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '标记已阅失败');
@@ -2813,6 +2815,7 @@ async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: st
       activeTrackingReadMarkTs.value = latestTs;
     }
     syncSelectedReadFilterKey();
+    await refreshMixedTimelineAfterReadBoundaryChange();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : fallbackErrorMessage);
@@ -2835,6 +2838,7 @@ async function undoLatestGroupReadMark(): Promise<void> {
     readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
     activeTrackingReadMarkTs.value = readMarkTimestamps.value[0] ?? undefined;
     syncSelectedReadFilterKey();
+    await refreshMixedTimelineAfterReadBoundaryChange();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '撤销上次看到失败');
@@ -3067,6 +3071,14 @@ function scrollToAuthor(authorMid: number): void {
   const targetTop = Math.max(0, Math.min(maxScrollTop, container.scrollTop + delta));
   container.scrollTo({ top: targetTop, behavior: 'smooth' });
   byAuthorActiveMid.value = authorMid;
+}
+
+async function refreshMixedTimelineAfterReadBoundaryChange(): Promise<void> {
+  if (!visible.value || mode.value !== 'mixed') {
+    return;
+  }
+  await nextTick();
+  updateMixedTimelineState();
 }
 
 async function onListScroll(event: Event): Promise<void> {
