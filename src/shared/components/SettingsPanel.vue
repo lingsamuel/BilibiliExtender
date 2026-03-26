@@ -87,7 +87,7 @@
       <div class="bbe-setting-row">
         <div>
           默认近期范围
-          <div class="bbe-setting-hint">用于时间流与近期投稿的默认近期范围，支持 1-30 天；若不是 7 / 14 / 30，会在下拉中额外显示对应选项</div>
+          <div class="bbe-setting-hint">时间流与近期投稿的默认近期范围，支持 1-30 天</div>
         </div>
         <input v-model.number="settings.defaultReadMarkDays" class="bbe-input" type="number" min="1" max="30" />
       </div>
@@ -102,7 +102,7 @@
       </div>
       <div class="bbe-setting-row">
         <div>
-          使用同步存储（storage.sync）
+          开启同步存储
           <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
         </div>
         <label>
@@ -115,14 +115,14 @@
       <div class="bbe-setting-row">
         <div>
           请求缓存时长（分钟）
-          <div class="bbe-setting-hint">API 请求结果的缓存有效期，过期后才会重新请求</div>
+          <div class="bbe-setting-hint">API 请求结果的缓存有效期</div>
         </div>
         <input v-model.number="settings.refreshIntervalMinutes" class="bbe-input" type="number" min="1" max="120" />
       </div>
       <div class="bbe-setting-row">
         <div>
           后台刷新间隔（分钟）
-          <div class="bbe-setting-hint">后台自动刷新作者投稿缓存的周期，请求会均匀分散在周期内</div>
+          <div class="bbe-setting-hint">后台自动刷新作者投稿缓存的周期</div>
         </div>
         <input v-model.number="settings.backgroundRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
       </div>
@@ -135,7 +135,7 @@
       </div>
       <div class="bbe-setting-row">
         <div>
-          调度批大小（BATCH_SIZE）
+          调度批大小
           <div class="bbe-setting-hint">所有调度通道共享的每批最大任务数</div>
         </div>
         <input v-model.number="settings.schedulerBatchSize" class="bbe-input" type="number" min="1" max="50" />
@@ -183,8 +183,8 @@ const emit = defineEmits<{
 }>();
 
 const NOTICE_DURATION_MS = 3000;
-const SETTINGS_AUTO_SAVE_DELAY_MS = 800;
-const GROUP_ALIAS_AUTO_SAVE_DELAY_MS = 500;
+const SETTINGS_AUTO_SAVE_DELAY_MS = 400;
+const GROUP_ALIAS_AUTO_SAVE_DELAY_MS = 400;
 const ADVANCED_SETTINGS_VISIBILITY_KEY = 'settingsPanel.showAdvancedSettings';
 
 const folders = ref<FavoriteFolder[]>([]);

@@ -122,7 +122,7 @@ body {
 
 .bbe-setting-row {
   display: grid;
-  grid-template-columns: 280px 180px;
+  grid-template-columns: 400px 180px;
   gap: 12px;
   align-items: start;
   margin-top: 10px;
