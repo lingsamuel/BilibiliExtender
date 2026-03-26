@@ -68,84 +68,109 @@
     <h2 class="bbe-panel-title">行为设置</h2>
     <div class="bbe-setting-row">
       <div>
-        请求缓存时长（分钟）
-        <div class="bbe-setting-hint">API 请求结果的缓存有效期，过期后才会重新请求</div>
+        我是高级用户，给我显示所有设置
+        <div class="bbe-setting-hint">开启后显示刷新频率、缓存、调度与调试等完整配置项</div>
       </div>
-      <input v-model.number="settings.refreshIntervalMinutes" class="bbe-input" type="number" min="1" max="120" />
+      <button
+        type="button"
+        class="bbe-settings-switch"
+        :class="{ active: showAdvancedSettings }"
+        :aria-pressed="showAdvancedSettings"
+        @click="toggleAdvancedSettings"
+      >
+        <span class="bbe-settings-switch-track" aria-hidden="true">
+          <span class="bbe-settings-switch-thumb" />
+        </span>
+        <span>{{ showAdvancedSettings ? '已开启' : '未开启' }}</span>
+      </button>
     </div>
-    <div class="bbe-setting-row">
-      <div>
-        后台刷新间隔（分钟）
-        <div class="bbe-setting-hint">后台自动刷新作者投稿缓存的周期，请求会均匀分散在周期内</div>
+    <section class="bbe-settings-subsection">
+      <h3 class="bbe-settings-subtitle">简易配置</h3>
+      <p class="bbe-setting-hint bbe-settings-subhint">大多数情况下，只需要调整这个选项。</p>
+      <div class="bbe-setting-row">
+        <div>
+          默认近期范围
+          <div class="bbe-setting-hint">用于时间流与近期投稿的默认近期范围，仅支持 7 / 14 / 30 天</div>
+        </div>
+        <select v-model.number="settings.defaultReadMarkDays" class="bbe-select">
+          <option v-for="option in recentPresetOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
       </div>
-      <input v-model.number="settings.backgroundRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        收藏夹缓存刷新间隔（分钟）
-        <div class="bbe-setting-hint">后台自动刷新收藏夹标题与作者列表的周期</div>
+    </section>
+    <section v-if="showAdvancedSettings" class="bbe-settings-subsection">
+      <h3 class="bbe-settings-subtitle">高级配置</h3>
+      <div class="bbe-setting-row">
+        <div>
+          请求缓存时长（分钟）
+          <div class="bbe-setting-hint">API 请求结果的缓存有效期，过期后才会重新请求</div>
+        </div>
+        <input v-model.number="settings.refreshIntervalMinutes" class="bbe-input" type="number" min="1" max="120" />
       </div>
-      <input v-model.number="settings.groupFavRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        调度批大小（BATCH_SIZE）
-        <div class="bbe-setting-hint">所有调度通道共享的每批最大任务数</div>
+      <div class="bbe-setting-row">
+        <div>
+          后台刷新间隔（分钟）
+          <div class="bbe-setting-hint">后台自动刷新作者投稿缓存的周期，请求会均匀分散在周期内</div>
+        </div>
+        <input v-model.number="settings.backgroundRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
       </div>
-      <input v-model.number="settings.schedulerBatchSize" class="bbe-input" type="number" min="1" max="50" />
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        时间流模式最大加载数量
-        <div class="bbe-setting-hint">时间流模式下最多加载的视频总数上限</div>
+      <div class="bbe-setting-row">
+        <div>
+          收藏夹缓存刷新间隔（分钟）
+          <div class="bbe-setting-hint">后台自动刷新收藏夹标题与作者列表的周期</div>
+        </div>
+        <input v-model.number="settings.groupFavRefreshIntervalMinutes" class="bbe-input" type="number" min="5" max="120" />
       </div>
-      <input v-model.number="settings.timelineMixedMaxCount" class="bbe-input" type="number" min="10" max="500" />
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        已阅前额外显示数量
-        <div class="bbe-setting-hint">选中已阅时间点后，每位作者额外显示已阅之前最新的 N 个视频</div>
+      <div class="bbe-setting-row">
+        <div>
+          调度批大小（BATCH_SIZE）
+          <div class="bbe-setting-hint">所有调度通道共享的每批最大任务数</div>
+        </div>
+        <input v-model.number="settings.schedulerBatchSize" class="bbe-input" type="number" min="1" max="50" />
       </div>
-      <input v-model.number="settings.extraOlderVideoCount" class="bbe-input" type="number" min="0" max="20" />
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        默认近期范围
-        <div class="bbe-setting-hint">用于时间流与近期投稿的默认近期范围，仅支持 7 / 14 / 30 天</div>
+      <div class="bbe-setting-row">
+        <div>
+          时间流模式最大加载数量
+          <div class="bbe-setting-hint">时间流模式下最多加载的视频总数上限</div>
+        </div>
+        <input v-model.number="settings.timelineMixedMaxCount" class="bbe-input" type="number" min="10" max="500" />
       </div>
-      <select v-model.number="settings.defaultReadMarkDays" class="bbe-select">
-        <option v-for="option in recentPresetOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </option>
-      </select>
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        显示“全部”聚合分组
-        <div class="bbe-setting-hint">关闭后侧栏将隐藏默认“全部”分组入口</div>
+      <div class="bbe-setting-row">
+        <div>
+          已阅前额外显示数量
+          <div class="bbe-setting-hint">选中已阅时间点后，每位作者额外显示已阅之前最新的 N 个视频</div>
+        </div>
+        <input v-model.number="settings.extraOlderVideoCount" class="bbe-input" type="number" min="0" max="20" />
       </div>
-      <label>
-        <input v-model="settings.enableAllGroup" type="checkbox" /> 启用
-      </label>
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        使用同步存储（storage.sync）
-        <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
+      <div class="bbe-setting-row">
+        <div>
+          显示“全部”聚合分组
+          <div class="bbe-setting-hint">关闭后侧栏将隐藏默认“全部”分组入口</div>
+        </div>
+        <label>
+          <input v-model="settings.enableAllGroup" type="checkbox" /> 启用
+        </label>
       </div>
-      <label>
-        <input v-model="settings.useStorageSync" type="checkbox" /> 启用
-      </label>
-    </div>
-    <div class="bbe-setting-row">
-      <div>
-        调试模式
-        <div class="bbe-setting-hint">开启后侧边栏显示调试入口，可查看调度器状态</div>
+      <div class="bbe-setting-row">
+        <div>
+          使用同步存储（storage.sync）
+          <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
+        </div>
+        <label>
+          <input v-model="settings.useStorageSync" type="checkbox" /> 启用
+        </label>
       </div>
-      <label>
-        <input v-model="settings.debugMode" type="checkbox" /> 启用
-      </label>
-    </div>
+      <div class="bbe-setting-row">
+        <div>
+          调试模式
+          <div class="bbe-setting-hint">开启后侧边栏显示调试入口，可查看调度器状态</div>
+        </div>
+        <label>
+          <input v-model="settings.debugMode" type="checkbox" /> 启用
+        </label>
+      </div>
+    </section>
   </section>
 
   <p v-if="message" class="bbe-message">{{ message }}</p>
@@ -155,6 +180,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { sendMessage } from '@/shared/messages';
+import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
 import { normalizeExtensionSettings, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
 
@@ -166,6 +192,7 @@ const emit = defineEmits<{
 const NOTICE_DURATION_MS = 3000;
 const SETTINGS_AUTO_SAVE_DELAY_MS = 800;
 const GROUP_ALIAS_AUTO_SAVE_DELAY_MS = 500;
+const ADVANCED_SETTINGS_VISIBILITY_KEY = 'settingsPanel.showAdvancedSettings';
 
 const folders = ref<FavoriteFolder[]>([]);
 const groups = ref<GroupConfig[]>([]);
@@ -191,12 +218,14 @@ const groupAuthorCounts = ref<Record<string, number>>({});
 const totalTrackedAuthors = ref(0);
 const refreshingGroups = ref<Set<string>>(new Set());
 const settingsSnapshot = ref('');
+const showAdvancedSettings = ref(false);
 const groupSaveTimers = new Map<string, number>();
 let noticeTimer: number | null = null;
 let settingsSaveTimer: number | null = null;
 let isApplyingSettings = false;
 let isSavingSettings = false;
 let hasPendingSettingsSave = false;
+let isApplyingAdvancedSettingsVisibility = false;
 
 const recentPresetOptions = RECENT_PRESET_DAY_VALUES.map((days) => ({
   value: days,
@@ -254,6 +283,24 @@ function applySettingsSnapshot(nextSettings: ExtensionSettings): void {
 
 function isSettingsDirty(): boolean {
   return serializeSettings(settings.value) !== settingsSnapshot.value;
+}
+
+async function loadAdvancedSettingsVisibility(): Promise<void> {
+  try {
+    const stored = await ext.storage.local.get(ADVANCED_SETTINGS_VISIBILITY_KEY);
+    isApplyingAdvancedSettingsVisibility = true;
+    showAdvancedSettings.value = stored[ADVANCED_SETTINGS_VISIBILITY_KEY] === true;
+  } catch {
+    // 高级设置显隐仅影响界面呈现，读取失败时保持默认关闭即可。
+  } finally {
+    queueMicrotask(() => {
+      isApplyingAdvancedSettingsVisibility = false;
+    });
+  }
+}
+
+function toggleAdvancedSettings(): void {
+  showAdvancedSettings.value = !showAdvancedSettings.value;
 }
 
 async function reloadOptionsData(): Promise<void> {
@@ -513,6 +560,13 @@ watch(
   { deep: true }
 );
 
+watch(showAdvancedSettings, (value) => {
+  if (isApplyingAdvancedSettingsVisibility) return;
+  void ext.storage.local.set({
+    [ADVANCED_SETTINGS_VISIBILITY_KEY]: value
+  });
+});
+
 onBeforeUnmount(() => {
   if (noticeTimer !== null) {
     window.clearTimeout(noticeTimer);
@@ -530,6 +584,83 @@ onBeforeUnmount(() => {
 });
 
 onMounted(() => {
+  void loadAdvancedSettingsVisibility();
   void reloadOptionsData();
 });
 </script>
+
+<style scoped>
+.bbe-settings-subsection + .bbe-settings-subsection {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.bbe-settings-subtitle {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.bbe-settings-subhint {
+  margin: 0 0 12px;
+}
+
+.bbe-settings-switch {
+  border: 1px solid #d4dcec;
+  border-radius: 999px;
+  background: #f7f9fd;
+  color: #5d6c83;
+  padding: 4px 12px 4px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.bbe-settings-switch:hover {
+  border-color: #b4c2d8;
+  background: #edf3fb;
+  color: #42526a;
+}
+
+.bbe-settings-switch.active {
+  border-color: #f1c868;
+  background: #fff8e1;
+  color: #9b6c00;
+}
+
+.bbe-settings-switch-track {
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: #d6deec;
+  padding: 2px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  transition: background-color 0.16s ease;
+}
+
+.bbe-settings-switch.active .bbe-settings-switch-track {
+  background: #f6cf73;
+}
+
+.bbe-settings-switch-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+  transition: transform 0.16s ease;
+}
+
+.bbe-settings-switch.active .bbe-settings-switch-thumb {
+  transform: translateX(14px);
+}
+</style>
