@@ -449,6 +449,7 @@ const MIXED_TIMELINE_WINDOW_RADIUS = 2;
 const MIXED_TIMELINE_EDGE_PADDING = 12;
 const MIXED_TIMELINE_OUTSIDE_GAP = 18;
 const MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD = 0.2;
+const MIXED_TIMELINE_READ_BOUNDARY_CENTER_OFFSET = 12;
 const BY_AUTHOR_VISIBLE_RATIO_THRESHOLD = 0.2;
 const BY_AUTHOR_FALLBACK_VISIBLE_RATIO_THRESHOLD = 0.1;
 const AUTHOR_TITLE_STICKY_TOP_OFFSET_PX = 8;
@@ -1959,8 +1960,13 @@ function updateMixedTimelineState(): void {
     const inView = visibleRatio > MIXED_TIMELINE_VISIBLE_RATIO_THRESHOLD;
     nextInViewMap[group.dayKey] = inView;
     if (inView) {
+      // “上次看到这里”分隔符插在日期 section 内部时，视觉锚点是分隔符中线而不是 section 顶部。
+      // 这里先按当前样式做最小修正：仅对命中分隔符的那一天下移半个分隔符高度。
+      const readBoundaryOffset = activeTimelineDayKey.value === group.dayKey
+        ? MIXED_TIMELINE_READ_BOUNDARY_CENTER_OFFSET
+        : 0;
       inViewIndexes.push(index);
-      inViewTopMap.set(index, sectionRect.top - timelineRect.top + 8);
+      inViewTopMap.set(index, sectionRect.top - timelineRect.top + 8 + readBoundaryOffset);
     }
 
     // 以“可视区域顶部遇到的第一个日期段”为主日期，驱动时间轴压缩窗口。
