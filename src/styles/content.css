@@ -687,6 +687,7 @@ body.bbe-page-scroll-lock {
   right: 0;
   height: 3px;
   background: rgba(0, 0, 0, 0.15);
+  z-index: 10;
 }
 
 .bbe-progress-fill {
