@@ -69,7 +69,6 @@
     <div class="bbe-setting-row">
       <div>
         我是高级用户，给我显示所有设置
-        <div class="bbe-setting-hint">开启后显示刷新频率、缓存、调度与调试等完整配置项</div>
       </div>
       <button
         type="button"
@@ -85,18 +84,12 @@
       </button>
     </div>
     <section class="bbe-settings-subsection">
-      <h3 class="bbe-settings-subtitle">简易配置</h3>
-      <p class="bbe-setting-hint bbe-settings-subhint">大多数情况下，只需要调整这个选项。</p>
       <div class="bbe-setting-row">
         <div>
           默认近期范围
-          <div class="bbe-setting-hint">用于时间流与近期投稿的默认近期范围，仅支持 7 / 14 / 30 天</div>
+          <div class="bbe-setting-hint">用于时间流与近期投稿的默认近期范围，支持 1-30 天；若不是 7 / 14 / 30，会在下拉中额外显示对应选项</div>
         </div>
-        <select v-model.number="settings.defaultReadMarkDays" class="bbe-select">
-          <option v-for="option in recentPresetOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
-        </select>
+        <input v-model.number="settings.defaultReadMarkDays" class="bbe-input" type="number" min="1" max="30" />
       </div>
     </section>
     <section v-if="showAdvancedSettings" class="bbe-settings-subsection">
@@ -182,7 +175,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { sendMessage } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
-import { normalizeExtensionSettings, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
+import { normalizeExtensionSettings } from '@/shared/utils/settings';
 
 const emit = defineEmits<{
   (e: 'group-created'): void;
@@ -226,11 +219,6 @@ let isApplyingSettings = false;
 let isSavingSettings = false;
 let hasPendingSettingsSave = false;
 let isApplyingAdvancedSettingsVisibility = false;
-
-const recentPresetOptions = RECENT_PRESET_DAY_VALUES.map((days) => ({
-  value: days,
-  label: `${days}天内`
-}));
 
 const availableFolders = computed(() => {
   const usedIds = new Set(groups.value.map((item) => item.mediaId));

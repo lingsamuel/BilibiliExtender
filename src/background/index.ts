@@ -341,7 +341,7 @@ async function handleGetGroupSummary(
       enabled: true,
       savedMode: allRuntime?.savedMode,
       savedReadMarkTs: undefined,
-      savedRecentPresetKey: allRuntime?.savedRecentPresetKey,
+      savedRecentDays: allRuntime?.savedRecentDays,
       savedAllPostsFilter: allRuntime?.savedAllPostsFilter,
       savedByAuthorSortByLatest: allRuntime?.savedByAuthorSortByLatest
     });
@@ -476,7 +476,8 @@ async function handleGetGroupFeed(
   await saveLastGroupId(group.groupId);
 
   const readMarks = await loadGroupReadMarks();
-  const recentPresetKey = request.payload.recentPresetKey ?? 'd7';
+  const recentDays = request.payload.recentDays ?? settings.defaultReadMarkDays;
+  const activeReadMarkTs = request.payload.activeReadMarkTs;
   const showAllForMixed = request.payload.showAllForMixed === true;
   const allPostsFilter = request.payload.allPostsFilter ?? 'all';
 
@@ -497,7 +498,8 @@ async function handleGetGroupFeed(
       clickedVideos,
       reviewedOverrides,
       authorPreferences,
-      recentPresetKey,
+      recentDays,
+      activeReadMarkTs,
       showAllForMixed,
       allPostsFilter,
       request.payload.byAuthorSortByLatest,
@@ -573,18 +575,51 @@ async function handleMarkGroupRead(
 async function handleMarkGroupReadMark(
   request: Extract<MessageRequest, { type: 'MARK_GROUP_READ_MARK' }>
 ): Promise<ResponseMap['MARK_GROUP_READ_MARK']> {
-  const marks = await appendGroupReadMark(request.payload.groupId, request.payload.readMarkTs);
+  const [marks, settings, runtimeMap] = await Promise.all([
+    appendGroupReadMark(request.payload.groupId, request.payload.readMarkTs),
+    loadSettings(),
+    loadRuntimeStateMap()
+  ]);
+  const latestTs = marks[request.payload.groupId]?.timestamps?.[0];
+  const runtime = runtimeMap[request.payload.groupId] ?? {
+    groupId: request.payload.groupId,
+    unreadCount: 0,
+    mixedTargetCount: settings.timelineMixedMaxCount
+  };
+  runtime.savedReadMarkTs = typeof latestTs === 'number' && latestTs > 0 ? latestTs : undefined;
+  runtime.savedRecentDays = runtime.savedRecentDays ?? settings.defaultReadMarkDays;
+  runtimeMap[request.payload.groupId] = runtime;
+  await saveRuntimeStateMap(runtimeMap);
   return { marks };
 }
 
 async function handleUndoGroupReadMark(
   request: Extract<MessageRequest, { type: 'UNDO_GROUP_READ_MARK' }>
 ): Promise<ResponseMap['UNDO_GROUP_READ_MARK']> {
-  return undoLatestGroupReadMark(request.payload.groupId);
+  const [result, settings, runtimeMap] = await Promise.all([
+    undoLatestGroupReadMark(request.payload.groupId),
+    loadSettings(),
+    loadRuntimeStateMap()
+  ]);
+  const runtime = runtimeMap[request.payload.groupId] ?? {
+    groupId: request.payload.groupId,
+    unreadCount: 0,
+    mixedTargetCount: settings.timelineMixedMaxCount
+  };
+  const nextLatestTs = result.marks[request.payload.groupId]?.timestamps?.[0];
+  runtime.savedReadMarkTs = typeof nextLatestTs === 'number' && nextLatestTs > 0 ? nextLatestTs : undefined;
+  runtime.savedRecentDays = runtime.savedRecentDays ?? settings.defaultReadMarkDays;
+  runtimeMap[request.payload.groupId] = runtime;
+  await saveRuntimeStateMap(runtimeMap);
+  return result;
 }
 
 async function handleMarkAllGroupsRead(): Promise<ResponseMap['MARK_ALL_GROUPS_READ']> {
-  const groups = await loadGroups();
+  const [groups, settings, runtimeMap] = await Promise.all([
+    loadGroups(),
+    loadSettings(),
+    loadRuntimeStateMap()
+  ]);
   const enabledGroups = groups.filter((item) => item.enabled);
   const readMarkTs = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
   const mergedMarks: Record<string, GroupReadMark> = {};
@@ -594,7 +629,16 @@ async function handleMarkAllGroupsRead(): Promise<ResponseMap['MARK_ALL_GROUPS_R
     if (marks[group.groupId]) {
       mergedMarks[group.groupId] = marks[group.groupId];
     }
+    const runtime = runtimeMap[group.groupId] ?? {
+      groupId: group.groupId,
+      unreadCount: 0,
+      mixedTargetCount: settings.timelineMixedMaxCount
+    };
+    runtime.savedReadMarkTs = readMarkTs;
+    runtime.savedRecentDays = runtime.savedRecentDays ?? settings.defaultReadMarkDays;
+    runtimeMap[group.groupId] = runtime;
   }
+  await saveRuntimeStateMap(runtimeMap);
 
   return {
     marks: mergedMarks,

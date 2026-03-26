@@ -7,7 +7,6 @@ import type {
   GroupReadMark,
   GroupOptionsData,
   GroupSummary,
-  RecentPresetKey,
   ViewMode
 } from '@/shared/types';
 import { ext } from '@/shared/platform/webext';
@@ -25,7 +24,8 @@ export type MessageRequest =
         groupId: string;
         mode: ViewMode;
         loadMore?: boolean;
-        recentPresetKey?: RecentPresetKey;
+        recentDays?: number;
+        activeReadMarkTs?: number;
         showAllForMixed?: boolean;
         allPostsFilter?: AllPostsFilterKey;
         byAuthorSortByLatest?: boolean;

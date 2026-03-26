@@ -1,6 +1,6 @@
 import { AUTHOR_VIDEOS_PAGE_SIZE, MIXED_LOAD_INCREMENT } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
-import { normalizeRecentPresetValue } from '@/shared/utils/settings';
+import { normalizeDefaultReadMarkDays } from '@/shared/utils/settings';
 import type {
   AllPostsFilterKey,
   AuthorPreference,
@@ -12,7 +12,6 @@ import type {
   GroupFeedResult,
   GroupReadMark,
   GroupRuntimeState,
-  RecentPresetKey,
   VideoItem,
   ViewMode
 } from '@/shared/types';
@@ -25,7 +24,6 @@ type ClickedVideoMap = Record<string, number>;
 type ReviewedOverrideMap = Record<string, boolean>;
 type AuthorPreferenceMap = Record<number, AuthorPreference>;
 const DEFAULT_BY_AUTHOR_SORT_BY_LATEST = true;
-const DEFAULT_RECENT_PRESET_KEY: RecentPresetKey = 'd7';
 const DEFAULT_ALL_POSTS_FILTER: AllPostsFilterKey = 'all';
 
 function getGroupTitle(group: GroupConfig): string {
@@ -342,8 +340,8 @@ function ensureRuntimeState(
   if (runtimeMap[groupId].savedByAuthorSortByLatest === undefined) {
     runtimeMap[groupId].savedByAuthorSortByLatest = DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   }
-  if (!runtimeMap[groupId].savedRecentPresetKey) {
-    runtimeMap[groupId].savedRecentPresetKey = normalizeRecentPresetKey(settings.defaultReadMarkDays);
+  if (!runtimeMap[groupId].savedRecentDays) {
+    runtimeMap[groupId].savedRecentDays = normalizeRecentDays(settings.defaultReadMarkDays);
   }
   if (!runtimeMap[groupId].savedAllPostsFilter) {
     runtimeMap[groupId].savedAllPostsFilter = DEFAULT_ALL_POSTS_FILTER;
@@ -352,8 +350,8 @@ function ensureRuntimeState(
   return runtimeMap[groupId];
 }
 
-function normalizeRecentPresetKey(value: RecentPresetKey | number | undefined): RecentPresetKey {
-  return normalizeRecentPresetValue(value);
+function normalizeRecentDays(value: number | undefined): number {
+  return normalizeDefaultReadMarkDays(value);
 }
 
 function normalizeAllPostsFilter(value: AllPostsFilterKey | undefined): AllPostsFilterKey {
@@ -363,18 +361,8 @@ function normalizeAllPostsFilter(value: AllPostsFilterKey | undefined): AllPosts
   return 'all';
 }
 
-function resolveRecentPresetDays(recentPresetKey: RecentPresetKey): number {
-  if (recentPresetKey === 'd14') {
-    return 14;
-  }
-  if (recentPresetKey === 'd30') {
-    return 30;
-  }
-  return 7;
-}
-
-function getRecentPresetTs(recentPresetKey: RecentPresetKey): number {
-  return Math.floor(Date.now() / 1000) - resolveRecentPresetDays(recentPresetKey) * 24 * 60 * 60;
+function getRecentDaysTs(recentDays: number): number {
+  return Math.floor(Date.now() / 1000) - normalizeRecentDays(recentDays) * 24 * 60 * 60;
 }
 
 function collectReadMarkTimestamps(groupId: string, readMarks: ReadMarkMap): number[] {
@@ -392,15 +380,13 @@ function getLatestGroupReadMarkTs(groupId: string, readMarks: ReadMarkMap): numb
  * - 否则回退到当前近期预设。
  */
 function resolveGroupRecentBaselineTs(
-  groupId: string,
-  readMarks: ReadMarkMap,
-  recentPresetKey: RecentPresetKey
+  savedReadMarkTs: number | undefined,
+  recentDays: number
 ): number {
-  const latestReadMarkTs = getLatestGroupReadMarkTs(groupId, readMarks);
-  if (latestReadMarkTs > 0) {
-    return latestReadMarkTs;
+  if (savedReadMarkTs && savedReadMarkTs > 0) {
+    return savedReadMarkTs;
   }
-  return getRecentPresetTs(recentPresetKey);
+  return getRecentDaysTs(recentDays);
 }
 
 function resolveAuthorUnreadBaselineTs(
@@ -422,8 +408,8 @@ function resolveAuthorUnreadBaselineTs(
  * - 至少保留当前近期预设对应的窗口；
  * - 当用户显式选择了更早的已阅点时，向更旧数据延展。
  */
-function resolveMixedVisibleLowerBoundTs(groupBaselineTs: number, recentPresetKey: RecentPresetKey): number {
-  const presetTs = getRecentPresetTs(recentPresetKey);
+function resolveMixedVisibleLowerBoundTs(groupBaselineTs: number, recentDays: number): number {
+  const presetTs = getRecentDaysTs(recentDays);
   if (groupBaselineTs <= 0) {
     return presetTs;
   }
@@ -598,8 +584,8 @@ function calcGlobalUnreadCount(
     }
 
     const runtime = runtimeMap[group.groupId];
-    const recentPresetKey = normalizeRecentPresetKey(runtime?.savedRecentPresetKey ?? settings.defaultReadMarkDays);
-    const groupBaselineTs = resolveGroupRecentBaselineTs(group.groupId, readMarks, recentPresetKey);
+    const recentDays = normalizeRecentDays(runtime?.savedRecentDays ?? settings.defaultReadMarkDays);
+    const groupBaselineTs = resolveGroupRecentBaselineTs(runtime?.savedReadMarkTs, recentDays);
 
     for (const mid of feedCache.authorMids) {
       const pref = authorPreferences[mid];
@@ -708,7 +694,7 @@ function hasAuthorPotentialMoreForMixed(
   mid: number,
   authorCacheMap: AuthorCacheMap,
   groupBaselineTs: number,
-  recentPresetKey: RecentPresetKey,
+  recentDays: number,
   allPostsFilter: AllPostsFilterKey,
   authorPreferences: AuthorPreferenceMap
 ): boolean {
@@ -718,7 +704,7 @@ function hasAuthorPotentialMoreForMixed(
   }
 
   if (allPostsFilter === 'all') {
-    const lowerBound = resolveAuthorMixedLowerBoundTs(mid, groupBaselineTs, recentPresetKey, authorPreferences);
+    const lowerBound = resolveAuthorMixedLowerBoundTs(mid, groupBaselineTs, recentDays, authorPreferences);
     if (lowerBound <= 0) {
       return true;
     }
@@ -760,25 +746,25 @@ function filterAuthorVideosByTracking(videos: VideoItem[], baseline: number, ext
 function resolveAuthorMixedLowerBoundTs(
   mid: number,
   groupBaselineTs: number,
-  recentPresetKey: RecentPresetKey,
+  recentDays: number,
   authorPreferences: AuthorPreferenceMap
 ): number {
   const pref = authorPreferences[mid];
   const authorReadMarkTs = pref?.readMarkTs && pref.readMarkTs > 0 ? pref.readMarkTs : 0;
   if (authorReadMarkTs > 0) {
-    const presetTs = getRecentPresetTs(recentPresetKey);
+    const presetTs = getRecentDaysTs(recentDays);
     if (presetTs > 0) {
       return Math.min(authorReadMarkTs, presetTs);
     }
     return authorReadMarkTs;
   }
-  return resolveMixedVisibleLowerBoundTs(groupBaselineTs, recentPresetKey);
+  return resolveMixedVisibleLowerBoundTs(groupBaselineTs, recentDays);
 }
 
 function filterMixedVideosByTracking(
   videos: VideoItem[],
   groupBaselineTs: number,
-  recentPresetKey: RecentPresetKey,
+  recentDays: number,
   showAllForMixed: boolean,
   authorPreferences: AuthorPreferenceMap
 ): VideoItem[] {
@@ -787,7 +773,7 @@ function filterMixedVideosByTracking(
   }
 
   return videos.filter((video) => {
-    const lowerBound = resolveAuthorMixedLowerBoundTs(video.authorMid, groupBaselineTs, recentPresetKey, authorPreferences);
+    const lowerBound = resolveAuthorMixedLowerBoundTs(video.authorMid, groupBaselineTs, recentDays, authorPreferences);
     if (lowerBound <= 0) {
       return true;
     }
@@ -902,7 +888,8 @@ export function toFeedResult(
   clickedVideos: ClickedVideoMap,
   reviewedOverrides: ReviewedOverrideMap,
   authorPreferences: AuthorPreferenceMap,
-  recentPresetKey: RecentPresetKey,
+  recentDays: number,
+  activeReadMarkTs: number | undefined,
   showAllForMixed: boolean,
   allPostsFilter: AllPostsFilterKey,
   byAuthorSortByLatest?: boolean,
@@ -928,10 +915,10 @@ export function toFeedResult(
     });
   }
   const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
-  const normalizedRecentPresetKey = normalizeRecentPresetKey(recentPresetKey);
+  const normalizedRecentDays = normalizeRecentDays(recentDays);
+  const normalizedActiveReadMarkTs = activeReadMarkTs && activeReadMarkTs > 0 ? activeReadMarkTs : undefined;
   const normalizedAllPostsFilter = normalizeAllPostsFilter(allPostsFilter);
-  const latestGroupReadMarkTs = readMarkTimestamps[0] ?? 0;
-  const trackingGroupBaselineTs = resolveGroupRecentBaselineTs(group.groupId, readMarks, normalizedRecentPresetKey);
+  const trackingGroupBaselineTs = resolveGroupRecentBaselineTs(normalizedActiveReadMarkTs, normalizedRecentDays);
   const effectiveAllPostsFilter: AllPostsFilterKey = mode === 'overview' ? normalizedAllPostsFilter : 'all';
 
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
@@ -999,7 +986,7 @@ export function toFeedResult(
       ? filterMixedVideosByTracking(
           mixedAllVideos,
           trackingGroupBaselineTs,
-          normalizedRecentPresetKey,
+          normalizedRecentDays,
           showAllForMixed,
           authorPreferences
         )
@@ -1044,7 +1031,7 @@ export function toFeedResult(
       const filteredByReadMark = filterMixedVideosByTracking(
         cache.videos,
         trackingGroupBaselineTs,
-        normalizedRecentPresetKey,
+        normalizedRecentDays,
         showAllForMixed,
         authorPreferences
       );
@@ -1055,7 +1042,7 @@ export function toFeedResult(
       const mixedLowerBound = resolveAuthorMixedLowerBoundTs(
         mid,
         trackingGroupBaselineTs,
-        normalizedRecentPresetKey,
+        normalizedRecentDays,
         authorPreferences
       );
       const oldestCached = cache.videos[cache.videos.length - 1];
@@ -1094,8 +1081,10 @@ export function toFeedResult(
   );
 
   runtime.savedMode = mode;
-  runtime.savedReadMarkTs = latestGroupReadMarkTs || undefined;
-  runtime.savedRecentPresetKey = normalizedRecentPresetKey;
+  if (mode !== 'overview') {
+    runtime.savedReadMarkTs = normalizedActiveReadMarkTs;
+    runtime.savedRecentDays = normalizedRecentDays;
+  }
   runtime.savedAllPostsFilter = normalizedAllPostsFilter;
   runtime.savedByAuthorSortByLatest = byAuthorSortEnabled;
 
@@ -1104,7 +1093,7 @@ export function toFeedResult(
       mid,
       authorCacheMap,
       trackingGroupBaselineTs,
-      normalizedRecentPresetKey,
+      normalizedRecentDays,
       effectiveAllPostsFilter,
       authorPreferences
     ));
@@ -1119,7 +1108,7 @@ export function toFeedResult(
     unreadCount: runtime.unreadCount,
     hasMoreForMixed,
     readMarkTimestamps,
-    graceReadMarkTs: getRecentPresetTs(normalizedRecentPresetKey),
+    graceReadMarkTs: getRecentDaysTs(normalizedRecentDays),
     byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE
   };
 
@@ -1156,7 +1145,7 @@ export function makeSummary(
     enabled: boolean;
     savedMode?: ViewMode;
     savedReadMarkTs?: number;
-    savedRecentPresetKey?: RecentPresetKey;
+    savedRecentDays?: number;
     savedAllPostsFilter?: AllPostsFilterKey;
     savedByAuthorSortByLatest?: boolean;
   }>;
@@ -1168,8 +1157,8 @@ export function makeSummary(
     let unreadCount = 0;
 
     if (feedCache) {
-      const recentPresetKey = normalizeRecentPresetKey(runtime.savedRecentPresetKey ?? settings.defaultReadMarkDays);
-      const groupBaselineTs = resolveGroupRecentBaselineTs(group.groupId, readMarks, recentPresetKey);
+      const recentDays = normalizeRecentDays(runtime.savedRecentDays ?? settings.defaultReadMarkDays);
+      const groupBaselineTs = resolveGroupRecentBaselineTs(runtime.savedReadMarkTs, recentDays);
       unreadCount = calcGroupUnreadCount(
         group,
         feedCache.authorMids,
@@ -1189,8 +1178,8 @@ export function makeSummary(
       lastRefreshAt: runtime.lastRefreshAt,
       enabled: group.enabled,
       savedMode: runtime.savedMode,
-      savedReadMarkTs: getLatestGroupReadMarkTs(group.groupId, readMarks) || undefined,
-      savedRecentPresetKey: runtime.savedRecentPresetKey,
+      savedReadMarkTs: runtime.savedReadMarkTs,
+      savedRecentDays: runtime.savedRecentDays,
       savedAllPostsFilter: runtime.savedAllPostsFilter,
       savedByAuthorSortByLatest: runtime.savedByAuthorSortByLatest
     };

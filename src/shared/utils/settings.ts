@@ -1,38 +1,17 @@
-import type { ExtensionSettings, RecentPresetKey } from '@/shared/types';
+import type { ExtensionSettings } from '@/shared/types';
 
 export const RECENT_PRESET_DAY_VALUES = [7, 14, 30] as const;
 
-type RecentPresetDayValue = (typeof RECENT_PRESET_DAY_VALUES)[number];
-
-export function normalizeDefaultReadMarkDays(value: unknown): RecentPresetDayValue {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+export function normalizeDefaultReadMarkDays(value: unknown): number {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) {
     return 7;
   }
-  if (parsed <= 10.5) {
-    return 7;
-  }
-  if (parsed <= 22) {
-    return 14;
-  }
-  return 30;
+  return Math.min(30, Math.max(1, parsed));
 }
 
-export function normalizeRecentPresetValue(value: RecentPresetKey | number | undefined): RecentPresetKey {
-  if (value === 'd14') {
-    return 'd14';
-  }
-  if (value === 'd30') {
-    return 'd30';
-  }
-  const days = normalizeDefaultReadMarkDays(value);
-  if (days === 14) {
-    return 'd14';
-  }
-  if (days === 30) {
-    return 'd30';
-  }
-  return 'd7';
+export function isBuiltInRecentDay(days: number): boolean {
+  return RECENT_PRESET_DAY_VALUES.includes(days as (typeof RECENT_PRESET_DAY_VALUES)[number]);
 }
 
 export function normalizeExtensionSettings(source: ExtensionSettings): ExtensionSettings {

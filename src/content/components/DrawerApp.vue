@@ -53,17 +53,15 @@
           <button class="bbe-btn" :class="{ active: mode === 'mixed' }" @click="switchMode('mixed')">时间流</button>
           <button class="bbe-btn" :class="{ active: mode === 'byAuthor' }" @click="switchMode('byAuthor')">近期投稿</button>
           <button class="bbe-btn" :class="{ active: mode === 'overview' }" @click="switchMode('overview')">全部投稿</button>
-          <label v-if="mode === 'byAuthor'" class="bbe-toolbar-check">
+          <label v-if="mode !== 'mixed'" class="bbe-toolbar-check">
             <input v-model="byAuthorSortByLatest" type="checkbox" @change="onByAuthorSortByLatestChange" />
             <span>按更新时间倒序</span>
           </label>
           <span class="bbe-toolbar-sep" />
           <select v-if="mode !== 'overview'" v-model="selectedReadFilterKey" class="bbe-select-sm" @change="onTrackingReadFilterChange">
             <option v-if="mode === 'mixed'" value="m:all">全部</option>
-            <option v-if="hasLatestGroupReadMark" value="r:mark">{{ formatReadMarkTs(latestGroupReadMarkTs) }}</option>
-            <option v-if="!hasLatestGroupReadMark" value="r:d7">7天内</option>
-            <option v-if="!hasLatestGroupReadMark" value="r:d14">14天内</option>
-            <option v-if="!hasLatestGroupReadMark" value="r:d30">30天内</option>
+            <option v-for="option in trackingDayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            <option v-if="activeTrackingReadMarkTs" value="r:mark">{{ formatReadMarkTs(activeTrackingReadMarkTs) }}</option>
           </select>
           <select v-else v-model="selectedReadFilterKey" class="bbe-select-sm" @change="onOverviewFilterChange">
             <option value="o:all">全部</option>
@@ -392,11 +390,11 @@ import type {
   AuthorFeed,
   GroupFeedResult,
   GroupSummary,
-  RecentPresetKey,
   VideoItem,
   ViewMode
 } from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
+import { isBuiltInRecentDay, normalizeDefaultReadMarkDays, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
 import {
@@ -503,10 +501,11 @@ let pollTimer: number | null = null;
 let authorPagePollTimer: number | null = null;
 const lastGroupIdFromSummary = ref('');
 
-const selectedRecentPresetKey = ref<RecentPresetKey>('d7');
+const selectedRecentDays = ref(7);
+const activeTrackingReadMarkTs = ref<number | undefined>(undefined);
 const selectedAllPostsFilter = ref<AllPostsFilterKey>('all');
 const mixedShowAll = ref(false);
-const selectedReadFilterKey = ref('r:d7');
+const selectedReadFilterKey = ref('r:days:7');
 const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
@@ -589,11 +588,8 @@ function buildAllPostsFilterKey(filter: AllPostsFilterKey): string {
   return `o:${filter}`;
 }
 
-function normalizeRecentPresetKey(preset: RecentPresetKey | undefined): RecentPresetKey {
-  if (preset === 'd14' || preset === 'd30') {
-    return preset;
-  }
-  return 'd7';
+function buildRecentDaysFilterKey(days: number): string {
+  return `r:days:${normalizeRecentDays(days)}`;
 }
 
 function normalizeAllPostsFilter(filter: AllPostsFilterKey | undefined): AllPostsFilterKey {
@@ -605,15 +601,14 @@ function normalizeAllPostsFilter(filter: AllPostsFilterKey | undefined): AllPost
 
 const latestGroupReadMarkTs = computed(() => readMarkTimestamps.value[0] ?? 0);
 const hasLatestGroupReadMark = computed(() => latestGroupReadMarkTs.value > 0);
+const currentSettings = ref<{ defaultReadMarkDays: number } | null>(null);
 
-function resolveRecentPresetTs(preset: RecentPresetKey): number {
-  if (preset === 'd14') {
-    return Math.floor(Date.now() / 1000) - 14 * 24 * 60 * 60;
-  }
-  if (preset === 'd30') {
-    return Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
-  }
-  return Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+function normalizeRecentDays(days: number | undefined): number {
+  return normalizeDefaultReadMarkDays(days);
+}
+
+function resolveRecentDaysTs(days: number): number {
+  return Math.floor(Date.now() / 1000) - normalizeRecentDays(days) * 24 * 60 * 60;
 }
 
 const activeAllPostsFilter = computed<AllPostsFilterKey>(() => {
@@ -621,6 +616,29 @@ const activeAllPostsFilter = computed<AllPostsFilterKey>(() => {
     return 'all';
   }
   return normalizeAllPostsFilter(selectedAllPostsFilter.value);
+});
+
+const trackingDayOptions = computed<Array<{ value: string; label: string }>>(() => {
+  const options = RECENT_PRESET_DAY_VALUES.map((days) => ({
+    value: buildRecentDaysFilterKey(days),
+    label: `${days}天内`
+  }));
+  const customDays = new Set<number>();
+  const defaultDays = normalizeRecentDays(currentSettings.value?.defaultReadMarkDays);
+  if (!isBuiltInRecentDay(defaultDays)) {
+    customDays.add(defaultDays);
+  }
+  const activeDays = normalizeRecentDays(selectedRecentDays.value);
+  if (!isBuiltInRecentDay(activeDays)) {
+    customDays.add(activeDays);
+  }
+  for (const days of Array.from(customDays).sort((left, right) => left - right)) {
+    options.unshift({
+      value: buildRecentDaysFilterKey(days),
+      label: `${days}天内`
+    });
+  }
+  return options;
 });
 
 function syncSelectedReadFilterKey(): void {
@@ -632,14 +650,14 @@ function syncSelectedReadFilterKey(): void {
     selectedReadFilterKey.value = 'm:all';
     return;
   }
-  if (hasLatestGroupReadMark.value) {
+  if (activeTrackingReadMarkTs.value && activeTrackingReadMarkTs.value > 0) {
     selectedReadFilterKey.value = 'r:mark';
     return;
   }
-  selectedReadFilterKey.value = `r:${normalizeRecentPresetKey(selectedRecentPresetKey.value)}`;
+  selectedReadFilterKey.value = buildRecentDaysFilterKey(selectedRecentDays.value);
 }
 
-function parseRecentFilterKey(key: string): { showAllForMixed: boolean; presetKey?: RecentPresetKey; useLatestReadMark: boolean } {
+function parseRecentFilterKey(key: string): { showAllForMixed: boolean; recentDays?: number; useLatestReadMark: boolean } {
   if (key === 'm:all') {
     return {
       showAllForMixed: true,
@@ -652,10 +670,10 @@ function parseRecentFilterKey(key: string): { showAllForMixed: boolean; presetKe
       useLatestReadMark: true
     };
   }
-  const raw = key.slice(2) as RecentPresetKey;
+  const raw = key.startsWith('r:days:') ? Number(key.slice('r:days:'.length)) : selectedRecentDays.value;
   return {
     showAllForMixed: false,
-    presetKey: normalizeRecentPresetKey(raw),
+    recentDays: normalizeRecentDays(raw),
     useLatestReadMark: false
   };
 }
@@ -686,10 +704,10 @@ const effectiveReadBoundaryTs = computed(() => {
   if (mode.value === 'mixed' && mixedShowAll.value) {
     return 0;
   }
-  if (hasLatestGroupReadMark.value) {
-    return latestGroupReadMarkTs.value;
+  if (activeTrackingReadMarkTs.value && activeTrackingReadMarkTs.value > 0) {
+    return activeTrackingReadMarkTs.value;
   }
-  return resolveRecentPresetTs(normalizeRecentPresetKey(selectedRecentPresetKey.value));
+  return resolveRecentDaysTs(selectedRecentDays.value);
 });
 
 /**
@@ -1503,6 +1521,7 @@ async function loadSummary(): Promise<void> {
 
   summaries.value = resp.data.summaries;
   globalUnreadCount.value = resp.data.unreadCount;
+  currentSettings.value = { defaultReadMarkDays: normalizeRecentDays(resp.data.settings.defaultReadMarkDays) };
   debugMode.value = resp.data.settings.debugMode ?? false;
   lastGroupIdFromSummary.value = resp.data.lastGroupId ?? '';
   emitUnreadChanged();
@@ -1658,7 +1677,8 @@ async function refreshFeedForPendingAuthorPages(): Promise<void> {
     payload: {
       groupId: activeGroupId.value,
       mode: mode.value,
-      recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+      recentDays: selectedRecentDays.value,
+      activeReadMarkTs: activeTrackingReadMarkTs.value,
       showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
       allPostsFilter: getAllPostsFilterForRequest(),
       byAuthorSortByLatest: byAuthorSortByLatest.value
@@ -2217,7 +2237,8 @@ function startPoll(maxAttempts: number): void {
         payload: {
           groupId: activeGroupId.value,
           mode: mode.value,
-          recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+          recentDays: selectedRecentDays.value,
+          activeReadMarkTs: activeTrackingReadMarkTs.value,
           showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
           allPostsFilter: getAllPostsFilterForRequest(),
           byAuthorSortByLatest: byAuthorSortByLatest.value
@@ -2275,7 +2296,8 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
         groupId: activeGroupId.value,
         mode: mode.value,
         loadMore: options?.loadMore,
-        recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+        recentDays: selectedRecentDays.value,
+        activeReadMarkTs: activeTrackingReadMarkTs.value,
         showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
         allPostsFilter: getAllPostsFilterForRequest(),
         byAuthorSortByLatest: byAuthorSortByLatest.value
@@ -2343,7 +2365,8 @@ async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<v
       payload: {
         groupId: activeGroupId.value,
         mode: mode.value,
-        recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+        recentDays: selectedRecentDays.value,
+        activeReadMarkTs: activeTrackingReadMarkTs.value,
         showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
         allPostsFilter: getAllPostsFilterForRequest(),
         byAuthorSortByLatest: byAuthorSortByLatest.value
@@ -2406,7 +2429,8 @@ async function openDrawer(): Promise<void> {
     if (summary?.savedMode) {
       mode.value = summary.savedMode;
     }
-    selectedRecentPresetKey.value = normalizeRecentPresetKey(summary?.savedRecentPresetKey);
+    selectedRecentDays.value = normalizeRecentDays(summary?.savedRecentDays ?? currentSettings.value?.defaultReadMarkDays);
+    activeTrackingReadMarkTs.value = summary?.savedReadMarkTs && summary.savedReadMarkTs > 0 ? summary.savedReadMarkTs : undefined;
     selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
     mixedShowAll.value = false;
     if (summary?.savedByAuthorSortByLatest !== undefined) {
@@ -2498,7 +2522,8 @@ async function selectEntry(entryId: string): Promise<void> {
   if (summary?.savedMode) {
     mode.value = summary.savedMode;
   }
-  selectedRecentPresetKey.value = normalizeRecentPresetKey(summary?.savedRecentPresetKey);
+  selectedRecentDays.value = normalizeRecentDays(summary?.savedRecentDays ?? currentSettings.value?.defaultReadMarkDays);
+  activeTrackingReadMarkTs.value = summary?.savedReadMarkTs && summary.savedReadMarkTs > 0 ? summary.savedReadMarkTs : undefined;
   selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
   mixedShowAll.value = false;
   if (summary?.savedByAuthorSortByLatest !== undefined) {
@@ -2533,11 +2558,13 @@ async function switchMode(nextMode: ViewMode): Promise<void> {
 async function onTrackingReadFilterChange(): Promise<void> {
   const next = parseRecentFilterKey(selectedReadFilterKey.value);
   mixedShowAll.value = mode.value === 'mixed' && next.showAllForMixed;
-  if (next.presetKey) {
-    selectedRecentPresetKey.value = next.presetKey;
+  if (next.recentDays) {
+    selectedRecentDays.value = next.recentDays;
+    activeTrackingReadMarkTs.value = undefined;
   }
   if (next.useLatestReadMark) {
     mixedShowAll.value = false;
+    activeTrackingReadMarkTs.value = latestGroupReadMarkTs.value > 0 ? latestGroupReadMarkTs.value : undefined;
   }
   resetAuthorPaginationState();
   try {
@@ -2649,6 +2676,7 @@ async function markCurrentGroupRead(): Promise<void> {
       const latestTs = resp.data.marks[activeGroupId.value]?.timestamps[0];
       if (typeof latestTs === 'number' && latestTs > 0) {
         readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
+        activeTrackingReadMarkTs.value = latestTs;
       }
     }
     syncSelectedReadFilterKey();
@@ -2718,6 +2746,7 @@ async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: st
     const latestTs = resp.data?.marks?.[activeGroupId.value]?.timestamps?.[0];
     if (typeof latestTs === 'number' && latestTs > 0) {
       readMarkTimestamps.value = resp.data?.marks?.[activeGroupId.value]?.timestamps ?? [];
+      activeTrackingReadMarkTs.value = latestTs;
     }
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
@@ -2740,6 +2769,7 @@ async function undoLatestGroupReadMark(): Promise<void> {
       throw new Error(resp.error ?? '撤销上次看到失败');
     }
     readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
+    activeTrackingReadMarkTs.value = readMarkTimestamps.value[0] ?? undefined;
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
