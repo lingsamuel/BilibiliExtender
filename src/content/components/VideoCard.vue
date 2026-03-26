@@ -56,7 +56,7 @@
           <a class="bbe-card-author-link" :href="authorSpaceUrl" target="_blank" rel="noreferrer">
             <span class="bbe-card-author-name">{{ video.authorName }}</span>
           </a>
-          <span class="bbe-card-author-date">{{ formatPubdate(video.pubdate) }}</span>
+          <span class="bbe-card-author-date" :title="precisePubdate">{{ relativePubdate }}</span>
         </div>
         <button
           type="button"
@@ -93,6 +93,7 @@
 import { computed } from 'vue';
 import type { VideoItem } from '@/shared/types';
 import { formatPubdate, formatVideoPlayCount } from '@/shared/utils/format';
+import { formatRelativePublishedAt } from '@/shared/utils/time';
 
 const props = defineProps<{
   video: VideoItem;
@@ -127,6 +128,8 @@ const reviewedState = computed(() => {
   }
   return Boolean(props.clicked) || playbackPercent.value >= 10;
 });
+const precisePubdate = computed(() => formatPubdate(props.video.pubdate));
+const relativePubdate = computed(() => formatRelativePublishedAt(props.video.pubdate));
 
 const videoUrl = computed(() => `https://www.bilibili.com/video/${props.video.bvid}`);
 const authorSpaceUrl = computed(() => `https://space.bilibili.com/${props.video.authorMid}`);
