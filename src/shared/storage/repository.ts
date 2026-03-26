@@ -325,6 +325,7 @@ export async function saveLastGroupId(groupId: string): Promise<void> {
 type ReadMarkMap = Record<string, GroupReadMark>;
 type ClickedVideoMap = Record<string, number>;
 type VideoReviewedOverrideMap = Record<string, boolean>;
+const MAX_AUTHOR_READ_MARK_COUNT = 10;
 
 let legacyAuthorReadMarksDropped = false;
 
@@ -573,10 +574,18 @@ export async function saveSchedulerHistory(history: SchedulerHistoryEntry[]): Pr
 }
 
 function normalizeAuthorPreference(mid: number, prev?: AuthorPreference): AuthorPreference {
+  const readMarkTimestamps = Array.isArray(prev?.readMarkTimestamps)
+    ? prev!.readMarkTimestamps.filter((item) => typeof item === 'number' && item > 0).map((item) => Math.floor(item))
+    : [];
+  const fallbackReadMarkTs = typeof prev?.readMarkTs === 'number' && prev.readMarkTs > 0 ? Math.floor(prev.readMarkTs) : undefined;
+  const normalizedReadMarkTimestamps = readMarkTimestamps.length > 0
+    ? readMarkTimestamps
+    : (fallbackReadMarkTs ? [fallbackReadMarkTs] : []);
   return {
     mid,
     ignoreUnreadCount: prev?.ignoreUnreadCount,
-    readMarkTs: prev?.readMarkTs,
+    readMarkTs: normalizedReadMarkTimestamps[0],
+    readMarkTimestamps: normalizedReadMarkTimestamps.length > 0 ? normalizedReadMarkTimestamps : undefined,
     updatedAt: prev?.updatedAt
   };
 }
@@ -590,7 +599,7 @@ export async function setAuthorIgnoreUnreadCount(mid: number, ignoreUnreadCount:
     updatedAt: Date.now()
   };
 
-  if (!next.ignoreUnreadCount && !next.readMarkTs) {
+  if (!next.ignoreUnreadCount && !next.readMarkTs && !(next.readMarkTimestamps?.length)) {
     delete map[mid];
     await saveAuthorPreferences(map);
     return { mid };
@@ -604,14 +613,57 @@ export async function setAuthorIgnoreUnreadCount(mid: number, ignoreUnreadCount:
 export async function setAuthorReadMark(mid: number, readMarkTs: number): Promise<AuthorPreference> {
   const map = await loadAuthorPreferences();
   const prev = normalizeAuthorPreference(mid, map[mid]);
+  const normalizedTs = Math.floor(readMarkTs);
+  const deduped = (prev.readMarkTimestamps ?? []).filter((item) => item !== normalizedTs);
+  const nextReadMarkTimestamps = [normalizedTs, ...deduped].slice(0, MAX_AUTHOR_READ_MARK_COUNT);
   const next: AuthorPreference = {
     ...prev,
-    readMarkTs: Math.floor(readMarkTs),
+    readMarkTs: nextReadMarkTimestamps[0],
+    readMarkTimestamps: nextReadMarkTimestamps,
     updatedAt: Date.now()
   };
   map[mid] = next;
   await saveAuthorPreferences(map);
   return next;
+}
+
+export async function undoAuthorReadMark(
+  mid: number
+): Promise<{ preference: AuthorPreference; removedReadMarkTs?: number }> {
+  const map = await loadAuthorPreferences();
+  const prev = normalizeAuthorPreference(mid, map[mid]);
+  const stack = prev.readMarkTimestamps ?? [];
+  if (stack.length === 0) {
+    return { preference: prev };
+  }
+
+  const [removedReadMarkTs, ...rest] = stack;
+  if (rest.length === 0) {
+    if (prev.ignoreUnreadCount) {
+      const next: AuthorPreference = {
+        ...prev,
+        readMarkTs: undefined,
+        readMarkTimestamps: undefined,
+        updatedAt: Date.now()
+      };
+      map[mid] = next;
+      await saveAuthorPreferences(map);
+      return { preference: next, removedReadMarkTs };
+    }
+    delete map[mid];
+    await saveAuthorPreferences(map);
+    return { preference: { mid, ignoreUnreadCount: false }, removedReadMarkTs };
+  }
+
+  const next: AuthorPreference = {
+    ...prev,
+    readMarkTs: rest[0],
+    readMarkTimestamps: rest,
+    updatedAt: Date.now()
+  };
+  map[mid] = next;
+  await saveAuthorPreferences(map);
+  return { preference: next, removedReadMarkTs };
 }
 
 export async function clearAuthorReadMark(mid: number): Promise<AuthorPreference> {
@@ -620,6 +672,7 @@ export async function clearAuthorReadMark(mid: number): Promise<AuthorPreference
   const next: AuthorPreference = {
     ...prev,
     readMarkTs: undefined,
+    readMarkTimestamps: undefined,
     updatedAt: Date.now()
   };
 

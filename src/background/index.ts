@@ -35,6 +35,7 @@ import {
   recordVideoClick,
   setAuthorIgnoreUnreadCount,
   setAuthorReadMark,
+  undoAuthorReadMark,
   setVideoReviewedOverride,
   saveAuthorVideoCacheMap,
   saveFeedCacheMap,
@@ -969,6 +970,12 @@ async function handleSetAuthorReadMark(
   return { preference };
 }
 
+async function handleUndoAuthorReadMark(
+  request: Extract<MessageRequest, { type: 'UNDO_AUTHOR_READ_MARK' }>
+): Promise<ResponseMap['UNDO_AUTHOR_READ_MARK']> {
+  return undoAuthorReadMark(request.payload.mid);
+}
+
 async function handleClearAuthorReadMark(
   request: Extract<MessageRequest, { type: 'CLEAR_AUTHOR_READ_MARK' }>
 ): Promise<ResponseMap['CLEAR_AUTHOR_READ_MARK']> {
@@ -1169,6 +1176,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleSetAuthorIgnoreUnread(request));
     case 'SET_AUTHOR_READ_MARK':
       return ok(await handleSetAuthorReadMark(request));
+    case 'UNDO_AUTHOR_READ_MARK':
+      return ok(await handleUndoAuthorReadMark(request));
     case 'CLEAR_AUTHOR_READ_MARK':
       return ok(await handleClearAuthorReadMark(request));
     case 'REQUEST_AUTHOR_PAGE':

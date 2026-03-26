@@ -76,6 +76,7 @@ export type MessageRequest =
   | { type: 'GET_VIDEO_REVIEWED_OVERRIDES'; payload: { bvids: string[] } }
   | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
   | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
+  | { type: 'UNDO_AUTHOR_READ_MARK'; payload: { mid: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
   | { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
@@ -319,6 +320,7 @@ export interface ResponseMap {
   GET_VIDEO_REVIEWED_OVERRIDES: { overrides: Record<string, boolean> };
   SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };
   SET_AUTHOR_READ_MARK: { preference: AuthorPreference };
+  UNDO_AUTHOR_READ_MARK: { preference: AuthorPreference; removedReadMarkTs?: number };
   CLEAR_AUTHOR_READ_MARK: { preference: AuthorPreference };
   REQUEST_AUTHOR_PAGE: {
     accepted: boolean;

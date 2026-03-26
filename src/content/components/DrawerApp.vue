@@ -252,8 +252,14 @@
                       </button>
                     </div>
                     <div class="bbe-author-title-actions">
-                      <button type="button" class="bbe-author-mark-read-btn" @click="toggleAuthorReadMark(author)">
-                        {{ author.hasAuthorReadMarkOverride ? '撤销已阅' : '标记已阅' }}
+                      <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">标记已阅</button>
+                      <button
+                        v-if="author.hasAuthorReadMarkOverride"
+                        type="button"
+                        class="bbe-author-mark-read-btn"
+                        @click="undoAuthorReadMark(author.authorMid)"
+                      >
+                        撤销已阅
                       </button>
                       <button
                         type="button"
@@ -2838,14 +2844,6 @@ async function markAuthorReadNow(author: AuthorFeed): Promise<void> {
   await setAuthorReadMark(author.authorMid, nowTs);
 }
 
-async function toggleAuthorReadMark(author: AuthorFeed): Promise<void> {
-  if (author.hasAuthorReadMarkOverride) {
-    await clearAuthorReadMark(author.authorMid);
-    return;
-  }
-  await markAuthorReadNow(author);
-}
-
 function resolveAuthorReadMarkTsByBoundaryIndex(authorMid: number, boundaryIndex: number): number {
   const visibleVideos = byAuthorVisibleVideosMap.value[authorMid] ?? [];
   if (boundaryIndex <= 0 || boundaryIndex >= visibleVideos.length) {
@@ -2890,6 +2888,23 @@ async function setAuthorReadMark(authorMid: number, readMarkTs: number): Promise
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '设置作者已阅失败');
+  }
+}
+
+async function undoAuthorReadMark(authorMid: number): Promise<void> {
+  try {
+    const resp = await sendMessage({
+      type: 'UNDO_AUTHOR_READ_MARK',
+      payload: {
+        mid: authorMid
+      }
+    });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '撤销作者已阅失败');
+    }
+    await reloadFeedWithReadMark({ silent: true });
+  } catch (error) {
+    showErrorToast(error instanceof Error ? error.message : '撤销作者已阅失败');
   }
 }
 

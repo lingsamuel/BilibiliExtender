@@ -182,8 +182,10 @@ export interface AuthorPreference {
   mid: number;
   // 该作者视频是否不参与 unread 计数（跨组共享）。
   ignoreUnreadCount?: boolean;
-  // 作者级已阅时间点（秒级，跨组共享）；设置后绝对覆盖分组基线。
+  // 作者级已阅时间点（秒级，跨组共享）；等于 readMarkTimestamps[0]。
   readMarkTs?: number;
+  // 作者级已阅历史栈，按时间倒序（最新在前），最多保留 10 条。
+  readMarkTimestamps?: number[];
   updatedAt?: number;
 }
 
