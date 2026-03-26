@@ -845,13 +845,18 @@ body.bbe-page-scroll-lock {
   flex-shrink: 0;
 }
 
-.bbe-author-link {
+.bbe-author-avatar-link {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-shrink: 0;
+  color: #1f2329;
+  text-decoration: none;
+}
+
+.bbe-author-name-link {
+  display: flex;
+  align-items: center;
   min-width: 0;
-  flex: 0 1 auto;
-  max-width: 420px;
   color: #1f2329;
   text-decoration: none;
 }
@@ -861,6 +866,8 @@ body.bbe-page-scroll-lock {
   flex-direction: column;
   justify-content: center;
   gap: 2px;
+  flex: 0 1 auto;
+  max-width: 420px;
   min-width: 0;
 }
 
@@ -880,12 +887,13 @@ body.bbe-page-scroll-lock {
   color: #738097;
 }
 
-.bbe-author-link:hover {
+.bbe-author-avatar-link:hover,
+.bbe-author-name-link:hover {
   color: #00a1d6;
 }
 
-.bbe-author-link .bbe-avatar,
-.bbe-author-link .bbe-avatar-placeholder {
+.bbe-author-avatar-link .bbe-avatar,
+.bbe-author-avatar-link .bbe-avatar-placeholder {
   box-shadow: 0 0 0 2px #fff, 0 0 0 3px #dce6f2;
 }
 

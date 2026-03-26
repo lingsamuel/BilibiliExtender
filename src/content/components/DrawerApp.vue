@@ -237,20 +237,27 @@
                   <div class="bbe-author-title-main">
                     <div class="bbe-author-title-left">
                       <a
-                        class="bbe-author-link"
+                        class="bbe-author-avatar-link"
                         :href="`https://space.bilibili.com/${author.authorMid}`"
                         target="_blank"
                         rel="noreferrer"
                       >
                         <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
                         <span v-else class="bbe-avatar bbe-avatar-placeholder" aria-hidden="true" />
-                        <span class="bbe-author-info">
-                          <span class="bbe-author-name">{{ author.authorName }}</span>
-                          <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
-                            {{ getAuthorLatestUpdateNote(author) }}
-                          </span>
-                        </span>
                       </a>
+                      <div class="bbe-author-info">
+                        <a
+                          class="bbe-author-name-link"
+                          :href="`https://space.bilibili.com/${author.authorMid}`"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <span class="bbe-author-name">{{ author.authorName }}</span>
+                        </a>
+                        <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
+                          {{ getAuthorLatestUpdateNote(author) }}
+                        </span>
+                      </div>
                       <button
                         type="button"
                         class="bbe-author-follow-btn"
@@ -415,8 +422,9 @@ import type {
   VideoItem,
   ViewMode
 } from '@/shared/types';
-import { formatDaysAgo, formatGroupSyncStatus, formatReadMarkTs } from '@/shared/utils/format';
+import { formatGroupSyncStatus, formatReadMarkTs } from '@/shared/utils/format';
 import { isBuiltInRecentDay, normalizeDefaultReadMarkDays, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
+import { formatRelativePublishedAt, getRecentDaysBoundaryTs } from '@/shared/utils/time';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
 import {
@@ -630,7 +638,7 @@ function normalizeRecentDays(days: number | undefined): number {
 }
 
 function resolveRecentDaysTs(days: number): number {
-  return Math.floor(Date.now() / 1000) - normalizeRecentDays(days) * 24 * 60 * 60;
+  return getRecentDaysBoundaryTs(normalizeRecentDays(days));
 }
 
 const activeAllPostsFilter = computed<AllPostsFilterKey>(() => {
@@ -949,7 +957,7 @@ function getAuthorLatestUpdateNote(author: AuthorFeed): string {
   if (!author.latestPubdate) {
     return '';
   }
-  return `${formatDaysAgo(author.latestPubdate).replace(' 天前', '天前')}更新`;
+  return `最近更新：${formatRelativePublishedAt(author.latestPubdate)}`;
 }
 
 function isAuthorPageLoading(authorMid: number): boolean {
