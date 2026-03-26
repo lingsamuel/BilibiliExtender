@@ -957,7 +957,7 @@ function getAuthorLatestUpdateNote(author: AuthorFeed): string {
   if (!author.latestPubdate) {
     return '';
   }
-  return `最近更新：${formatRelativePublishedAt(author.latestPubdate)}`;
+  return `${formatRelativePublishedAt(author.latestPubdate)}更新`;
 }
 
 function isAuthorPageLoading(authorMid: number): boolean {

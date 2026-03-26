@@ -61,13 +61,6 @@ export function formatReadMarkTs(seconds: number): string {
   return formatPubdate(seconds);
 }
 
-export function formatDaysAgo(seconds: number): string {
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const diffSeconds = Math.max(0, nowSeconds - seconds);
-  const days = Math.floor(diffSeconds / (24 * 60 * 60));
-  return `${days} 天前`;
-}
-
 /**
  * B 站封面播放量在超过 1 万后转为 “N万” 形式，且固定保留 1 位小数。
  */

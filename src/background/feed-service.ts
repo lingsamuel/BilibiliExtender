@@ -1,6 +1,7 @@
 import { AUTHOR_VIDEOS_PAGE_SIZE, MIXED_LOAD_INCREMENT } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import { normalizeDefaultReadMarkDays } from '@/shared/utils/settings';
+import { getRecentDaysBoundaryTs, isWithinRecentDays } from '@/shared/utils/time';
 import type {
   AllPostsFilterKey,
   AuthorPreference,
@@ -363,8 +364,39 @@ function normalizeAllPostsFilter(value: AllPostsFilterKey | undefined): AllPosts
   return 'all';
 }
 
-function getRecentDaysTs(recentDays: number): number {
-  return Math.floor(Date.now() / 1000) - normalizeRecentDays(recentDays) * 24 * 60 * 60;
+/**
+ * 最近 N 天基线使用排除性边界：
+ * - `pubdate > baselineTs` 仍算命中 N 天窗口；
+ * - 这样可把 “N天内” 统一成 “N天23小时59分钟” 这一档内都算命中。
+ */
+function getRecentDaysBaselineTs(recentDays: number): number {
+  return getRecentDaysBoundaryTs(normalizeRecentDays(recentDays));
+}
+
+interface TrackingLowerBound {
+  ts: number;
+  inclusive: boolean;
+}
+
+function buildReadMarkLowerBound(ts: number): TrackingLowerBound {
+  return {
+    ts,
+    inclusive: true
+  };
+}
+
+function buildRecentDaysLowerBound(recentDays: number): TrackingLowerBound {
+  return {
+    ts: getRecentDaysBaselineTs(recentDays),
+    inclusive: false
+  };
+}
+
+function isWithinTrackingLowerBound(pubdate: number, lowerBound: TrackingLowerBound): boolean {
+  if (lowerBound.inclusive) {
+    return pubdate >= lowerBound.ts;
+  }
+  return pubdate > lowerBound.ts;
 }
 
 function isFreshByFirstPageFetchedAt(
@@ -426,7 +458,17 @@ function resolveGroupRecentBaselineTs(
   if (savedReadMarkTs && savedReadMarkTs > 0) {
     return savedReadMarkTs;
   }
-  return getRecentDaysTs(recentDays);
+  return getRecentDaysBaselineTs(recentDays);
+}
+
+function resolveGroupTrackingLowerBound(
+  savedReadMarkTs: number | undefined,
+  recentDays: number
+): TrackingLowerBound {
+  if (savedReadMarkTs && savedReadMarkTs > 0) {
+    return buildReadMarkLowerBound(savedReadMarkTs);
+  }
+  return buildRecentDaysLowerBound(recentDays);
 }
 
 function resolveAuthorUnreadBaselineTs(
@@ -442,18 +484,37 @@ function resolveAuthorUnreadBaselineTs(
   return groupBaselineTs;
 }
 
+function resolveAuthorTrackingLowerBound(
+  mid: number,
+  groupReadMarkTs: number | undefined,
+  recentDays: number,
+  authorPreferences: AuthorPreferenceMap
+): TrackingLowerBound {
+  const pref = authorPreferences[mid];
+  if (pref?.readMarkTs && pref.readMarkTs > 0) {
+    return buildReadMarkLowerBound(pref.readMarkTs);
+  }
+  return resolveGroupTrackingLowerBound(groupReadMarkTs, recentDays);
+}
+
 /**
  * 时间流模式的可见下界：
  * - 不再按已阅时间做“硬截断”；
  * - 至少保留当前近期预设对应的窗口；
  * - 当用户显式选择了更早的已阅点时，向更旧数据延展。
  */
-function resolveMixedVisibleLowerBoundTs(groupBaselineTs: number, recentDays: number): number {
-  const presetTs = getRecentDaysTs(recentDays);
-  if (groupBaselineTs <= 0) {
-    return presetTs;
+function resolveMixedVisibleLowerBoundTs(
+  savedReadMarkTs: number | undefined,
+  recentDays: number
+): TrackingLowerBound {
+  const recentLowerBound = buildRecentDaysLowerBound(recentDays);
+  if (!savedReadMarkTs || savedReadMarkTs <= 0) {
+    return recentLowerBound;
   }
-  return Math.min(groupBaselineTs, presetTs);
+  if (savedReadMarkTs <= recentLowerBound.ts) {
+    return buildReadMarkLowerBound(savedReadMarkTs);
+  }
+  return recentLowerBound;
 }
 
 function isVideoReviewed(
@@ -703,8 +764,7 @@ function selectOverviewVideosForAuthor(
 
   const days = resolveAllPostsDays(allPostsFilter);
   if (days !== null) {
-    const lowerBound = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
-    const scoped = videos.filter((video) => video.pubdate >= lowerBound);
+    const scoped = videos.filter((video) => isWithinRecentDays(video.pubdate, days));
     if (scoped.length > 0 || videos.length === 0) {
       return {
         videos: scoped,
@@ -733,7 +793,7 @@ function applyOverviewFilterForAuthor(
 function hasAuthorPotentialMoreForMixed(
   mid: number,
   authorCacheMap: AuthorCacheMap,
-  groupBaselineTs: number,
+  groupReadMarkTs: number | undefined,
   recentDays: number,
   allPostsFilter: AllPostsFilterKey,
   authorPreferences: AuthorPreferenceMap
@@ -744,26 +804,23 @@ function hasAuthorPotentialMoreForMixed(
   }
 
   if (allPostsFilter === 'all') {
-    const lowerBound = resolveAuthorMixedLowerBoundTs(mid, groupBaselineTs, recentDays, authorPreferences);
-    if (lowerBound <= 0) {
-      return true;
-    }
+    const lowerBound = resolveAuthorMixedLowerBoundTs(mid, groupReadMarkTs, recentDays, authorPreferences);
     const oldestCached = cache.videos[cache.videos.length - 1];
     if (!oldestCached) {
       return true;
     }
     // 已经把缓存拉到可见下界之外时，继续翻页不会再贡献当前时间流可见数据。
-    return oldestCached.pubdate >= lowerBound;
+    return isWithinTrackingLowerBound(oldestCached.pubdate, lowerBound);
   }
 
   const overviewDays = resolveAllPostsDays(allPostsFilter);
   if (overviewDays !== null) {
-    const lowerBound = Math.floor(Date.now() / 1000) - overviewDays * 24 * 60 * 60;
+    const lowerBound = getRecentDaysBaselineTs(overviewDays);
     const oldestCached = cache.videos[cache.videos.length - 1];
     if (!oldestCached) {
       return true;
     }
-    return oldestCached.pubdate >= lowerBound;
+    return oldestCached.pubdate > lowerBound;
   }
 
   const perAuthorCount = resolveAllPostsPerAuthorCount(allPostsFilter);
@@ -774,36 +831,37 @@ function hasAuthorPotentialMoreForMixed(
   return true;
 }
 
-function filterAuthorVideosByTracking(videos: VideoItem[], baseline: number, extraCount: number): VideoItem[] {
-  if (baseline <= 0) {
-    return videos;
-  }
-  const newVideos = videos.filter((v) => v.pubdate >= baseline);
-  const olderVideos = videos.filter((v) => v.pubdate < baseline).slice(0, extraCount);
+function filterAuthorVideosByTracking(
+  videos: VideoItem[],
+  lowerBound: TrackingLowerBound,
+  extraCount: number
+): VideoItem[] {
+  const newVideos = videos.filter((video) => isWithinTrackingLowerBound(video.pubdate, lowerBound));
+  const olderVideos = videos.filter((video) => !isWithinTrackingLowerBound(video.pubdate, lowerBound)).slice(0, extraCount);
   return [...newVideos, ...olderVideos];
 }
 
 function resolveAuthorMixedLowerBoundTs(
   mid: number,
-  groupBaselineTs: number,
+  groupReadMarkTs: number | undefined,
   recentDays: number,
   authorPreferences: AuthorPreferenceMap
-): number {
+): TrackingLowerBound {
   const pref = authorPreferences[mid];
   const authorReadMarkTs = pref?.readMarkTs && pref.readMarkTs > 0 ? pref.readMarkTs : 0;
+  const recentLowerBound = buildRecentDaysLowerBound(recentDays);
   if (authorReadMarkTs > 0) {
-    const presetTs = getRecentDaysTs(recentDays);
-    if (presetTs > 0) {
-      return Math.min(authorReadMarkTs, presetTs);
+    if (authorReadMarkTs <= recentLowerBound.ts) {
+      return buildReadMarkLowerBound(authorReadMarkTs);
     }
-    return authorReadMarkTs;
+    return recentLowerBound;
   }
-  return resolveMixedVisibleLowerBoundTs(groupBaselineTs, recentDays);
+  return resolveMixedVisibleLowerBoundTs(groupReadMarkTs, recentDays);
 }
 
 function filterMixedVideosByTracking(
   videos: VideoItem[],
-  groupBaselineTs: number,
+  groupReadMarkTs: number | undefined,
   recentDays: number,
   showAllForMixed: boolean,
   authorPreferences: AuthorPreferenceMap
@@ -813,11 +871,8 @@ function filterMixedVideosByTracking(
   }
 
   return videos.filter((video) => {
-    const lowerBound = resolveAuthorMixedLowerBoundTs(video.authorMid, groupBaselineTs, recentDays, authorPreferences);
-    if (lowerBound <= 0) {
-      return true;
-    }
-    return video.pubdate >= lowerBound;
+    const lowerBound = resolveAuthorMixedLowerBoundTs(video.authorMid, groupReadMarkTs, recentDays, authorPreferences);
+    return isWithinTrackingLowerBound(video.pubdate, lowerBound);
   });
 }
 
@@ -967,10 +1022,16 @@ export function toFeedResult(
     const overviewSelection = selectOverviewVideosForAuthor(allVideos, effectiveAllPostsFilter);
     const pref = authorPreferences[mid];
     const hasAuthorReadMarkOverride = Boolean(pref?.readMarkTs && pref.readMarkTs > 0);
+    const authorTrackingLowerBound = resolveAuthorTrackingLowerBound(
+      mid,
+      normalizedActiveReadMarkTs,
+      normalizedRecentDays,
+      authorPreferences
+    );
     const authorBoundaryTs = resolveAuthorUnreadBaselineTs(mid, trackingGroupBaselineTs, authorPreferences);
     const videos =
       mode === 'byAuthor'
-        ? filterAuthorVideosByTracking(allVideos, authorBoundaryTs, settings.extraOlderVideoCount)
+        ? filterAuthorVideosByTracking(allVideos, authorTrackingLowerBound, settings.extraOlderVideoCount)
         : overviewSelection.videos;
     const meta = authorMetaMap.get(mid);
 
@@ -997,7 +1058,7 @@ export function toFeedResult(
         mode === 'byAuthor' &&
         authorBoundaryTs > 0 &&
         videos.length > 0 &&
-        videos.every((video) => video.pubdate < authorBoundaryTs),
+        videos.every((video) => !isWithinTrackingLowerBound(video.pubdate, authorTrackingLowerBound)),
       hasOverviewFallbackLatestVideo:
         mode === 'overview' && overviewSelection.usedLatestFallback,
       latestPubdate: getLatestPubdate(allVideos) ?? undefined
@@ -1025,7 +1086,7 @@ export function toFeedResult(
     mode !== 'overview'
       ? filterMixedVideosByTracking(
           mixedAllVideos,
-          trackingGroupBaselineTs,
+          normalizedActiveReadMarkTs,
           normalizedRecentDays,
           showAllForMixed,
           authorPreferences
@@ -1070,7 +1131,7 @@ export function toFeedResult(
 
       const filteredByReadMark = filterMixedVideosByTracking(
         cache.videos,
-        trackingGroupBaselineTs,
+        normalizedActiveReadMarkTs,
         normalizedRecentDays,
         showAllForMixed,
         authorPreferences
@@ -1081,13 +1142,13 @@ export function toFeedResult(
 
       const mixedLowerBound = resolveAuthorMixedLowerBoundTs(
         mid,
-        trackingGroupBaselineTs,
+        normalizedActiveReadMarkTs,
         normalizedRecentDays,
         authorPreferences
       );
       const oldestCached = cache.videos[cache.videos.length - 1];
       // 已经跨过时间流可见下界时，不再向更旧分页推进，避免在已阅过滤场景下无限深翻页。
-      if (mixedLowerBound > 0 && oldestCached && oldestCached.pubdate < mixedLowerBound) {
+      if (oldestCached && !isWithinTrackingLowerBound(oldestCached.pubdate, mixedLowerBound)) {
         continue;
       }
 
@@ -1132,7 +1193,7 @@ export function toFeedResult(
     || authorMids.some((mid) => hasAuthorPotentialMoreForMixed(
       mid,
       authorCacheMap,
-      trackingGroupBaselineTs,
+      normalizedActiveReadMarkTs,
       normalizedRecentDays,
       effectiveAllPostsFilter,
       authorPreferences
@@ -1149,7 +1210,7 @@ export function toFeedResult(
     unreadCount: runtime.unreadCount,
     hasMoreForMixed,
     readMarkTimestamps,
-    graceReadMarkTs: getRecentDaysTs(normalizedRecentDays),
+    graceReadMarkTs: getRecentDaysBaselineTs(normalizedRecentDays),
     byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE
   };
 
