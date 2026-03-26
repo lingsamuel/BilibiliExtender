@@ -91,6 +91,24 @@
         </div>
         <input v-model.number="settings.defaultReadMarkDays" class="bbe-input" type="number" min="1" max="30" />
       </div>
+      <div class="bbe-setting-row">
+        <div>
+          显示“全部”聚合分组
+          <div class="bbe-setting-hint">关闭后侧栏将隐藏默认“全部”分组入口</div>
+        </div>
+        <label>
+          <input v-model="settings.enableAllGroup" type="checkbox" /> 启用
+        </label>
+      </div>
+      <div class="bbe-setting-row">
+        <div>
+          使用同步存储（storage.sync）
+          <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
+        </div>
+        <label>
+          <input v-model="settings.useStorageSync" type="checkbox" /> 启用
+        </label>
+      </div>
     </section>
     <section v-if="showAdvancedSettings" class="bbe-settings-subsection">
       <h3 class="bbe-settings-subtitle">高级配置</h3>
@@ -135,24 +153,6 @@
           <div class="bbe-setting-hint">选中已阅时间点后，每位作者额外显示已阅之前最新的 N 个视频</div>
         </div>
         <input v-model.number="settings.extraOlderVideoCount" class="bbe-input" type="number" min="0" max="20" />
-      </div>
-      <div class="bbe-setting-row">
-        <div>
-          显示“全部”聚合分组
-          <div class="bbe-setting-hint">关闭后侧栏将隐藏默认“全部”分组入口</div>
-        </div>
-        <label>
-          <input v-model="settings.enableAllGroup" type="checkbox" /> 启用
-        </label>
-      </div>
-      <div class="bbe-setting-row">
-        <div>
-          使用同步存储（storage.sync）
-          <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
-        </div>
-        <label>
-          <input v-model="settings.useStorageSync" type="checkbox" /> 启用
-        </label>
       </div>
       <div class="bbe-setting-row">
         <div>
@@ -596,9 +596,9 @@ onMounted(() => {
 }
 
 .bbe-settings-switch {
-  border: 1px solid #d4dcec;
+  border: 0;
   border-radius: 999px;
-  background: #f7f9fd;
+  background: transparent;
   color: #5d6c83;
   padding: 4px 12px 4px 8px;
   font-size: 12px;
@@ -612,14 +612,10 @@ onMounted(() => {
 }
 
 .bbe-settings-switch:hover {
-  border-color: #b4c2d8;
-  background: #edf3fb;
   color: #42526a;
 }
 
 .bbe-settings-switch.active {
-  border-color: #f1c868;
-  background: #fff8e1;
   color: #9b6c00;
 }
 
