@@ -8,13 +8,6 @@
           {{ folder.title }}（{{ folder.mediaCount }}）
         </option>
       </select>
-      <input
-        v-model="newAlias"
-        class="bbe-input"
-        type="text"
-        maxlength="30"
-        placeholder="分组别名（可选）"
-      />
       <button class="bbe-btn primary" @click="createGroup">创建分组</button>
       <button class="bbe-btn" @click="reloadOptionsData">刷新收藏夹列表</button>
     </div>
@@ -41,7 +34,8 @@
           type="text"
           maxlength="30"
           placeholder="未设置时使用收藏夹名"
-          @blur="saveGroup(group)"
+          @input="scheduleGroupSave(group.groupId)"
+          @blur="flushGroupSave(group.groupId)"
         />
       </div>
       <div>{{ groupAuthorCounts[group.groupId] ?? '-' }}</div>
@@ -148,9 +142,6 @@
         <input v-model="settings.debugMode" type="checkbox" /> 启用
       </label>
     </div>
-    <div class="bbe-row" style="margin-top: 14px">
-      <button class="bbe-btn primary" @click="saveSettingsOnly">保存设置</button>
-    </div>
   </section>
 
   <p v-if="message" class="bbe-message">{{ message }}</p>
@@ -158,7 +149,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { sendMessage } from '@/shared/messages';
 import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
 
@@ -166,6 +157,10 @@ const emit = defineEmits<{
   (e: 'group-created'): void;
   (e: 'settings-saved'): void;
 }>();
+
+const NOTICE_DURATION_MS = 3000;
+const SETTINGS_AUTO_SAVE_DELAY_MS = 800;
+const GROUP_ALIAS_AUTO_SAVE_DELAY_MS = 500;
 
 const folders = ref<FavoriteFolder[]>([]);
 const groups = ref<GroupConfig[]>([]);
@@ -185,12 +180,18 @@ const settings = ref<ExtensionSettings>({
 });
 
 const selectedMediaId = ref('');
-const newAlias = ref('');
 const message = ref('');
 const errorMsg = ref('');
 const groupAuthorCounts = ref<Record<string, number>>({});
 const totalTrackedAuthors = ref(0);
 const refreshingGroups = ref<Set<string>>(new Set());
+const settingsSnapshot = ref('');
+const groupSaveTimers = new Map<string, number>();
+let noticeTimer: number | null = null;
+let settingsSaveTimer: number | null = null;
+let isApplyingSettings = false;
+let isSavingSettings = false;
+let hasPendingSettingsSave = false;
 
 const availableFolders = computed(() => {
   const usedIds = new Set(groups.value.map((item) => item.mediaId));
@@ -198,13 +199,63 @@ const availableFolders = computed(() => {
 });
 
 function setNotice(msg: string): void {
+  if (noticeTimer !== null) {
+    window.clearTimeout(noticeTimer);
+  }
   message.value = msg;
   errorMsg.value = '';
+  noticeTimer = window.setTimeout(() => {
+    if (message.value === msg) {
+      message.value = '';
+    }
+    noticeTimer = null;
+  }, NOTICE_DURATION_MS);
 }
 
 function setError(msg: string): void {
+  if (noticeTimer !== null) {
+    window.clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
   errorMsg.value = msg;
   message.value = '';
+}
+
+function normalizeSettings(source: ExtensionSettings): ExtensionSettings {
+  return {
+    ...source,
+    refreshIntervalMinutes: Math.min(120, Math.max(1, Number(source.refreshIntervalMinutes) || 30)),
+    backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(source.backgroundRefreshIntervalMinutes) || 10)),
+    groupFavRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(source.groupFavRefreshIntervalMinutes) || 10)),
+    schedulerBatchSize: Math.min(50, Math.max(1, Number(source.schedulerBatchSize) || 10)),
+    timelineMixedMaxCount: Math.min(500, Math.max(10, Number(source.timelineMixedMaxCount) || 50)),
+    extraOlderVideoCount: Math.min(20, Math.max(0, Number(source.extraOlderVideoCount) || 1)),
+    defaultReadMarkDays: Math.min(90, Math.max(0, Number(source.defaultReadMarkDays) || 7)),
+    enableAllGroup: source.enableAllGroup === true,
+    useStorageSync: source.useStorageSync === true,
+    debugMode: source.debugMode === true
+  };
+}
+
+function serializeSettings(source: ExtensionSettings): string {
+  return JSON.stringify(normalizeSettings(source));
+}
+
+function snapshotSettings(source: ExtensionSettings): void {
+  settingsSnapshot.value = serializeSettings(source);
+}
+
+function applySettingsSnapshot(nextSettings: ExtensionSettings): void {
+  isApplyingSettings = true;
+  settings.value = { ...nextSettings };
+  snapshotSettings(nextSettings);
+  queueMicrotask(() => {
+    isApplyingSettings = false;
+  });
+}
+
+function isSettingsDirty(): boolean {
+  return serializeSettings(settings.value) !== settingsSnapshot.value;
 }
 
 async function reloadOptionsData(): Promise<void> {
@@ -216,7 +267,7 @@ async function reloadOptionsData(): Promise<void> {
     folders.value = resp.data.folders;
     groups.value = resp.data.groups;
     snapshotGroups();
-    settings.value = resp.data.settings;
+    applySettingsSnapshot(resp.data.settings);
     groupAuthorCounts.value = resp.data.groupAuthorCounts;
     totalTrackedAuthors.value = resp.data.totalTrackedAuthors;
     setNotice('已加载最新数据');
@@ -247,7 +298,6 @@ async function createGroup(): Promise<void> {
           groupId: crypto.randomUUID(),
           mediaId,
           mediaTitle: folder.title,
-          alias: newAlias.value.trim() || undefined,
           enabled: true,
           excludeFromUnreadCount: false
         }
@@ -259,7 +309,6 @@ async function createGroup(): Promise<void> {
     groups.value = resp.data.groups;
     snapshotGroups();
     selectedMediaId.value = '';
-    newAlias.value = '';
     setNotice('分组创建成功');
     emit('group-created');
   } catch (error) {
@@ -270,23 +319,32 @@ async function createGroup(): Promise<void> {
 function snapshotGroups(): void {
   const map: Record<string, { alias?: string; enabled: boolean; excludeFromUnreadCount: boolean }> = {};
   for (const g of groups.value) {
+    const normalizedGroup = normalizeGroupPayload(g);
     map[g.groupId] = {
-      alias: g.alias,
-      enabled: g.enabled,
-      excludeFromUnreadCount: g.excludeFromUnreadCount === true
+      alias: normalizedGroup.alias,
+      enabled: normalizedGroup.enabled === true,
+      excludeFromUnreadCount: normalizedGroup.excludeFromUnreadCount === true
     };
   }
   groupSnapshots.value = map;
+}
+
+function updateGroupSnapshot(groupId: string, snapshot: { alias?: string; enabled: boolean; excludeFromUnreadCount: boolean }): void {
+  groupSnapshots.value = {
+    ...groupSnapshots.value,
+    [groupId]: snapshot
+  };
 }
 
 // 脏检查：只有实际修改了才发请求
 function isGroupDirty(group: GroupConfig): boolean {
   const snap = groupSnapshots.value[group.groupId];
   if (!snap) return true;
+  const normalizedGroup = normalizeGroupPayload(group);
   return (
-    snap.alias !== group.alias ||
-    snap.enabled !== group.enabled ||
-    snap.excludeFromUnreadCount !== (group.excludeFromUnreadCount === true)
+    snap.alias !== normalizedGroup.alias ||
+    snap.enabled !== (normalizedGroup.enabled === true) ||
+    snap.excludeFromUnreadCount !== (normalizedGroup.excludeFromUnreadCount === true)
   );
 }
 
@@ -310,19 +368,51 @@ function normalizeGroupPayload(
   };
 }
 
+function scheduleGroupSave(groupId: string, delay = GROUP_ALIAS_AUTO_SAVE_DELAY_MS): void {
+  const existing = groupSaveTimers.get(groupId);
+  if (existing !== undefined) {
+    window.clearTimeout(existing);
+  }
+  const timer = window.setTimeout(() => {
+    groupSaveTimers.delete(groupId);
+    void saveGroupById(groupId);
+  }, delay);
+  groupSaveTimers.set(groupId, timer);
+}
+
+function flushGroupSave(groupId: string): void {
+  const existing = groupSaveTimers.get(groupId);
+  if (existing !== undefined) {
+    window.clearTimeout(existing);
+    groupSaveTimers.delete(groupId);
+  }
+  void saveGroupById(groupId);
+}
+
+async function saveGroupById(groupId: string): Promise<void> {
+  const group = groups.value.find((item) => item.groupId === groupId);
+  if (!group) return;
+  await saveGroup(group);
+}
+
 async function saveGroup(group: GroupConfig): Promise<void> {
   if (!isGroupDirty(group)) return;
   try {
+    const normalizedGroup = normalizeGroupPayload(group);
     const resp = await sendMessage({
       type: 'UPSERT_GROUP',
-      payload: { group: normalizeGroupPayload(group) }
+      payload: { group: normalizedGroup }
     });
     if (!resp.ok || !resp.data) {
       throw new Error(resp.error ?? '保存分组失败');
     }
-    groups.value = resp.data.groups;
-    snapshotGroups();
+    updateGroupSnapshot(group.groupId, {
+      alias: normalizedGroup.alias,
+      enabled: normalizedGroup.enabled === true,
+      excludeFromUnreadCount: normalizedGroup.excludeFromUnreadCount === true
+    });
     setNotice('分组已保存');
+    emit('group-created');
   } catch (error) {
     setError(error instanceof Error ? error.message : '保存失败');
   }
@@ -375,18 +465,15 @@ async function removeGroup(groupId: string): Promise<void> {
 }
 
 async function saveSettingsOnly(): Promise<void> {
-  const normalized = {
-    ...settings.value,
-    refreshIntervalMinutes: Math.min(120, Math.max(1, Number(settings.value.refreshIntervalMinutes) || 30)),
-    backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(settings.value.backgroundRefreshIntervalMinutes) || 10)),
-    groupFavRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(settings.value.groupFavRefreshIntervalMinutes) || 10)),
-    schedulerBatchSize: Math.min(50, Math.max(1, Number(settings.value.schedulerBatchSize) || 10)),
-    timelineMixedMaxCount: Math.min(500, Math.max(10, Number(settings.value.timelineMixedMaxCount) || 50)),
-    extraOlderVideoCount: Math.min(20, Math.max(0, Number(settings.value.extraOlderVideoCount) || 1)),
-    defaultReadMarkDays: Math.min(90, Math.max(0, Number(settings.value.defaultReadMarkDays) || 7)),
-    enableAllGroup: settings.value.enableAllGroup === true
-  };
+  if (!isSettingsDirty()) return;
+  if (isSavingSettings) {
+    hasPendingSettingsSave = true;
+    return;
+  }
+
+  isSavingSettings = true;
   try {
+    const normalized = normalizeSettings(settings.value);
     const resp = await sendMessage({
       type: 'SAVE_SETTINGS',
       payload: { settings: normalized }
@@ -394,13 +481,55 @@ async function saveSettingsOnly(): Promise<void> {
     if (!resp.ok || !resp.data) {
       throw new Error(resp.error ?? '保存设置失败');
     }
-    settings.value = resp.data.settings;
+    snapshotSettings(normalized);
     setNotice('设置已保存');
     emit('settings-saved');
   } catch (error) {
     setError(error instanceof Error ? error.message : '保存设置失败');
+  } finally {
+    isSavingSettings = false;
+    if (hasPendingSettingsSave) {
+      hasPendingSettingsSave = false;
+      scheduleSettingsSave(0);
+    }
   }
 }
+
+function scheduleSettingsSave(delay = SETTINGS_AUTO_SAVE_DELAY_MS): void {
+  if (settingsSaveTimer !== null) {
+    window.clearTimeout(settingsSaveTimer);
+  }
+  settingsSaveTimer = window.setTimeout(() => {
+    settingsSaveTimer = null;
+    void saveSettingsOnly();
+  }, delay);
+}
+
+watch(
+  settings,
+  () => {
+    if (isApplyingSettings) return;
+    if (!settingsSnapshot.value) return;
+    scheduleSettingsSave();
+  },
+  { deep: true }
+);
+
+onBeforeUnmount(() => {
+  if (noticeTimer !== null) {
+    window.clearTimeout(noticeTimer);
+  }
+  if (settingsSaveTimer !== null) {
+    window.clearTimeout(settingsSaveTimer);
+    settingsSaveTimer = null;
+    void saveSettingsOnly();
+  }
+  for (const [groupId, timer] of groupSaveTimers.entries()) {
+    window.clearTimeout(timer);
+    void saveGroupById(groupId);
+  }
+  groupSaveTimers.clear();
+});
 
 onMounted(() => {
   void reloadOptionsData();
