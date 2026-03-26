@@ -56,7 +56,7 @@
           <a class="bbe-card-author-link" :href="authorSpaceUrl" target="_blank" rel="noreferrer">
             <span class="bbe-card-author-name">{{ video.authorName }}</span>
           </a>
-          <span class="bbe-card-author-date" :title="precisePubdate">{{ relativePubdate }}</span>
+          <span class="bbe-card-author-date" :title="precisePubdate">{{ displayPubdate }}</span>
         </div>
         <button
           type="button"
@@ -129,7 +129,13 @@ const reviewedState = computed(() => {
   return Boolean(props.clicked) || playbackPercent.value >= 10;
 });
 const precisePubdate = computed(() => formatPubdate(props.video.pubdate));
-const relativePubdate = computed(() => formatRelativePublishedAt(props.video.pubdate));
+const displayPubdate = computed(() => {
+  const diffSeconds = Math.max(0, Math.floor(Date.now() / 1000) - props.video.pubdate);
+  if (diffSeconds < 24 * 60 * 60) {
+    return formatRelativePublishedAt(props.video.pubdate);
+  }
+  return precisePubdate.value;
+});
 
 const videoUrl = computed(() => `https://www.bilibili.com/video/${props.video.bvid}`);
 const authorSpaceUrl = computed(() => `https://space.bilibili.com/${props.video.authorMid}`);
