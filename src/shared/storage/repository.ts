@@ -6,6 +6,7 @@ import {
   STORAGE_KEYS
 } from '@/shared/constants';
 import { ext, type StorageAreaLike } from '@/shared/platform/webext';
+import { normalizeExtensionSettings } from '@/shared/utils/settings';
 import type { SchedulerTaskReason, SchedulerTaskTrigger } from '@/shared/messages';
 import type {
   AuthorPreference,
@@ -82,17 +83,18 @@ async function getSettings(): Promise<ExtensionSettings> {
   }
 
   const settings = await storageGet(ext.storage.local, STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
-  const merged = {
+  const merged = normalizeExtensionSettings({
     ...DEFAULT_SETTINGS,
     ...settings
-  };
+  });
   memoryCache.settings = merged;
   return merged;
 }
 
 async function setSettings(settings: ExtensionSettings): Promise<void> {
-  memoryCache.settings = settings;
-  await storageSet(ext.storage.local, STORAGE_KEYS.SETTINGS, settings);
+  const normalized = normalizeExtensionSettings(settings);
+  memoryCache.settings = normalized;
+  await storageSet(ext.storage.local, STORAGE_KEYS.SETTINGS, normalized);
 }
 
 async function getGroupsStorageArea(): Promise<StorageAreaLike> {
@@ -371,6 +373,36 @@ export async function appendGroupReadMark(groupId: string, readMarkTs?: number):
 
   await saveGroupReadMarks(marks);
   return marks;
+}
+
+/**
+ * 撤销指定分组最近一次“上次看到”时间点写入。
+ * 返回更新后的完整 ReadMarkMap 与被移除的最新时间点。
+ */
+export async function undoLatestGroupReadMark(
+  groupId: string
+): Promise<{ marks: ReadMarkMap; removedReadMarkTs?: number }> {
+  const marks = await loadGroupReadMarks();
+  const entry = marks[groupId];
+  if (!entry || entry.timestamps.length === 0) {
+    return { marks };
+  }
+
+  const [removedReadMarkTs, ...rest] = entry.timestamps;
+  if (rest.length === 0) {
+    delete marks[groupId];
+  } else {
+    marks[groupId] = {
+      groupId,
+      timestamps: rest
+    };
+  }
+
+  await saveGroupReadMarks(marks);
+  return {
+    marks,
+    removedReadMarkTs
+  };
 }
 
 export async function loadClickedVideos(): Promise<ClickedVideoMap> {

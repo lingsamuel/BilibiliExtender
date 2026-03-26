@@ -110,10 +110,14 @@
     </div>
     <div class="bbe-setting-row">
       <div>
-        默认已阅天数
-        <div class="bbe-setting-hint">无已阅记录时，默认只显示最近 N 天的视频（0 表示不限制）</div>
+        默认近期范围
+        <div class="bbe-setting-hint">用于时间流与近期投稿的默认近期范围，仅支持 7 / 14 / 30 天</div>
       </div>
-      <input v-model.number="settings.defaultReadMarkDays" class="bbe-input" type="number" min="0" max="90" />
+      <select v-model.number="settings.defaultReadMarkDays" class="bbe-select">
+        <option v-for="option in recentPresetOptions" :key="option.value" :value="option.value">
+          {{ option.label }}
+        </option>
+      </select>
     </div>
     <div class="bbe-setting-row">
       <div>
@@ -152,6 +156,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { sendMessage } from '@/shared/messages';
 import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
+import { normalizeExtensionSettings, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
 
 const emit = defineEmits<{
   (e: 'group-created'): void;
@@ -193,6 +198,11 @@ let isApplyingSettings = false;
 let isSavingSettings = false;
 let hasPendingSettingsSave = false;
 
+const recentPresetOptions = RECENT_PRESET_DAY_VALUES.map((days) => ({
+  value: days,
+  label: `${days}天内`
+}));
+
 const availableFolders = computed(() => {
   const usedIds = new Set(groups.value.map((item) => item.mediaId));
   return folders.value.filter((folder) => !usedIds.has(folder.id));
@@ -222,19 +232,7 @@ function setError(msg: string): void {
 }
 
 function normalizeSettings(source: ExtensionSettings): ExtensionSettings {
-  return {
-    ...source,
-    refreshIntervalMinutes: Math.min(120, Math.max(1, Number(source.refreshIntervalMinutes) || 30)),
-    backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(source.backgroundRefreshIntervalMinutes) || 10)),
-    groupFavRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(source.groupFavRefreshIntervalMinutes) || 10)),
-    schedulerBatchSize: Math.min(50, Math.max(1, Number(source.schedulerBatchSize) || 10)),
-    timelineMixedMaxCount: Math.min(500, Math.max(10, Number(source.timelineMixedMaxCount) || 50)),
-    extraOlderVideoCount: Math.min(20, Math.max(0, Number(source.extraOlderVideoCount) || 1)),
-    defaultReadMarkDays: Math.min(90, Math.max(0, Number(source.defaultReadMarkDays) || 7)),
-    enableAllGroup: source.enableAllGroup === true,
-    useStorageSync: source.useStorageSync === true,
-    debugMode: source.debugMode === true
-  };
+  return normalizeExtensionSettings(source);
 }
 
 function serializeSettings(source: ExtensionSettings): string {

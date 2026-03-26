@@ -41,7 +41,8 @@ import {
   saveGroups,
   saveLastGroupId,
   saveRuntimeStateMap,
-  saveSettings
+  saveSettings,
+  undoLatestGroupReadMark
 } from '@/shared/storage/repository';
 import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
@@ -67,6 +68,7 @@ import {
   setupAlarm
 } from '@/background/scheduler';
 import { runWithFollowRequestHeaders } from '@/background/request-dnr';
+import { normalizeExtensionSettings } from '@/shared/utils/settings';
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -287,10 +289,10 @@ async function handleDeleteGroup(
 async function handleSaveSettings(
   request: Extract<MessageRequest, { type: 'SAVE_SETTINGS' }>
 ): Promise<ResponseMap['SAVE_SETTINGS']> {
-  const settings = {
+  const settings = normalizeExtensionSettings({
     ...DEFAULT_SETTINGS,
     ...request.payload.settings
-  };
+  });
 
   await saveSettings(settings);
   await setupAlarm(settings);
@@ -338,8 +340,9 @@ async function handleGetGroupSummary(
       lastRefreshAt: allRuntime?.lastRefreshAt,
       enabled: true,
       savedMode: allRuntime?.savedMode,
-      savedReadMarkTs: allRuntime?.savedReadMarkTs,
-      savedOverviewFilter: allRuntime?.savedOverviewFilter,
+      savedReadMarkTs: undefined,
+      savedRecentPresetKey: allRuntime?.savedRecentPresetKey,
+      savedAllPostsFilter: allRuntime?.savedAllPostsFilter,
       savedByAuthorSortByLatest: allRuntime?.savedByAuthorSortByLatest
     });
   }
@@ -473,8 +476,9 @@ async function handleGetGroupFeed(
   await saveLastGroupId(group.groupId);
 
   const readMarks = await loadGroupReadMarks();
-  const selectedReadMarkTs = request.payload.selectedReadMarkTs ?? 0;
-  const overviewFilter = request.payload.overviewFilter ?? 'none';
+  const recentPresetKey = request.payload.recentPresetKey ?? 'd7';
+  const showAllForMixed = request.payload.showAllForMixed === true;
+  const allPostsFilter = request.payload.allPostsFilter ?? 'all';
 
   const runtimeBefore = JSON.stringify(runtimeMap[group.groupId] ?? null);
   let authorCacheMap = initialAuthorCacheMap;
@@ -493,8 +497,9 @@ async function handleGetGroupFeed(
       clickedVideos,
       reviewedOverrides,
       authorPreferences,
-      selectedReadMarkTs,
-      overviewFilter,
+      recentPresetKey,
+      showAllForMixed,
+      allPostsFilter,
       request.payload.byAuthorSortByLatest,
       diagnostics
     ),
@@ -570,6 +575,12 @@ async function handleMarkGroupReadMark(
 ): Promise<ResponseMap['MARK_GROUP_READ_MARK']> {
   const marks = await appendGroupReadMark(request.payload.groupId, request.payload.readMarkTs);
   return { marks };
+}
+
+async function handleUndoGroupReadMark(
+  request: Extract<MessageRequest, { type: 'UNDO_GROUP_READ_MARK' }>
+): Promise<ResponseMap['UNDO_GROUP_READ_MARK']> {
+  return undoLatestGroupReadMark(request.payload.groupId);
 }
 
 async function handleMarkAllGroupsRead(): Promise<ResponseMap['MARK_ALL_GROUPS_READ']> {
@@ -1086,6 +1097,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleMarkGroupRead(request));
     case 'MARK_GROUP_READ_MARK':
       return ok(await handleMarkGroupReadMark(request));
+    case 'UNDO_GROUP_READ_MARK':
+      return ok(await handleUndoGroupReadMark(request));
     case 'MARK_ALL_GROUPS_READ':
       return ok(await handleMarkAllGroupsRead());
     case 'FOLLOW_AUTHOR':
@@ -1131,7 +1144,7 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
 
 ext.runtime.onInstalled.addListener(async () => {
   const settings = await loadSettings();
-  const merged = { ...DEFAULT_SETTINGS, ...settings };
+  const merged = normalizeExtensionSettings({ ...DEFAULT_SETTINGS, ...settings });
   await saveSettings(merged);
   await Promise.all([cleanOrphanClicks(), cleanOrphanReviewedOverrides()]);
   await setupAlarm(merged);

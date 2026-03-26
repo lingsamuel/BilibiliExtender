@@ -51,26 +51,31 @@
       <header class="bbe-toolbar">
         <div class="bbe-toolbar-left">
           <button class="bbe-btn" :class="{ active: mode === 'mixed' }" @click="switchMode('mixed')">时间流</button>
-          <button class="bbe-btn" :class="{ active: mode === 'byAuthor' }" @click="switchMode('byAuthor')">未观看</button>
-          <button class="bbe-btn" :class="{ active: mode === 'overview' }" @click="switchMode('overview')">概览</button>
-          <label v-if="mode !== 'mixed'" class="bbe-toolbar-check">
+          <button class="bbe-btn" :class="{ active: mode === 'byAuthor' }" @click="switchMode('byAuthor')">近期投稿</button>
+          <button class="bbe-btn" :class="{ active: mode === 'overview' }" @click="switchMode('overview')">全部投稿</button>
+          <label v-if="mode === 'byAuthor'" class="bbe-toolbar-check">
             <input v-model="byAuthorSortByLatest" type="checkbox" @change="onByAuthorSortByLatestChange" />
             <span>按更新时间倒序</span>
           </label>
           <span class="bbe-toolbar-sep" />
           <select v-if="mode !== 'overview'" v-model="selectedReadFilterKey" class="bbe-select-sm" @change="onTrackingReadFilterChange">
-            <option value="t:0">全部</option>
-            <option value="t:-1">{{ graceLabel }}</option>
-            <option v-for="ts in readMarkTimestamps" :key="ts" :value="`t:${ts}`">{{ formatReadMarkTs(ts) }}</option>
+            <option v-if="mode === 'mixed'" value="m:all">全部</option>
+            <option v-if="hasLatestGroupReadMark" value="r:mark">{{ formatReadMarkTs(latestGroupReadMarkTs) }}</option>
+            <option v-if="!hasLatestGroupReadMark" value="r:d7">7天内</option>
+            <option v-if="!hasLatestGroupReadMark" value="r:d14">14天内</option>
+            <option v-if="!hasLatestGroupReadMark" value="r:d30">30天内</option>
           </select>
           <select v-else v-model="selectedReadFilterKey" class="bbe-select-sm" @change="onOverviewFilterChange">
             <option value="o:all">全部</option>
-            <option value="o:gd">{{ graceLabel }}</option>
+            <option value="o:d7">7天内</option>
             <option value="o:d14">14天内</option>
             <option value="o:d30">30天内</option>
             <option value="o:n10">10条</option>
             <option value="o:n30">30条</option>
           </select>
+          <button v-if="mode === 'mixed' && hasLatestGroupReadMark && !isAllGroupEntry" class="bbe-btn" :disabled="loading" @click="undoLatestGroupReadMark">
+            撤销上次看到
+          </button>
           <button v-if="mode !== 'overview'" class="bbe-btn" :disabled="loading" @click="markCurrentGroupRead">{{ markReadButtonText }}</button>
         </div>
 
@@ -249,8 +254,8 @@
                       </button>
                     </div>
                     <div class="bbe-author-title-actions">
-                      <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">
-                        标记已阅
+                      <button type="button" class="bbe-author-mark-read-btn" @click="toggleAuthorReadMark(author)">
+                        {{ author.hasAuthorReadMarkOverride ? '撤销已阅' : '标记已阅' }}
                       </button>
                       <button
                         type="button"
@@ -382,7 +387,15 @@ import {
   type LikeTaskStatusMessage
 } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
-import type { AuthorFeed, GroupFeedResult, GroupSummary, OverviewFilterKey, VideoItem, ViewMode } from '@/shared/types';
+import type {
+  AllPostsFilterKey,
+  AuthorFeed,
+  GroupFeedResult,
+  GroupSummary,
+  RecentPresetKey,
+  VideoItem,
+  ViewMode
+} from '@/shared/types';
 import { formatDaysAgo, formatReadMarkTs, formatRelativeMinutes } from '@/shared/utils/format';
 import VideoCard from '@/content/components/VideoCard.vue';
 import DebugPanel from '@/content/components/DebugPanel.vue';
@@ -488,12 +501,12 @@ let toastSeq = 0;
 let summaryTimer: number | null = null;
 let pollTimer: number | null = null;
 let authorPagePollTimer: number | null = null;
-let userExplicitlyChoseAll = false;
 const lastGroupIdFromSummary = ref('');
 
-const selectedReadMarkTs = ref(0);
-const selectedOverviewFilter = ref<OverviewFilterKey>('all');
-const selectedReadFilterKey = ref('t:0');
+const selectedRecentPresetKey = ref<RecentPresetKey>('d7');
+const selectedAllPostsFilter = ref<AllPostsFilterKey>('all');
+const mixedShowAll = ref(false);
+const selectedReadFilterKey = ref('r:d7');
 const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
@@ -572,51 +585,91 @@ function showErrorToast(message: string): void {
   }, 3200);
 }
 
-function buildTrackingFilterKey(ts: number): string {
-  return `t:${ts}`;
-}
-
-function buildOverviewFilterKey(filter: OverviewFilterKey): string {
+function buildAllPostsFilterKey(filter: AllPostsFilterKey): string {
   return `o:${filter}`;
 }
 
-function normalizeOverviewFilter(filter: OverviewFilterKey | undefined): OverviewFilterKey {
-  if (filter === 'all' || filter === 'gd' || filter === 'd14' || filter === 'd30' || filter === 'n10' || filter === 'n30') {
+function normalizeRecentPresetKey(preset: RecentPresetKey | undefined): RecentPresetKey {
+  if (preset === 'd14' || preset === 'd30') {
+    return preset;
+  }
+  return 'd7';
+}
+
+function normalizeAllPostsFilter(filter: AllPostsFilterKey | undefined): AllPostsFilterKey {
+  if (filter === 'all' || filter === 'd7' || filter === 'd14' || filter === 'd30' || filter === 'n10' || filter === 'n30') {
     return filter;
   }
   return 'all';
 }
 
-const activeOverviewFilter = computed<OverviewFilterKey>(() => {
-  if (mode.value !== 'overview') {
-    return 'none';
+const latestGroupReadMarkTs = computed(() => readMarkTimestamps.value[0] ?? 0);
+const hasLatestGroupReadMark = computed(() => latestGroupReadMarkTs.value > 0);
+
+function resolveRecentPresetTs(preset: RecentPresetKey): number {
+  if (preset === 'd14') {
+    return Math.floor(Date.now() / 1000) - 14 * 24 * 60 * 60;
   }
-  return normalizeOverviewFilter(selectedOverviewFilter.value);
+  if (preset === 'd30') {
+    return Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+  }
+  return Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+}
+
+const activeAllPostsFilter = computed<AllPostsFilterKey>(() => {
+  if (mode.value !== 'overview') {
+    return 'all';
+  }
+  return normalizeAllPostsFilter(selectedAllPostsFilter.value);
 });
 
 function syncSelectedReadFilterKey(): void {
   if (mode.value === 'overview') {
-    selectedReadFilterKey.value = buildOverviewFilterKey(normalizeOverviewFilter(selectedOverviewFilter.value));
+    selectedReadFilterKey.value = buildAllPostsFilterKey(normalizeAllPostsFilter(selectedAllPostsFilter.value));
     return;
   }
-  selectedReadFilterKey.value = buildTrackingFilterKey(selectedReadMarkTs.value);
-}
-
-function parseTrackingFilterKey(key: string): number {
-  const ts = Number(key.slice(2));
-  return Number.isFinite(ts) ? ts : 0;
-}
-
-function parseOverviewFilterKey(key: string): OverviewFilterKey {
-  if (!key.startsWith('o:')) {
-    return normalizeOverviewFilter(selectedOverviewFilter.value);
+  if (mode.value === 'mixed' && mixedShowAll.value) {
+    selectedReadFilterKey.value = 'm:all';
+    return;
   }
-  const raw = key.slice(2) as OverviewFilterKey;
-  return normalizeOverviewFilter(raw);
+  if (hasLatestGroupReadMark.value) {
+    selectedReadFilterKey.value = 'r:mark';
+    return;
+  }
+  selectedReadFilterKey.value = `r:${normalizeRecentPresetKey(selectedRecentPresetKey.value)}`;
 }
 
-function getOverviewFilterForRequest(): OverviewFilterKey {
-  return normalizeOverviewFilter(selectedOverviewFilter.value);
+function parseRecentFilterKey(key: string): { showAllForMixed: boolean; presetKey?: RecentPresetKey; useLatestReadMark: boolean } {
+  if (key === 'm:all') {
+    return {
+      showAllForMixed: true,
+      useLatestReadMark: false
+    };
+  }
+  if (key === 'r:mark') {
+    return {
+      showAllForMixed: false,
+      useLatestReadMark: true
+    };
+  }
+  const raw = key.slice(2) as RecentPresetKey;
+  return {
+    showAllForMixed: false,
+    presetKey: normalizeRecentPresetKey(raw),
+    useLatestReadMark: false
+  };
+}
+
+function parseAllPostsFilterKey(key: string): AllPostsFilterKey {
+  if (!key.startsWith('o:')) {
+    return normalizeAllPostsFilter(selectedAllPostsFilter.value);
+  }
+  const raw = key.slice(2) as AllPostsFilterKey;
+  return normalizeAllPostsFilter(raw);
+}
+
+function getAllPostsFilterForRequest(): AllPostsFilterKey {
+  return normalizeAllPostsFilter(selectedAllPostsFilter.value);
 }
 
 const mixedDayGroups = computed(() => {
@@ -627,16 +680,16 @@ const mixedDayGroups = computed(() => {
 });
 
 const effectiveReadBoundaryTs = computed(() => {
-  if (activeOverviewFilter.value !== 'none') {
+  if (mode.value === 'overview') {
     return 0;
   }
-  if (selectedReadMarkTs.value === 0) {
+  if (mode.value === 'mixed' && mixedShowAll.value) {
     return 0;
   }
-  if (selectedReadMarkTs.value === -1) {
-    return graceReadMarkTs.value;
+  if (hasLatestGroupReadMark.value) {
+    return latestGroupReadMarkTs.value;
   }
-  return selectedReadMarkTs.value > 0 ? selectedReadMarkTs.value : 0;
+  return resolveRecentPresetTs(normalizeRecentPresetKey(selectedRecentPresetKey.value));
 });
 
 /**
@@ -775,18 +828,12 @@ const byAuthorFeeds = computed<AuthorFeed[]>(() => {
     .map((item) => item.author);
 });
 
-function isOverviewDayFilter(filter: OverviewFilterKey): boolean {
-  return filter === 'gd' || filter === 'd14' || filter === 'd30';
+function isAllPostsDayFilter(filter: AllPostsFilterKey): boolean {
+  return filter === 'd7' || filter === 'd14' || filter === 'd30';
 }
 
 const isByAuthorPaginationEnabled = computed(() => {
-  if (mode.value === 'byAuthor') {
-    return selectedReadMarkTs.value === 0;
-  }
-  if (mode.value === 'overview') {
-    return activeOverviewFilter.value === 'all';
-  }
-  return false;
+  return mode.value === 'overview' && activeAllPostsFilter.value === 'all';
 });
 
 function getAuthorApiPageSize(author: AuthorFeed): number {
@@ -854,7 +901,7 @@ function shouldShowAuthorLatestUpdateNote(author: AuthorFeed): boolean {
     return true;
   }
   return mode.value === 'overview'
-    && isOverviewDayFilter(activeOverviewFilter.value)
+    && isAllPostsDayFilter(activeAllPostsFilter.value)
     && author.hasOverviewFallbackLatestVideo === true;
 }
 
@@ -1401,6 +1448,7 @@ function applyFeedSnapshot(data: GroupFeedResult): void {
   applyFeedWarning(data);
   readMarkTimestamps.value = data.readMarkTimestamps;
   graceReadMarkTs.value = data.graceReadMarkTs;
+  syncSelectedReadFilterKey();
 }
 
 function hasPendingAuthorPageTargets(): boolean {
@@ -1424,14 +1472,6 @@ const refreshText = computed(() => {
   return formatRelativeMinutes(feed.value?.lastRefreshAt);
 });
 
-const graceLabel = computed(() => {
-  const settings = currentSettings.value;
-  if (!settings) {
-    return '7天内';
-  }
-  return `${settings.defaultReadMarkDays}天内`;
-});
-
 const isAllGroupEntry = computed(() => activeGroupId.value === ENTRY_ID.ALL);
 const markReadButtonText = computed(() => {
   if (isAllGroupEntry.value) {
@@ -1440,7 +1480,6 @@ const markReadButtonText = computed(() => {
   return mode.value === 'byAuthor' ? '全部标记已阅' : '标记已阅';
 });
 
-const currentSettings = ref<{ defaultReadMarkDays: number } | null>(null);
 const globalUnreadCount = ref(0);
 
 function emitUnreadChanged(): void {
@@ -1464,7 +1503,6 @@ async function loadSummary(): Promise<void> {
 
   summaries.value = resp.data.summaries;
   globalUnreadCount.value = resp.data.unreadCount;
-  currentSettings.value = { defaultReadMarkDays: resp.data.settings.defaultReadMarkDays };
   debugMode.value = resp.data.settings.debugMode ?? false;
   lastGroupIdFromSummary.value = resp.data.lastGroupId ?? '';
   emitUnreadChanged();
@@ -1620,8 +1658,9 @@ async function refreshFeedForPendingAuthorPages(): Promise<void> {
     payload: {
       groupId: activeGroupId.value,
       mode: mode.value,
-      selectedReadMarkTs: selectedReadMarkTs.value,
-      overviewFilter: getOverviewFilterForRequest(),
+      recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+      showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
+      allPostsFilter: getAllPostsFilterForRequest(),
       byAuthorSortByLatest: byAuthorSortByLatest.value
     }
   });
@@ -2178,8 +2217,9 @@ function startPoll(maxAttempts: number): void {
         payload: {
           groupId: activeGroupId.value,
           mode: mode.value,
-          selectedReadMarkTs: selectedReadMarkTs.value,
-          overviewFilter: getOverviewFilterForRequest(),
+          recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+          showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
+          allPostsFilter: getAllPostsFilterForRequest(),
           byAuthorSortByLatest: byAuthorSortByLatest.value
         }
       });
@@ -2195,24 +2235,7 @@ function startPoll(maxAttempts: number): void {
         applyFeedWarning(resp.data);
         readMarkTimestamps.value = resp.data.readMarkTimestamps;
         graceReadMarkTs.value = resp.data.graceReadMarkTs;
-
-        // 首次加载自动选择默认时间点
-        if (
-          activeOverviewFilter.value === 'none' &&
-          selectedReadMarkTs.value === 0 &&
-          !userExplicitlyChoseAll
-        ) {
-          if (readMarkTimestamps.value.length > 0) {
-            selectedReadMarkTs.value = readMarkTimestamps.value[0];
-          } else {
-            selectedReadMarkTs.value = -1;
-          }
-          syncSelectedReadFilterKey();
-          if (selectedReadMarkTs.value !== 0) {
-            await reloadFeedWithReadMark();
-            return;
-          }
-        }
+        syncSelectedReadFilterKey();
 
         await fetchClickedVideos();
         await loadSummary();
@@ -2252,8 +2275,9 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
         groupId: activeGroupId.value,
         mode: mode.value,
         loadMore: options?.loadMore,
-        selectedReadMarkTs: selectedReadMarkTs.value,
-        overviewFilter: getOverviewFilterForRequest(),
+        recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+        showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
+        allPostsFilter: getAllPostsFilterForRequest(),
         byAuthorSortByLatest: byAuthorSortByLatest.value
       }
     });
@@ -2296,24 +2320,7 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
 
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
-
-    // 首次加载（selectedReadMarkTs 为 0 且非用户主动选择"全部"）：自动选择默认时间点
-    if (
-      activeOverviewFilter.value === 'none' &&
-      selectedReadMarkTs.value === 0 &&
-      !userExplicitlyChoseAll
-    ) {
-      if (readMarkTimestamps.value.length > 0) {
-        selectedReadMarkTs.value = readMarkTimestamps.value[0];
-      } else {
-        selectedReadMarkTs.value = -1;
-      }
-      syncSelectedReadFilterKey();
-      if (selectedReadMarkTs.value !== 0) {
-        await reloadFeedWithReadMark();
-        return;
-      }
-    }
+    syncSelectedReadFilterKey();
 
     await fetchClickedVideos();
     if (!options?.loadMore) {
@@ -2336,8 +2343,9 @@ async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<v
       payload: {
         groupId: activeGroupId.value,
         mode: mode.value,
-        selectedReadMarkTs: selectedReadMarkTs.value,
-        overviewFilter: getOverviewFilterForRequest(),
+        recentPresetKey: normalizeRecentPresetKey(selectedRecentPresetKey.value),
+        showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
+        allPostsFilter: getAllPostsFilterForRequest(),
         byAuthorSortByLatest: byAuthorSortByLatest.value
       }
     });
@@ -2351,6 +2359,7 @@ async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<v
     applyFeedWarning(resp.data);
     readMarkTimestamps.value = resp.data.readMarkTimestamps;
     graceReadMarkTs.value = resp.data.graceReadMarkTs;
+    syncSelectedReadFilterKey();
     await fetchClickedVideos();
     await loadSummary();
   } finally {
@@ -2368,7 +2377,6 @@ async function openDrawer(): Promise<void> {
   followPendingMap.value = {};
   authorLikePendingMap.value = {};
   resetAuthorPaginationState();
-  userExplicitlyChoseAll = false;
   warningMsg.value = '';
 
   try {
@@ -2398,13 +2406,9 @@ async function openDrawer(): Promise<void> {
     if (summary?.savedMode) {
       mode.value = summary.savedMode;
     }
-    if (summary?.savedReadMarkTs !== undefined) {
-      selectedReadMarkTs.value = summary.savedReadMarkTs;
-      userExplicitlyChoseAll = summary.savedReadMarkTs === 0;
-    } else {
-      selectedReadMarkTs.value = 0;
-    }
-    selectedOverviewFilter.value = normalizeOverviewFilter(summary?.savedOverviewFilter);
+    selectedRecentPresetKey.value = normalizeRecentPresetKey(summary?.savedRecentPresetKey);
+    selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
+    mixedShowAll.value = false;
     if (summary?.savedByAuthorSortByLatest !== undefined) {
       byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
     } else {
@@ -2487,7 +2491,6 @@ async function selectEntry(entryId: string): Promise<void> {
   authorLikePendingMap.value = {};
   likedStateMap.value = {};
   resetAuthorPaginationState();
-  userExplicitlyChoseAll = false;
   warningMsg.value = '';
 
   // 从 summary 恢复记忆的 mode、已阅时间点和作者排序方式
@@ -2495,13 +2498,9 @@ async function selectEntry(entryId: string): Promise<void> {
   if (summary?.savedMode) {
     mode.value = summary.savedMode;
   }
-  if (summary?.savedReadMarkTs !== undefined) {
-    selectedReadMarkTs.value = summary.savedReadMarkTs;
-    userExplicitlyChoseAll = summary.savedReadMarkTs === 0;
-  } else {
-    selectedReadMarkTs.value = 0;
-  }
-  selectedOverviewFilter.value = normalizeOverviewFilter(summary?.savedOverviewFilter);
+  selectedRecentPresetKey.value = normalizeRecentPresetKey(summary?.savedRecentPresetKey);
+  selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
+  mixedShowAll.value = false;
   if (summary?.savedByAuthorSortByLatest !== undefined) {
     byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
   } else {
@@ -2532,23 +2531,29 @@ async function switchMode(nextMode: ViewMode): Promise<void> {
 }
 
 async function onTrackingReadFilterChange(): Promise<void> {
-  selectedReadMarkTs.value = parseTrackingFilterKey(selectedReadFilterKey.value);
-  userExplicitlyChoseAll = selectedReadMarkTs.value === 0;
+  const next = parseRecentFilterKey(selectedReadFilterKey.value);
+  mixedShowAll.value = mode.value === 'mixed' && next.showAllForMixed;
+  if (next.presetKey) {
+    selectedRecentPresetKey.value = next.presetKey;
+  }
+  if (next.useLatestReadMark) {
+    mixedShowAll.value = false;
+  }
   resetAuthorPaginationState();
   try {
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    showErrorToast(error instanceof Error ? error.message : '切换已阅时间点失败');
+    showErrorToast(error instanceof Error ? error.message : '切换近期范围失败');
   }
 }
 
 async function onOverviewFilterChange(): Promise<void> {
-  selectedOverviewFilter.value = parseOverviewFilterKey(selectedReadFilterKey.value);
+  selectedAllPostsFilter.value = parseAllPostsFilterKey(selectedReadFilterKey.value);
   resetAuthorPaginationState();
   try {
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
-    showErrorToast(error instanceof Error ? error.message : '切换概览筛选失败');
+    showErrorToast(error instanceof Error ? error.message : '切换全部投稿筛选失败');
   }
 }
 
@@ -2632,10 +2637,6 @@ async function markCurrentGroupRead(): Promise<void> {
       if (!resp.ok || !resp.data) {
         throw new Error(resp.error ?? '标记全部分组为已阅失败');
       }
-      if (resp.data.readMarkTs > 0) {
-        selectedReadMarkTs.value = resp.data.readMarkTs;
-        userExplicitlyChoseAll = false;
-      }
     } else {
       const resp = await sendMessage({
         type: 'MARK_GROUP_READ_MARK',
@@ -2647,8 +2648,7 @@ async function markCurrentGroupRead(): Promise<void> {
 
       const latestTs = resp.data.marks[activeGroupId.value]?.timestamps[0];
       if (typeof latestTs === 'number' && latestTs > 0) {
-        selectedReadMarkTs.value = latestTs;
-        userExplicitlyChoseAll = false;
+        readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
       }
     }
     syncSelectedReadFilterKey();
@@ -2660,7 +2660,7 @@ async function markCurrentGroupRead(): Promise<void> {
 
 async function markReadToMixedDay(dayKey: string): Promise<void> {
   const readMarkTs = getNextDayStartSecondsFromDayKey(dayKey);
-  if (!readMarkTs || readMarkTs <= 0 || selectedReadMarkTs.value === readMarkTs) {
+  if (!readMarkTs || readMarkTs <= 0 || latestGroupReadMarkTs.value === readMarkTs) {
     return;
   }
   await setGroupReadMarkByTs(readMarkTs, '设置按日已阅失败');
@@ -2716,15 +2716,34 @@ async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: st
     // 后端会把分组已阅时间点归一化到分钟精度，这里必须以实际落库值回填，
     // 否则会出现 select 无法匹配选项（下拉空白）与筛选基线偏移的问题。
     const latestTs = resp.data?.marks?.[activeGroupId.value]?.timestamps?.[0];
-    selectedReadMarkTs.value =
-      typeof latestTs === 'number' && latestTs > 0
-        ? latestTs
-        : Math.floor(readMarkTs / 60) * 60;
-    userExplicitlyChoseAll = false;
+    if (typeof latestTs === 'number' && latestTs > 0) {
+      readMarkTimestamps.value = resp.data?.marks?.[activeGroupId.value]?.timestamps ?? [];
+    }
     syncSelectedReadFilterKey();
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : fallbackErrorMessage);
+  }
+}
+
+async function undoLatestGroupReadMark(): Promise<void> {
+  if (!activeGroupId.value || activeGroupId.value === ENTRY_ID.ALL) {
+    return;
+  }
+
+  try {
+    const resp = await sendMessage({
+      type: 'UNDO_GROUP_READ_MARK',
+      payload: { groupId: activeGroupId.value }
+    });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '撤销上次看到失败');
+    }
+    readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
+    syncSelectedReadFilterKey();
+    await reloadFeedWithReadMark({ silent: true });
+  } catch (error) {
+    showErrorToast(error instanceof Error ? error.message : '撤销上次看到失败');
   }
 }
 
@@ -2787,6 +2806,14 @@ async function toggleAuthorIgnoreUnread(author: AuthorFeed): Promise<void> {
 async function markAuthorReadNow(author: AuthorFeed): Promise<void> {
   const nowTs = Math.floor(Date.now() / 1000);
   await setAuthorReadMark(author.authorMid, nowTs);
+}
+
+async function toggleAuthorReadMark(author: AuthorFeed): Promise<void> {
+  if (author.hasAuthorReadMarkOverride) {
+    await clearAuthorReadMark(author.authorMid);
+    return;
+  }
+  await markAuthorReadNow(author);
 }
 
 function resolveAuthorReadMarkTsByBoundaryIndex(authorMid: number, boundaryIndex: number): number {

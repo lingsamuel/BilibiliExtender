@@ -1,5 +1,6 @@
 export type ViewMode = 'mixed' | 'byAuthor' | 'overview';
-export type OverviewFilterKey = 'none' | 'all' | 'gd' | 'd14' | 'd30' | 'n10' | 'n30';
+export type RecentPresetKey = 'd7' | 'd14' | 'd30';
+export type AllPostsFilterKey = 'all' | 'd7' | 'd14' | 'd30' | 'n10' | 'n30';
 
 export interface GroupConfig {
   groupId: string;
@@ -33,12 +34,15 @@ export interface GroupRuntimeState {
   lastReadAt?: number;
   unreadCount: number;
   mixedTargetCount: number;
-  // 记忆用户上次选择的视图模式和已阅时间点
+  // 记忆用户上次选择的视图模式
   savedMode?: ViewMode;
+  // 记忆最近的分组“上次看到”时间点，存在时覆盖 recent preset。
   savedReadMarkTs?: number;
-  // 记忆“概览过滤”选项，仅影响展示，不参与 unread 计算。
-  savedOverviewFilter?: OverviewFilterKey;
-  // 记忆“按作者”模式下是否按最新更新时间倒序
+  // 记忆“近期投稿/时间流”共用的近期预设。
+  savedRecentPresetKey?: RecentPresetKey;
+  // 记忆“全部投稿”筛选，仅影响展示，不参与 unread 计算。
+  savedAllPostsFilter?: AllPostsFilterKey;
+  // 记忆“近期投稿”模式下是否按最新更新时间倒序。
   savedByAuthorSortByLatest?: boolean;
 }
 
@@ -121,7 +125,8 @@ export interface GroupSummary {
   enabled: boolean;
   savedMode?: ViewMode;
   savedReadMarkTs?: number;
-  savedOverviewFilter?: OverviewFilterKey;
+  savedRecentPresetKey?: RecentPresetKey;
+  savedAllPostsFilter?: AllPostsFilterKey;
   savedByAuthorSortByLatest?: boolean;
 }
 

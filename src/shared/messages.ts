@@ -1,4 +1,5 @@
 import type {
+  AllPostsFilterKey,
   AuthorPreference,
   ExtensionSettings,
   GroupConfig,
@@ -6,7 +7,7 @@ import type {
   GroupReadMark,
   GroupOptionsData,
   GroupSummary,
-  OverviewFilterKey,
+  RecentPresetKey,
   ViewMode
 } from '@/shared/types';
 import { ext } from '@/shared/platform/webext';
@@ -24,14 +25,16 @@ export type MessageRequest =
         groupId: string;
         mode: ViewMode;
         loadMore?: boolean;
-        selectedReadMarkTs?: number;
-        overviewFilter?: OverviewFilterKey;
+        recentPresetKey?: RecentPresetKey;
+        showAllForMixed?: boolean;
+        allPostsFilter?: AllPostsFilterKey;
         byAuthorSortByLatest?: boolean;
       };
     }
   | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
+  | { type: 'UNDO_GROUP_READ_MARK'; payload: { groupId: string } }
   | {
       type: 'FOLLOW_AUTHOR';
       payload: {
@@ -281,6 +284,7 @@ export interface ResponseMap {
   MANUAL_REFRESH: { accepted: boolean };
   MARK_GROUP_READ: { groupId: string; unreadCount: number };
   MARK_GROUP_READ_MARK: { marks: Record<string, GroupReadMark> };
+  UNDO_GROUP_READ_MARK: { marks: Record<string, GroupReadMark>; removedReadMarkTs?: number };
   FOLLOW_AUTHOR: {
     mid: number;
     following: boolean;
