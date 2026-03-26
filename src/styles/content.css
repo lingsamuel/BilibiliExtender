@@ -938,7 +938,6 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-follow-btn.loading {
   opacity: 0.65;
-  cursor: wait;
 }
 
 .bbe-author-mark-read-btn {
