@@ -35,6 +35,7 @@ export type MessageRequest =
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
   | { type: 'UNDO_GROUP_READ_MARK'; payload: { groupId: string } }
+  | { type: 'CLEAR_GROUP_READ_MARK'; payload: { groupId: string } }
   | {
       type: 'FOLLOW_AUTHOR';
       payload: {
@@ -287,6 +288,7 @@ export interface ResponseMap {
   MARK_GROUP_READ: { groupId: string; unreadCount: number };
   MARK_GROUP_READ_MARK: { marks: Record<string, GroupReadMark> };
   UNDO_GROUP_READ_MARK: { marks: Record<string, GroupReadMark>; removedReadMarkTs?: number };
+  CLEAR_GROUP_READ_MARK: { marks: Record<string, GroupReadMark>; cleared: boolean };
   FOLLOW_AUTHOR: {
     mid: number;
     following: boolean;

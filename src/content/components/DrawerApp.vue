@@ -74,7 +74,7 @@
           <button v-if="mode === 'mixed' && hasLatestGroupReadMark && !isAllGroupEntry" class="bbe-btn" :disabled="loading" @click="undoLatestGroupReadMark">
             撤销上次看到
           </button>
-          <button v-if="mode !== 'overview'" class="bbe-btn" :disabled="loading" @click="markCurrentGroupRead">{{ markReadButtonText }}</button>
+          <button v-if="mode !== 'overview' && !isAllGroupEntry" class="bbe-btn" :disabled="loading" @click="markCurrentGroupRead">{{ markReadButtonText }}</button>
           <button
             v-if="activeGroupSummary && !isAllGroupEntry"
             type="button"
@@ -134,15 +134,20 @@
                   {{ item.label }}
                 </button>
                 <button
+                  v-if="!isAllGroupEntry"
                   type="button"
                   class="bbe-timeline-node-btn"
                   :class="{ 'is-read-active': item.isReadActive }"
-                  :title="`设为已阅到${item.label}`"
+                  :title="getMixedTimelineNodeTitle(item)"
                   @click.stop="markReadToMixedDay(item.dayKey)"
+                  @contextmenu.prevent.stop="onMixedTimelineNodeContextMenu(item)"
                 >
                   <span class="bbe-timeline-node" />
                   <span class="bbe-timeline-check" aria-hidden="true">✓</span>
                 </button>
+                <span v-else class="bbe-timeline-node-btn is-static" aria-hidden="true">
+                  <span class="bbe-timeline-node" />
+                </span>
               </div>
             </aside>
 
@@ -161,7 +166,7 @@
                       </div>
                       <div class="bbe-mixed-grid-item">
                         <button
-                          v-if="item.globalIndex > 0"
+                          v-if="item.globalIndex > 0 && !isAllGroupEntry"
                           type="button"
                           class="bbe-mixed-read-boundary"
                           title="将该分界设置为分组已阅时间"
@@ -643,6 +648,10 @@ function normalizeRecentDays(days: number | undefined): number {
   return normalizeDefaultReadMarkDays(days);
 }
 
+function getDefaultRecentDays(): number {
+  return normalizeRecentDays(currentSettings.value?.defaultReadMarkDays);
+}
+
 function resolveRecentDaysTs(days: number): number {
   return getRecentDaysBoundaryTs(normalizeRecentDays(days));
 }
@@ -734,6 +743,9 @@ const mixedDayGroups = computed(() => {
 });
 
 const effectiveReadBoundaryTs = computed(() => {
+  if (isAllGroupEntry.value) {
+    return 0;
+  }
   if (mode.value === 'overview') {
     return 0;
   }
@@ -1551,11 +1563,29 @@ const refreshText = computed(() => {
 
 const isAllGroupEntry = computed(() => activeGroupId.value === ENTRY_ID.ALL);
 const markReadButtonText = computed(() => {
-  if (isAllGroupEntry.value) {
-    return '标记全部分组为已阅';
-  }
   return mode.value === 'byAuthor' ? '全部标记已阅' : '标记已阅';
 });
+
+function restoreGroupViewState(summary?: GroupSummary): void {
+  if (summary?.savedMode) {
+    mode.value = summary.savedMode;
+  }
+  const isAllGroupSummary = summary?.groupId === ENTRY_ID.ALL;
+  selectedRecentDays.value = isAllGroupSummary
+    ? getDefaultRecentDays()
+    : normalizeRecentDays(summary?.savedRecentDays ?? currentSettings.value?.defaultReadMarkDays);
+  activeTrackingReadMarkTs.value = isAllGroupSummary
+    ? undefined
+    : (summary?.savedReadMarkTs && summary.savedReadMarkTs > 0 ? summary.savedReadMarkTs : undefined);
+  selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
+  mixedShowAll.value = false;
+  if (summary?.savedByAuthorSortByLatest !== undefined) {
+    byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
+  } else {
+    byAuthorSortByLatest.value = true;
+  }
+  syncSelectedReadFilterKey();
+}
 
 const globalUnreadCount = ref(0);
 
@@ -2488,21 +2518,8 @@ async function openDrawer(): Promise<void> {
     }
     activeEntryId.value = activeGroupId.value;
 
-    // 恢复记忆的 mode、已阅时间点和作者排序方式
     const summary = summaries.value.find((s) => s.groupId === activeGroupId.value);
-    if (summary?.savedMode) {
-      mode.value = summary.savedMode;
-    }
-    selectedRecentDays.value = normalizeRecentDays(summary?.savedRecentDays ?? currentSettings.value?.defaultReadMarkDays);
-    activeTrackingReadMarkTs.value = summary?.savedReadMarkTs && summary.savedReadMarkTs > 0 ? summary.savedReadMarkTs : undefined;
-    selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
-    mixedShowAll.value = false;
-    if (summary?.savedByAuthorSortByLatest !== undefined) {
-      byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
-    } else {
-      byAuthorSortByLatest.value = true;
-    }
-    syncSelectedReadFilterKey();
+    restoreGroupViewState(summary);
 
     await loadFeed();
   } catch (error) {
@@ -2581,21 +2598,8 @@ async function selectEntry(entryId: string): Promise<void> {
   resetAuthorPaginationState();
   warningMsg.value = '';
 
-  // 从 summary 恢复记忆的 mode、已阅时间点和作者排序方式
   const summary = summaries.value.find((s) => s.groupId === entryId);
-  if (summary?.savedMode) {
-    mode.value = summary.savedMode;
-  }
-  selectedRecentDays.value = normalizeRecentDays(summary?.savedRecentDays ?? currentSettings.value?.defaultReadMarkDays);
-  activeTrackingReadMarkTs.value = summary?.savedReadMarkTs && summary.savedReadMarkTs > 0 ? summary.savedReadMarkTs : undefined;
-  selectedAllPostsFilter.value = normalizeAllPostsFilter(summary?.savedAllPostsFilter);
-  mixedShowAll.value = false;
-  if (summary?.savedByAuthorSortByLatest !== undefined) {
-    byAuthorSortByLatest.value = summary.savedByAuthorSortByLatest;
-  } else {
-    byAuthorSortByLatest.value = true;
-  }
-  syncSelectedReadFilterKey();
+  restoreGroupViewState(summary);
 
   try {
     await loadFeed();
@@ -2719,30 +2723,23 @@ function shouldDimMixedVideo(video: VideoItem): boolean {
 }
 
 async function markCurrentGroupRead(): Promise<void> {
-  if (!activeGroupId.value) {
+  if (!activeGroupId.value || isAllGroupEntry.value) {
     return;
   }
 
   try {
-    if (activeGroupId.value === ENTRY_ID.ALL) {
-      const resp = await sendMessage({ type: 'MARK_ALL_GROUPS_READ' });
-      if (!resp.ok || !resp.data) {
-        throw new Error(resp.error ?? '标记全部分组为已阅失败');
-      }
-    } else {
-      const resp = await sendMessage({
-        type: 'MARK_GROUP_READ_MARK',
-        payload: { groupId: activeGroupId.value }
-      });
-      if (!resp.ok || !resp.data) {
-        throw new Error(resp.error ?? '标记已阅失败');
-      }
+    const resp = await sendMessage({
+      type: 'MARK_GROUP_READ_MARK',
+      payload: { groupId: activeGroupId.value }
+    });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '标记已阅失败');
+    }
 
-      const latestTs = resp.data.marks[activeGroupId.value]?.timestamps[0];
-      if (typeof latestTs === 'number' && latestTs > 0) {
-        readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
-        activeTrackingReadMarkTs.value = latestTs;
-      }
+    const latestTs = resp.data.marks[activeGroupId.value]?.timestamps[0];
+    if (typeof latestTs === 'number' && latestTs > 0) {
+      readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
+      activeTrackingReadMarkTs.value = latestTs;
     }
     syncSelectedReadFilterKey();
     await refreshMixedTimelineAfterReadBoundaryChange();
@@ -2753,11 +2750,25 @@ async function markCurrentGroupRead(): Promise<void> {
 }
 
 async function markReadToMixedDay(dayKey: string): Promise<void> {
+  if (isAllGroupEntry.value) {
+    return;
+  }
   const readMarkTs = getNextDayStartSecondsFromDayKey(dayKey);
   if (!readMarkTs || readMarkTs <= 0) {
     return;
   }
   await setGroupReadMarkByTs(readMarkTs, '设置按日已阅失败');
+}
+
+function getMixedTimelineNodeTitle(item: MixedTimelineItem): string {
+  if (
+    item.isReadActive &&
+    activeTrackingReadMarkTs.value &&
+    activeTrackingReadMarkTs.value > 0
+  ) {
+    return `左键设为已阅到${item.label}，右键清除已阅基线`;
+  }
+  return `设为已阅到${item.label}`;
 }
 
 function resolveMixedReadMarkTsByBoundaryIndex(boundaryIndex: number): number {
@@ -2787,12 +2798,15 @@ function resolveMixedReadMarkTsByBoundaryIndex(boundaryIndex: number): number {
 }
 
 async function setMixedReadMarkFromBoundaryIndex(boundaryIndex: number): Promise<void> {
+  if (isAllGroupEntry.value) {
+    return;
+  }
   const readMarkTs = resolveMixedReadMarkTsByBoundaryIndex(boundaryIndex);
   await setGroupReadMarkByTs(readMarkTs, '设置时间流已阅失败');
 }
 
 async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: string): Promise<void> {
-  if (!activeGroupId.value || readMarkTs <= 0) {
+  if (!activeGroupId.value || isAllGroupEntry.value || readMarkTs <= 0) {
     return;
   }
 
@@ -2820,6 +2834,41 @@ async function setGroupReadMarkByTs(readMarkTs: number, fallbackErrorMessage: st
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : fallbackErrorMessage);
   }
+}
+
+async function clearCurrentGroupReadMark(fallbackErrorMessage: string): Promise<void> {
+  if (!activeGroupId.value || isAllGroupEntry.value) {
+    return;
+  }
+
+  try {
+    const resp = await sendMessage({
+      type: 'CLEAR_GROUP_READ_MARK',
+      payload: { groupId: activeGroupId.value }
+    });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? fallbackErrorMessage);
+    }
+    readMarkTimestamps.value = resp.data.marks[activeGroupId.value]?.timestamps ?? [];
+    activeTrackingReadMarkTs.value = undefined;
+    syncSelectedReadFilterKey();
+    await refreshMixedTimelineAfterReadBoundaryChange();
+    await reloadFeedWithReadMark({ silent: true });
+  } catch (error) {
+    showErrorToast(error instanceof Error ? error.message : fallbackErrorMessage);
+  }
+}
+
+async function onMixedTimelineNodeContextMenu(item: MixedTimelineItem): Promise<void> {
+  if (
+    isAllGroupEntry.value ||
+    item.isReadActive !== true ||
+    !activeTrackingReadMarkTs.value ||
+    activeTrackingReadMarkTs.value <= 0
+  ) {
+    return;
+  }
+  await clearCurrentGroupReadMark('清除时间流已阅失败');
 }
 
 async function undoLatestGroupReadMark(): Promise<void> {

@@ -1,4 +1,4 @@
-import { AUTHOR_VIDEOS_PAGE_SIZE, MIXED_LOAD_INCREMENT } from '@/shared/constants';
+import { AUTHOR_VIDEOS_PAGE_SIZE, MIXED_LOAD_INCREMENT, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import { normalizeDefaultReadMarkDays } from '@/shared/utils/settings';
 import { getRecentDaysBoundaryTs, isWithinRecentDays } from '@/shared/utils/time';
@@ -328,6 +328,7 @@ function ensureRuntimeState(
   groupId: string,
   settings: ExtensionSettings
 ): GroupRuntimeState {
+  const isAllGroup = groupId === VIRTUAL_GROUP_ID.ALL;
   if (!runtimeMap[groupId]) {
     runtimeMap[groupId] = {
       groupId,
@@ -343,7 +344,7 @@ function ensureRuntimeState(
   if (runtimeMap[groupId].savedByAuthorSortByLatest === undefined) {
     runtimeMap[groupId].savedByAuthorSortByLatest = DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
   }
-  if (!runtimeMap[groupId].savedRecentDays) {
+  if (!isAllGroup && !runtimeMap[groupId].savedRecentDays) {
     runtimeMap[groupId].savedRecentDays = normalizeRecentDays(settings.defaultReadMarkDays);
   }
   if (!runtimeMap[groupId].savedAllPostsFilter) {
@@ -1013,6 +1014,7 @@ export function toFeedResult(
     });
   }
   const readMarkTimestamps = collectReadMarkTimestamps(group.groupId, readMarks);
+  const isAllGroup = group.groupId === VIRTUAL_GROUP_ID.ALL;
   const normalizedRecentDays = normalizeRecentDays(recentDays);
   const normalizedActiveReadMarkTs = activeReadMarkTs && activeReadMarkTs > 0 ? activeReadMarkTs : undefined;
   const normalizedAllPostsFilter = normalizeAllPostsFilter(allPostsFilter);
@@ -1185,9 +1187,12 @@ export function toFeedResult(
   );
 
   runtime.savedMode = mode;
-  if (mode !== 'overview') {
+  if (mode !== 'overview' && !isAllGroup) {
     runtime.savedReadMarkTs = normalizedActiveReadMarkTs;
     runtime.savedRecentDays = normalizedRecentDays;
+  } else if (isAllGroup) {
+    runtime.savedReadMarkTs = undefined;
+    runtime.savedRecentDays = undefined;
   }
   runtime.savedAllPostsFilter = normalizedAllPostsFilter;
   runtime.savedByAuthorSortByLatest = byAuthorSortEnabled;
@@ -1212,7 +1217,7 @@ export function toFeedResult(
     lastReadAt: runtime.lastReadAt,
     unreadCount: runtime.unreadCount,
     hasMoreForMixed,
-    readMarkTimestamps,
+    readMarkTimestamps: isAllGroup ? [] : readMarkTimestamps,
     graceReadMarkTs: getRecentDaysBaselineTs(normalizedRecentDays),
     byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE
   };

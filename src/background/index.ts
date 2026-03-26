@@ -17,6 +17,7 @@ import type {
 import { ext } from '@/shared/platform/webext';
 import {
   appendGroupReadMark,
+  clearGroupReadMark,
   clearAuthorReadMark,
   clearVideoLiked,
   cleanOrphanClicks,
@@ -369,7 +370,7 @@ async function handleGetGroupSummary(
       enabled: true,
       savedMode: allRuntime?.savedMode,
       savedReadMarkTs: undefined,
-      savedRecentDays: allRuntime?.savedRecentDays,
+      savedRecentDays: undefined,
       savedAllPostsFilter: allRuntime?.savedAllPostsFilter,
       savedByAuthorSortByLatest: allRuntime?.savedByAuthorSortByLatest
     });
@@ -506,7 +507,7 @@ async function handleGetGroupFeed(
 
   const readMarks = await loadGroupReadMarks();
   const recentDays = request.payload.recentDays ?? settings.defaultReadMarkDays;
-  const activeReadMarkTs = request.payload.activeReadMarkTs;
+  const activeReadMarkTs = isAllGroup ? undefined : request.payload.activeReadMarkTs;
   const showAllForMixed = request.payload.showAllForMixed === true;
   const allPostsFilter = request.payload.allPostsFilter ?? 'all';
 
@@ -604,6 +605,9 @@ async function handleMarkGroupRead(
 async function handleMarkGroupReadMark(
   request: Extract<MessageRequest, { type: 'MARK_GROUP_READ_MARK' }>
 ): Promise<ResponseMap['MARK_GROUP_READ_MARK']> {
+  if (request.payload.groupId === ALL_GROUP_ID) {
+    throw new Error('“全部”分组不支持设置分组已阅基线');
+  }
   const [marks, settings, runtimeMap] = await Promise.all([
     appendGroupReadMark(request.payload.groupId, request.payload.readMarkTs),
     loadSettings(),
@@ -625,6 +629,9 @@ async function handleMarkGroupReadMark(
 async function handleUndoGroupReadMark(
   request: Extract<MessageRequest, { type: 'UNDO_GROUP_READ_MARK' }>
 ): Promise<ResponseMap['UNDO_GROUP_READ_MARK']> {
+  if (request.payload.groupId === ALL_GROUP_ID) {
+    throw new Error('“全部”分组不支持撤销分组已阅基线');
+  }
   const [result, settings, runtimeMap] = await Promise.all([
     undoLatestGroupReadMark(request.payload.groupId),
     loadSettings(),
@@ -640,6 +647,25 @@ async function handleUndoGroupReadMark(
   runtime.savedRecentDays = runtime.savedRecentDays ?? settings.defaultReadMarkDays;
   runtimeMap[request.payload.groupId] = runtime;
   await saveRuntimeStateMap(runtimeMap);
+  return result;
+}
+
+async function handleClearGroupReadMark(
+  request: Extract<MessageRequest, { type: 'CLEAR_GROUP_READ_MARK' }>
+): Promise<ResponseMap['CLEAR_GROUP_READ_MARK']> {
+  if (request.payload.groupId === ALL_GROUP_ID) {
+    throw new Error('“全部”分组不支持清除分组已阅基线');
+  }
+  const [result, runtimeMap] = await Promise.all([
+    clearGroupReadMark(request.payload.groupId),
+    loadRuntimeStateMap()
+  ]);
+  const runtime = runtimeMap[request.payload.groupId];
+  if (runtime) {
+    runtime.savedReadMarkTs = undefined;
+    runtimeMap[request.payload.groupId] = runtime;
+    await saveRuntimeStateMap(runtimeMap);
+  }
   return result;
 }
 
@@ -1180,6 +1206,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleMarkGroupReadMark(request));
     case 'UNDO_GROUP_READ_MARK':
       return ok(await handleUndoGroupReadMark(request));
+    case 'CLEAR_GROUP_READ_MARK':
+      return ok(await handleClearGroupReadMark(request));
     case 'MARK_ALL_GROUPS_READ':
       return ok(await handleMarkAllGroupsRead());
     case 'FOLLOW_AUTHOR':

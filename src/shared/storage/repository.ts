@@ -406,6 +406,26 @@ export async function undoLatestGroupReadMark(
   };
 }
 
+/**
+ * 清空指定分组全部“上次看到”历史。
+ * 返回更新后的完整 ReadMarkMap 与是否实际发生清空。
+ */
+export async function clearGroupReadMark(
+  groupId: string
+): Promise<{ marks: ReadMarkMap; cleared: boolean }> {
+  const marks = await loadGroupReadMarks();
+  if (!marks[groupId]) {
+    return { marks, cleared: false };
+  }
+
+  delete marks[groupId];
+  await saveGroupReadMarks(marks);
+  return {
+    marks,
+    cleared: true
+  };
+}
+
 export async function loadClickedVideos(): Promise<ClickedVideoMap> {
   if (memoryCache.clickedVideos) {
     return memoryCache.clickedVideos;

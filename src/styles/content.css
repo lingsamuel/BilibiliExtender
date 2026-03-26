@@ -526,6 +526,10 @@ body.bbe-page-scroll-lock {
   justify-content: center;
 }
 
+.bbe-timeline-node-btn.is-static {
+  cursor: default;
+}
+
 .bbe-timeline-node-btn:focus-visible {
   outline: 2px solid #8d97a8;
   outline-offset: 2px;
