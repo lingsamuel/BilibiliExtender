@@ -223,172 +223,177 @@
             </aside>
 
             <div ref="byAuthorSectionsRef" class="bbe-by-author-sections">
-              <section
-                v-for="author in byAuthorFeeds"
-                :key="author.authorMid"
-                :ref="(el) => bindByAuthorSection(author.authorMid, el)"
-                class="bbe-author-section"
-              >
-                <div class="bbe-author-scroll-anchor" aria-hidden="true" />
-                <h3
-                  class="bbe-author-title"
-                  :class="{ 'is-stuck': isAuthorTitleStuck(author.authorMid) }"
+              <template v-for="(author, index) in byAuthorFeeds" :key="author.authorMid">
+                <div v-if="index === byAuthorReadBoundaryAuthorIndex" class="bbe-read-boundary-row" aria-label="上次看到这里">
+                  <span class="bbe-read-boundary-line" />
+                  <span class="bbe-read-boundary-text">上次看到这里↓</span>
+                  <span class="bbe-read-boundary-line" />
+                </div>
+                <section
+                  :ref="(el) => bindByAuthorSection(author.authorMid, el)"
+                  class="bbe-author-section"
                 >
-                  <div class="bbe-author-title-main">
-                    <div class="bbe-author-title-left">
-                      <a
-                        class="bbe-author-avatar-link"
-                        :href="`https://space.bilibili.com/${author.authorMid}`"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
-                        <span v-else class="bbe-avatar bbe-avatar-placeholder" aria-hidden="true" />
-                      </a>
-                      <div class="bbe-author-info">
+                  <div class="bbe-author-scroll-anchor" aria-hidden="true" />
+                  <h3
+                    class="bbe-author-title"
+                    :class="{ 'is-stuck': isAuthorTitleStuck(author.authorMid) }"
+                  >
+                    <div class="bbe-author-title-main">
+                      <div class="bbe-author-title-left">
                         <a
-                          class="bbe-author-name-link"
+                          class="bbe-author-avatar-link"
                           :href="`https://space.bilibili.com/${author.authorMid}`"
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <span class="bbe-author-name">{{ author.authorName }}</span>
+                          <img v-if="author.authorFace" class="bbe-avatar" :src="author.authorFace" alt="" />
+                          <span v-else class="bbe-avatar bbe-avatar-placeholder" aria-hidden="true" />
                         </a>
-                        <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
-                          {{ getAuthorLatestUpdateNote(author) }}
-                        </span>
+                        <div class="bbe-author-info">
+                          <a
+                            class="bbe-author-name-link"
+                            :href="`https://space.bilibili.com/${author.authorMid}`"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <span class="bbe-author-name">{{ author.authorName }}</span>
+                          </a>
+                          <span v-if="shouldShowAuthorLatestUpdateNote(author)" class="bbe-author-title-note">
+                            {{ getAuthorLatestUpdateNote(author) }}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          class="bbe-author-follow-btn"
+                          :class="{ followed: author.following, loading: isFollowPending(author.authorMid) }"
+                          :disabled="isFollowPending(author.authorMid)"
+                          @click="toggleAuthorFollow(author)"
+                        >
+                          {{ getFollowButtonText(author) }}
+                        </button>
+                        <button
+                          type="button"
+                          class="bbe-author-like-btn"
+                          :class="{ loading: isAuthorLikePending(author.authorMid) }"
+                          :disabled="isAuthorLikePending(author.authorMid)"
+                          @click="batchLikeAuthorVisibleVideos(author)"
+                        >
+                          {{ isAuthorLikePending(author.authorMid) ? '点赞中...' : '一键点赞' }}
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        class="bbe-author-follow-btn"
-                        :class="{ followed: author.following, loading: isFollowPending(author.authorMid) }"
-                        :disabled="isFollowPending(author.authorMid)"
-                        @click="toggleAuthorFollow(author)"
-                      >
-                        {{ getFollowButtonText(author) }}
-                      </button>
-                      <button
-                        type="button"
-                        class="bbe-author-like-btn"
-                        :class="{ loading: isAuthorLikePending(author.authorMid) }"
-                        :disabled="isAuthorLikePending(author.authorMid)"
-                        @click="batchLikeAuthorVisibleVideos(author)"
-                      >
-                        {{ isAuthorLikePending(author.authorMid) ? '点赞中...' : '一键点赞' }}
-                      </button>
+                      <div class="bbe-author-title-actions">
+                        <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">标记已阅</button>
+                        <button
+                          v-if="author.hasAuthorReadMarkOverride"
+                          type="button"
+                          class="bbe-author-mark-read-btn"
+                          @click="undoAuthorReadMark(author.authorMid)"
+                        >
+                          撤销已阅
+                        </button>
+                        <button
+                          type="button"
+                          class="bbe-author-switch bbe-author-ignore-switch"
+                          :class="{ active: author.ignoreUnreadCount }"
+                          @click="toggleAuthorIgnoreUnread(author)"
+                        >
+                          <span class="bbe-author-switch-dot" aria-hidden="true" />
+                          {{ getAuthorIgnoreUnreadButtonText(author) }}
+                        </button>
+                      </div>
                     </div>
-                    <div class="bbe-author-title-actions">
-                      <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">标记已阅</button>
-                      <button
-                        v-if="author.hasAuthorReadMarkOverride"
-                        type="button"
-                        class="bbe-author-mark-read-btn"
-                        @click="undoAuthorReadMark(author.authorMid)"
-                      >
-                        撤销已阅
-                      </button>
-                      <button
-                        type="button"
-                        class="bbe-author-switch bbe-author-ignore-switch"
-                        :class="{ active: author.ignoreUnreadCount }"
-                        @click="toggleAuthorIgnoreUnread(author)"
-                      >
-                        <span class="bbe-author-switch-dot" aria-hidden="true" />
-                        {{ getAuthorIgnoreUnreadButtonText(author) }}
-                      </button>
-                    </div>
-                  </div>
-                </h3>
-                <div class="bbe-grid bbe-author-grid">
-                  <div
-                    v-for="(video, index) in getAuthorVisibleVideos(author)"
-                    :key="video.bvid"
-                    class="bbe-author-grid-item"
-                    :class="{
-                      'has-read-boundary': isAuthorBoundaryIndex(author, index),
-                      'has-author-read-mark': author.hasAuthorReadMarkOverride
-                    }"
-                  >
-                    <button
-                      v-if="index > 0"
-                      type="button"
-                      class="bbe-author-read-boundary"
+                  </h3>
+                  <div class="bbe-grid bbe-author-grid">
+                    <div
+                      v-for="(video, index) in getAuthorVisibleVideos(author)"
+                      :key="video.bvid"
+                      class="bbe-author-grid-item"
                       :class="{
-                        'is-active': isAuthorBoundaryIndex(author, index),
-                        'is-author-mark': author.hasAuthorReadMarkOverride && isAuthorBoundaryIndex(author, index)
+                        'has-read-boundary': isAuthorBoundaryIndex(author, index),
+                        'has-author-read-mark': author.hasAuthorReadMarkOverride
                       }"
-                      :title="
-                        isAuthorBoundaryIndex(author, index)
-                          ? '左键设置作者已阅，右键清除'
-                          : '左键将该分界设置为作者已阅时间'
-                      "
-                      @click.stop="setAuthorReadMarkFromBoundaryIndex(author, index)"
-                      @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index)"
-                    />
-                    <VideoCard
-                      :video="video"
-                      :clicked="clickedMap[video.bvid] !== undefined"
-                      :liked="isVideoLiked(video.bvid)"
-                      :like-pending="isVideoLikePending(video.bvid)"
-                      :reviewed="isVideoReviewed(video)"
-                      @click="onVideoClick"
-                      @toggle-like="onToggleVideoLike(video, $event)"
-                      @toggle-reviewed="onToggleVideoReviewed"
-                    />
-                  </div>
-                </div>
-                <div v-if="shouldShowAuthorPagination(author)" class="bbe-author-pagination">
-                  <div class="bbe-author-pagination-btns">
-                    <button
-                      type="button"
-                      class="bbe-author-pagination-btn bbe-author-pagination-btn-side"
-                      :disabled="isAuthorPageLoading(author.authorMid) || getAuthorCurrentPage(author) <= 1"
-                      @click="goToAuthorPage(author, getAuthorCurrentPage(author) - 1)"
                     >
-                      上一页
-                    </button>
-                    <template v-for="(pagerItem, pagerIndex) in getAuthorPagerItems(author)" :key="`${author.authorMid}-${pagerIndex}-${pagerItem}`">
                       <button
-                        v-if="typeof pagerItem === 'number'"
+                        v-if="index > 0"
                         type="button"
-                        class="bbe-author-pagination-btn bbe-author-pagination-btn-num"
-                        :class="{ active: pagerItem === getAuthorCurrentPage(author) }"
-                        :disabled="isAuthorPageLoading(author.authorMid)"
-                        @click="goToAuthorPage(author, pagerItem)"
+                        class="bbe-author-read-boundary"
+                        :class="{
+                          'is-active': isAuthorBoundaryIndex(author, index),
+                          'is-author-mark': author.hasAuthorReadMarkOverride && isAuthorBoundaryIndex(author, index)
+                        }"
+                        :title="
+                          isAuthorBoundaryIndex(author, index)
+                            ? '左键设置作者已阅，右键清除'
+                            : '左键将该分界设置为作者已阅时间'
+                        "
+                        @click.stop="setAuthorReadMarkFromBoundaryIndex(author, index)"
+                        @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index)"
+                      />
+                      <VideoCard
+                        :video="video"
+                        :clicked="clickedMap[video.bvid] !== undefined"
+                        :liked="isVideoLiked(video.bvid)"
+                        :like-pending="isVideoLikePending(video.bvid)"
+                        :reviewed="isVideoReviewed(video)"
+                        @click="onVideoClick"
+                        @toggle-like="onToggleVideoLike(video, $event)"
+                        @toggle-reviewed="onToggleVideoReviewed"
+                      />
+                    </div>
+                  </div>
+                  <div v-if="shouldShowAuthorPagination(author)" class="bbe-author-pagination">
+                    <div class="bbe-author-pagination-btns">
+                      <button
+                        type="button"
+                        class="bbe-author-pagination-btn bbe-author-pagination-btn-side"
+                        :disabled="isAuthorPageLoading(author.authorMid) || getAuthorCurrentPage(author) <= 1"
+                        @click="goToAuthorPage(author, getAuthorCurrentPage(author) - 1)"
                       >
-                        {{ pagerItem }}
+                        上一页
                       </button>
-                      <span v-else class="bbe-author-pagination-more">...</span>
-                    </template>
-                    <button
-                      type="button"
-                      class="bbe-author-pagination-btn bbe-author-pagination-btn-side"
-                      :disabled="
-                        isAuthorPageLoading(author.authorMid) ||
-                        getAuthorCurrentPage(author) >= getAuthorTotalPages(author)
-                      "
-                      @click="goToAuthorPage(author, getAuthorCurrentPage(author) + 1)"
-                    >
-                      下一页
-                    </button>
+                      <template v-for="(pagerItem, pagerIndex) in getAuthorPagerItems(author)" :key="`${author.authorMid}-${pagerIndex}-${pagerItem}`">
+                        <button
+                          v-if="typeof pagerItem === 'number'"
+                          type="button"
+                          class="bbe-author-pagination-btn bbe-author-pagination-btn-num"
+                          :class="{ active: pagerItem === getAuthorCurrentPage(author) }"
+                          :disabled="isAuthorPageLoading(author.authorMid)"
+                          @click="goToAuthorPage(author, pagerItem)"
+                        >
+                          {{ pagerItem }}
+                        </button>
+                        <span v-else class="bbe-author-pagination-more">...</span>
+                      </template>
+                      <button
+                        type="button"
+                        class="bbe-author-pagination-btn bbe-author-pagination-btn-side"
+                        :disabled="
+                          isAuthorPageLoading(author.authorMid) ||
+                          getAuthorCurrentPage(author) >= getAuthorTotalPages(author)
+                        "
+                        @click="goToAuthorPage(author, getAuthorCurrentPage(author) + 1)"
+                      >
+                        下一页
+                      </button>
+                    </div>
+                    <div class="bbe-author-pagination-go">
+                      <span class="bbe-author-pagination-go-count">
+                        共 {{ getAuthorTotalPages(author) }} 页 / {{ getAuthorTotalCount(author) }} 个，跳至
+                      </span>
+                      <input
+                        type="number"
+                        class="bbe-author-pagination-go-input"
+                        min="1"
+                        :max="getAuthorTotalPages(author)"
+                        :value="getAuthorJumpPageInput(author.authorMid)"
+                        @input="onAuthorPageJumpInput(author.authorMid, $event)"
+                        @keydown.enter.prevent="submitAuthorPageJump(author)"
+                      />
+                      <span class="bbe-author-pagination-go-page">页</span>
+                    </div>
                   </div>
-                  <div class="bbe-author-pagination-go">
-                    <span class="bbe-author-pagination-go-count">
-                      共 {{ getAuthorTotalPages(author) }} 页 / {{ getAuthorTotalCount(author) }} 个，跳至
-                    </span>
-                    <input
-                      type="number"
-                      class="bbe-author-pagination-go-input"
-                      min="1"
-                      :max="getAuthorTotalPages(author)"
-                      :value="getAuthorJumpPageInput(author.authorMid)"
-                      @input="onAuthorPageJumpInput(author.authorMid, $event)"
-                      @keydown.enter.prevent="submitAuthorPageJump(author)"
-                    />
-                    <span class="bbe-author-pagination-go-page">页</span>
-                  </div>
-                </div>
-              </section>
+                </section>
+              </template>
             </div>
           </div>
         </template>
@@ -874,6 +879,28 @@ const byAuthorFeeds = computed<AuthorFeed[]>(() => {
       return a.index - b.index;
     })
     .map((item) => item.author);
+});
+
+/**
+ * “近期投稿”勾选按更新时间倒序时，复用时间流的共享基线分割语义：
+ * 在排序后的作者列表里，定位第一位“最新投稿已早于当前基线”的作者。
+ */
+const byAuthorReadBoundaryAuthorIndex = computed<number>(() => {
+  if (mode.value !== 'byAuthor' || !byAuthorSortByLatest.value) {
+    return -1;
+  }
+  const boundaryTs = effectiveReadBoundaryTs.value;
+  if (boundaryTs <= 0) {
+    return -1;
+  }
+  const authors = byAuthorFeeds.value;
+  for (let index = 0; index < authors.length; index++) {
+    const latestPubdate = resolveAuthorLatestPubdate(authors[index]);
+    if (latestPubdate !== null && latestPubdate < boundaryTs) {
+      return index;
+    }
+  }
+  return -1;
 });
 
 function isAllPostsDayFilter(filter: AllPostsFilterKey): boolean {
