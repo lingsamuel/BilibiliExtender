@@ -1,4 +1,4 @@
-import type { CurrentUser, FavoriteFolder, VideoItem } from '@/shared/types';
+import type { AuthorVideoVersionFingerprint, CurrentUser, FavoriteFolder, VideoItem } from '@/shared/types';
 import { extractWbiKey, signWbiParams, WbiExpiredError } from '@/shared/utils/wbi';
 
 const API_BASE = 'https://api.bilibili.com';
@@ -85,6 +85,7 @@ interface ArcSearchItem {
 interface ArcSearchData {
   list: {
     vlist: ArcSearchItem[];
+    tlist?: Record<string, { tid?: number; count?: number }>;
   };
   page: {
     count: number;
@@ -295,7 +296,13 @@ export async function getUploaderVideos(
   mid: number,
   pn: number,
   ps: number
-): Promise<{ videos: VideoItem[]; hasMore: boolean; totalCount: number; pageSize: number }> {
+): Promise<{
+  videos: VideoItem[];
+  hasMore: boolean;
+  totalCount: number;
+  pageSize: number;
+  version: AuthorVideoVersionFingerprint;
+}> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const { imgKey, subKey } = await getWbiKeys();
@@ -322,12 +329,23 @@ export async function getUploaderVideos(
 
       const page = payload.data.page;
       const hasMore = page.pn * page.ps < page.count;
+      const totalCount = Math.max(0, Number(page.count) || 0);
+      const tagCounts = Object.values(payload.data.list?.tlist ?? {})
+        .map((item) => ({
+          tid: Math.max(0, Number(item?.tid) || 0),
+          count: Math.max(0, Number(item?.count) || 0)
+        }))
+        .sort((a, b) => a.tid - b.tid);
 
       return {
         videos,
         hasMore,
-        totalCount: Math.max(0, Number(page.count) || 0),
-        pageSize: Math.max(1, Number(page.ps) || ps)
+        totalCount,
+        pageSize: Math.max(1, Number(page.ps) || ps),
+        version: {
+          totalCount,
+          tagCounts
+        }
       };
     } catch (error) {
       if (error instanceof WbiExpiredError && attempt === 0) {

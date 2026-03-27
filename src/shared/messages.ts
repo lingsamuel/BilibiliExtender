@@ -7,6 +7,7 @@ import type {
   GroupReadMark,
   GroupOptionsData,
   GroupSummary,
+  VideoItem,
   ViewMode
 } from '@/shared/types';
 import { ext } from '@/shared/platform/webext';
@@ -80,7 +81,8 @@ export type MessageRequest =
   | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
   | { type: 'UNDO_AUTHOR_READ_MARK'; payload: { mid: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
-  | { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number } }
+  | { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number; ps: number } }
+  | { type: 'GET_AUTHOR_PAGE'; payload: { mid: number; pn: number; ps: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
   | { type: 'GET_SCHEDULER_STATUS' }
   | { type: 'RUN_SCHEDULER_NOW' };
@@ -95,6 +97,7 @@ export interface AuthorPageStatusPayload {
   groupId: string;
   mid: number;
   pn: number;
+  ps: number;
   status: 'ready' | 'failed';
   error?: string;
 }
@@ -137,7 +140,11 @@ export type RuntimeMessage =
   | LikeTaskStatusMessage
   | BatchLikeStatusMessage;
 
-export type SchedulerAuthorTaskReason = 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+export type SchedulerAuthorTaskReason =
+  | 'first-page-refresh'
+  | 'extend-continuous-window'
+  | 'load-more-boundary'
+  | 'request-author-page';
 export type SchedulerTaskReason =
   | SchedulerAuthorTaskReason
   | 'group-fav-refresh'
@@ -164,6 +171,7 @@ export interface SchedulerStatusResponse {
     mid: number;
     name: string;
     pn?: number;
+    ps?: number;
     reason?: SchedulerAuthorTaskReason;
   } | null;
   batchCompleted: number;
@@ -175,6 +183,7 @@ export interface SchedulerStatusResponse {
     name: string;
     groupId?: string;
     pn?: number;
+    ps?: number;
     reason?: SchedulerAuthorTaskReason;
   }>;
   groupChannel: {
@@ -215,6 +224,7 @@ export interface SchedulerStatusResponse {
       mid: number;
       name?: string;
       pn?: number;
+      ps?: number;
       reason?: SchedulerAuthorTaskReason;
       groupNames: string[];
     } | null;
@@ -225,6 +235,7 @@ export interface SchedulerStatusResponse {
       mid: number;
       name?: string;
       pn?: number;
+      ps?: number;
       reason?: SchedulerAuthorTaskReason;
       groupNames: string[];
     }>;
@@ -328,7 +339,16 @@ export interface ResponseMap {
   REQUEST_AUTHOR_PAGE: {
     accepted: boolean;
     status: 'queued' | 'cached' | 'no-more';
-    maxCachedPn?: number;
+    maxPage?: number;
+  };
+  GET_AUTHOR_PAGE: {
+    available: boolean;
+    mid: number;
+    pn: number;
+    ps: number;
+    maxPage?: number;
+    totalCount?: number;
+    videos: VideoItem[];
   };
   GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;

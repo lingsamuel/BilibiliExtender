@@ -25,9 +25,9 @@ import type {
 } from '@/shared/messages';
 import {
   buildAuthorListFromFav,
+  getAuthorPageCount,
   hasAuthorMorePages,
   isAuthorCacheExpired,
-  markAuthorPageUsage,
   refreshAuthorCache,
   type AuthorCacheMap,
   type MixedUsedPageItem
@@ -41,6 +41,7 @@ export interface SchedulerTask {
   name: string;
   groupId?: string;
   pn?: number;
+  ps?: number;
   reason?: SchedulerAuthorTaskReason;
   trigger?: SchedulerTaskTrigger;
   // 仅用于“前台同步等待”的补页任务：失败后不重试，直接回传错误。
@@ -74,7 +75,7 @@ const MAX_HISTORY = 50;
 const BURST_RETRY_DELAY_MS = 60_000;
 const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
 
-type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'reason' | 'failFast' | 'trigger'>> & Pick<SchedulerTask, 'groupId'>;
+type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'ps' | 'reason' | 'failFast' | 'trigger'>> & Pick<SchedulerTask, 'groupId'>;
 type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
 export interface LikeTaskResult {
@@ -308,8 +309,8 @@ function getGroupTitle(group: GroupConfig): string {
   return group.alias?.trim() || group.mediaTitle || group.groupId;
 }
 
-function keyOfAuthorTask(task: Pick<AuthorTask, 'mid' | 'pn'>): string {
-  return `${task.mid}:${task.pn}`;
+function keyOfAuthorTask(task: Pick<AuthorTask, 'mid' | 'pn' | 'ps'>): string {
+  return `${task.mid}:${task.pn}:${task.ps}`;
 }
 
 function keyOfLikeTask(task: Pick<LikeActionTask, 'bvid'>): LikeActionTask['key'] {
@@ -322,6 +323,7 @@ function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
     name: task.name?.trim() || String(task.mid),
     groupId: task.groupId,
     pn: Math.max(1, Number(task.pn) || 1),
+    ps: Math.max(1, Number(task.ps) || 1),
     reason: task.reason ?? 'first-page-refresh',
     trigger: task.trigger ?? 'alarm-routine',
     failFast: task.failFast === true
@@ -533,7 +535,7 @@ async function collectStaleAuthorTasks(
       continue;
     }
     if (isAuthorCacheExpired(cache, settings)) {
-      const firstFetchedAt = cache.firstPageFetchedAt || cache.lastFetchedAt || 0;
+      const firstFetchedAt = cache.lastFirstPageFetchedAt || cache.firstPageFetchedAt || cache.lastFetchedAt || 0;
       stale.push({
         mid,
         name: cache.name ?? String(mid),
@@ -547,13 +549,17 @@ async function collectStaleAuthorTasks(
     mid,
     name,
     pn: 1,
+    ps: settings.authorVideosPageSize,
     reason: 'first-page-refresh',
     trigger,
     failFast: false
   }));
 }
 
-async function collectNoCacheAuthorTasks(trigger: SchedulerTaskTrigger): Promise<AuthorTask[]> {
+async function collectNoCacheAuthorTasks(
+  settings: ExtensionSettings,
+  trigger: SchedulerTaskTrigger
+): Promise<AuthorTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -580,13 +586,17 @@ async function collectNoCacheAuthorTasks(trigger: SchedulerTaskTrigger): Promise
       mid,
       name: String(mid),
       pn: 1,
+      ps: settings.authorVideosPageSize,
       reason: 'first-page-refresh',
       trigger,
       failFast: false
     }));
 }
 
-async function collectOldestAuthorTasks(trigger: SchedulerTaskTrigger): Promise<AuthorTask[]> {
+async function collectOldestAuthorTasks(
+  settings: ExtensionSettings,
+  trigger: SchedulerTaskTrigger
+): Promise<AuthorTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -614,7 +624,7 @@ async function collectOldestAuthorTasks(trigger: SchedulerTaskTrigger): Promise<
     oldest.push({
       mid,
       name: cache.name ?? String(mid),
-      lastFetchedAt: cache.firstPageFetchedAt || cache.lastFetchedAt || 0
+      lastFetchedAt: cache.lastFirstPageFetchedAt || cache.firstPageFetchedAt || cache.lastFetchedAt || 0
     });
   }
 
@@ -623,6 +633,7 @@ async function collectOldestAuthorTasks(trigger: SchedulerTaskTrigger): Promise<
     mid,
     name,
     pn: 1,
+    ps: settings.authorVideosPageSize,
     reason: 'first-page-refresh',
     trigger,
     failFast: false
@@ -640,51 +651,25 @@ function isPageFresh(
 }
 
 function resolveNextPrefetchPn(
-  cache: {
-    pageState: Record<number, { fetchedAt: number; usedInMixed: boolean }>;
-    hasMore: boolean;
-    totalCount?: number;
-    apiPageSize?: number;
-    firstPageFetchedAt: number;
-    maxCachedPn: number;
-  },
+  cache: AuthorCacheMap[number],
   settings: ExtensionSettings
 ): number | null {
   if (!hasAuthorMorePages(cache)) {
     return null;
   }
 
-  if (!isPageFresh(cache.firstPageFetchedAt, settings)) {
+  if (!isPageFresh(cache.lastFirstPageFetchedAt || cache.firstPageFetchedAt, settings)) {
     return null;
   }
 
-  const page2 = cache.pageState[2];
-  if (!page2 || !isPageFresh(page2.fetchedAt, settings)) {
-    return 2;
-  }
-
-  let k = 2;
-  while (true) {
-    const state = cache.pageState[k];
-    if (!state || !isPageFresh(state.fetchedAt, settings) || !state.usedInMixed) {
-      break;
-    }
-    k++;
-  }
-
-  if (k <= 2) {
+  const pageSize = Math.max(1, settings.authorVideosPageSize);
+  const targetLength = (2 + Math.max(1, settings.authorContinuousExtraPageCount)) * pageSize;
+  if ((cache.continuousVideos?.length ?? 0) >= targetLength) {
     return null;
   }
 
-  const nextPn = k;
-  const alreadyFetched = cache.pageState[nextPn];
-  if (alreadyFetched) {
-    return null;
-  }
-  if (nextPn <= cache.maxCachedPn) {
-    return null;
-  }
-  return nextPn;
+  const nextStartIndex = cache.continuousVideos?.length ?? 0;
+  return Math.max(2, Math.floor(nextStartIndex / pageSize) + 1);
 }
 
 async function collectPrefetchAuthorTasks(
@@ -703,7 +688,8 @@ async function collectPrefetchAuthorTasks(
       mid: cache.mid,
       name: cache.name ?? String(cache.mid),
       pn,
-      reason: 'prefetch-next-page',
+      ps: settings.authorVideosPageSize,
+      reason: 'extend-continuous-window',
       trigger,
       failFast: false
     });
@@ -754,7 +740,7 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
   const settings = await loadSettings();
-  await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, { pn: task.pn });
+  await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, { pn: task.pn, ps: task.ps });
 }
 
 /**
@@ -811,6 +797,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       name: cache?.name ?? author.name,
       groupId: group.groupId,
       pn: 1,
+      ps: settings.authorVideosPageSize,
       reason: 'first-page-refresh',
       trigger: forceAuthorRefresh ? 'manual-refresh' : 'group-fav-chain',
       failFast: false
@@ -1566,7 +1553,7 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
   }
 
   const [noCacheTasks, staleTasks, prefetchTasks] = await Promise.all([
-    collectNoCacheAuthorTasks('alarm-routine'),
+    collectNoCacheAuthorTasks(settings, 'alarm-routine'),
     collectStaleAuthorTasks(settings, 'alarm-routine'),
     collectPrefetchAuthorTasks(settings, 'alarm-routine')
   ]);
@@ -1595,8 +1582,8 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
   }
 
   const [noCacheTasks, candidates] = await Promise.all([
-    collectNoCacheAuthorTasks('debug-run-now'),
-    collectOldestAuthorTasks('debug-run-now')
+    collectNoCacheAuthorTasks(settings, 'debug-run-now'),
+    collectOldestAuthorTasks(settings, 'debug-run-now')
   ]);
   const burstQueued = enqueueBurst(noCacheTasks);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
@@ -1737,9 +1724,9 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
   const authorCaches = Object.values(authorCacheMap)
     .map((item) => ({
       mid: item.mid,
-      name: resolveAuthorName(item.name, item.videos, item.mid),
+      name: resolveAuthorName(item.name, item.continuousVideos ?? item.videos ?? [], item.mid),
       groupNames: Array.from(authorGroupNamesMap.get(item.mid) ?? []).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')),
-      videoCount: item.videos.length,
+      videoCount: (item.continuousVideos ?? item.videos ?? []).length,
       lastFetchedAt: item.lastFetchedAt,
       face: item.face
     }))
@@ -1760,6 +1747,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     name: item.name,
     groupId: item.groupId,
     pn: item.pn,
+    ps: item.ps,
     reason: item.reason
   }));
   const burstCurrentTask = burstState.currentTask
@@ -1767,6 +1755,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
         mid: burstState.currentTask.mid,
         name: resolveDisplayName(burstState.currentTask.name),
         pn: burstState.currentTask.pn,
+        ps: burstState.currentTask.ps,
         reason: burstState.currentTask.reason,
         groupNames: getGroupNamesForTask(burstState.currentTask.mid, burstState.currentTask.groupId)
       }
@@ -1775,6 +1764,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     mid: item.mid,
     name: resolveDisplayName(item.name),
     pn: item.pn,
+    ps: item.ps,
     reason: item.reason,
     groupNames: getGroupNamesForTask(item.mid, item.groupId)
   }));
@@ -1793,6 +1783,7 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
           mid: authorCurrentTask.mid,
           name: authorCurrentTask.name,
           pn: authorCurrentTask.pn,
+          ps: authorCurrentTask.ps,
           reason: authorCurrentTask.reason
         }
       : null,
@@ -1862,17 +1853,9 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
  */
 export async function reportAuthorPageUsage(
   _groupId: string,
-  usedPages: MixedUsedPageItem[]
+  _usedPages: MixedUsedPageItem[]
 ): Promise<void> {
-  if (usedPages.length === 0) {
-    return;
-  }
-
-  const authorCacheMap = liveAuthorCacheMap ?? await loadAuthorVideoCacheMap();
-  const changed = markAuthorPageUsage(authorCacheMap, usedPages);
-  if (changed) {
-    await saveAuthorVideoCacheMap(authorCacheMap);
-  }
+  // 旧的页级使用反馈已废弃；连续窗口维护改为直接基于连续缓存长度判断。
 }
 
 /**

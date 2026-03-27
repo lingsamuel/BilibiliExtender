@@ -2,6 +2,10 @@ import type { ExtensionSettings } from '@/shared/types';
 
 export const AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT = 24;
 export const AUTHOR_VIDEOS_PAGE_SIZE_MAX = 42;
+export const AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_DEFAULT = 3;
+export const AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_MIN = 1;
+export const AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT = 3;
+export const AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_MIN = 1;
 
 export const STORAGE_KEYS = {
   SETTINGS: 'bbe:settings',
@@ -28,6 +32,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   authorVideosPageSize: AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
+  authorContinuousExtraPageCount: AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_DEFAULT,
+  authorNonContinuousCachePageCount: AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT,
   defaultReadMarkDays: 7,
   enableAllGroup: true,
   useStorageSync: true,

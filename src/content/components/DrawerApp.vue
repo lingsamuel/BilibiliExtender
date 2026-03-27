@@ -559,6 +559,7 @@ const byAuthorPageMap = ref<Record<number, number>>({});
 const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
 const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
 const pendingAuthorPageTargetMap = ref<Record<number, number>>({});
+const byAuthorExactPageVideosMap = ref<Record<number, Record<number, VideoItem[]>>>({});
 const mixedDaySectionElements = new Map<string, HTMLElement>();
 const mixedTimelineRef = ref<HTMLElement | null>(null);
 const mixedSectionsRef = ref<HTMLElement | null>(null);
@@ -930,16 +931,13 @@ function getAuthorApiPageSize(author: AuthorFeed): number {
 
 function getAuthorTotalPages(author: AuthorFeed): number {
   const pageSize = getAuthorApiPageSize(author);
-  const cachedMaxPn = Math.max(1, Number(author.maxCachedPn) || 1);
-  const cachedPageByVideoCount = Math.max(1, Math.ceil(author.videos.length / pageSize));
   const knownTotalCount = Number(author.totalVideoCount);
   if (Number.isFinite(knownTotalCount) && knownTotalCount >= 0) {
     return Math.max(1, Math.ceil(knownTotalCount / pageSize));
   }
-  if (author.hasMorePages) {
-    return Math.max(cachedMaxPn + 1, cachedPageByVideoCount);
-  }
-  return Math.max(cachedMaxPn, cachedPageByVideoCount);
+  const exactPages = Object.keys(byAuthorExactPageVideosMap.value[author.authorMid] ?? {}).map((rawPage) => Math.max(1, Number(rawPage) || 1));
+  const maxExactPage = exactPages.length > 0 ? Math.max(...exactPages) : 1;
+  return Math.max(maxExactPage, Math.max(1, Math.ceil(author.videos.length / pageSize)));
 }
 
 function getAuthorTotalCount(author: AuthorFeed): number {
@@ -956,10 +954,6 @@ function getAuthorCurrentPage(author: AuthorFeed): number {
   return Math.min(totalPages, Math.max(1, raw));
 }
 
-function normalizeVideoSourcePn(video: VideoItem): number {
-  return Math.max(1, Number(video.meta?.sourcePn) || 1);
-}
-
 const byAuthorVisibleVideosMap = computed<Record<number, VideoItem[]>>(() => {
   const result: Record<number, VideoItem[]> = {};
   for (const author of byAuthorFeeds.value) {
@@ -968,7 +962,16 @@ const byAuthorVisibleVideosMap = computed<Record<number, VideoItem[]>>(() => {
       continue;
     }
     const currentPage = getAuthorCurrentPage(author);
-    result[author.authorMid] = author.videos.filter((video) => normalizeVideoSourcePn(video) === currentPage);
+    const exactPageVideos = byAuthorExactPageVideosMap.value[author.authorMid]?.[currentPage];
+    if (Array.isArray(exactPageVideos) && exactPageVideos.length > 0) {
+      result[author.authorMid] = exactPageVideos;
+      continue;
+    }
+    if (currentPage === 1) {
+      result[author.authorMid] = author.videos.slice(0, getAuthorApiPageSize(author));
+      continue;
+    }
+    result[author.authorMid] = [];
   }
   return result;
 });
@@ -1045,6 +1048,36 @@ function clearAuthorPageJumpInput(authorMid: number): void {
   byAuthorPageJumpInputMap.value = next;
 }
 
+function setAuthorExactPageVideos(authorMid: number, page: number, videos: VideoItem[]): void {
+  const nextPages = {
+    ...(byAuthorExactPageVideosMap.value[authorMid] ?? {}),
+    [page]: videos
+  };
+  byAuthorExactPageVideosMap.value = {
+    ...byAuthorExactPageVideosMap.value,
+    [authorMid]: nextPages
+  };
+}
+
+async function loadAuthorExactPage(authorMid: number, page: number, pageSize: number): Promise<boolean> {
+  const resp = await sendMessage({
+    type: 'GET_AUTHOR_PAGE',
+    payload: {
+      mid: authorMid,
+      pn: page,
+      ps: pageSize
+    }
+  });
+  if (!resp.ok || !resp.data) {
+    throw new Error(resp.error ?? '读取作者分页缓存失败');
+  }
+  if (!resp.data.available) {
+    return false;
+  }
+  setAuthorExactPageVideos(authorMid, page, resp.data.videos);
+  return true;
+}
+
 function getAuthorPagerItems(author: AuthorFeed): Array<number | '...'> {
   const total = getAuthorTotalPages(author);
   const current = getAuthorCurrentPage(author);
@@ -1080,32 +1113,47 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
     return;
   }
 
+  const pageSize = getAuthorApiPageSize(author);
   setAuthorPageLoading(author.authorMid, true);
   try {
-    // 前台只提交“作者分页意图”，不再同步等待该页拉取完成。
-    const cachedPages = new Set(author.cachedPagePns ?? []);
-    const hasCachedPage = cachedPages.has(nextPage);
-    if (!hasCachedPage) {
-      const resp = await sendMessage({
-        type: 'REQUEST_AUTHOR_PAGE',
-        payload: {
-          groupId: activeGroupId.value,
-          mid: author.authorMid,
-          pn: nextPage
-        }
-      });
-      if (!resp.ok || !resp.data) {
-        throw new Error(resp.error ?? '提交分页任务失败');
+    if (nextPage === 1 || byAuthorExactPageVideosMap.value[author.authorMid]?.[nextPage]) {
+      if (nextPage > 1) {
+        await loadAuthorExactPage(author.authorMid, nextPage, pageSize);
       }
+      byAuthorPageMap.value = {
+        ...byAuthorPageMap.value,
+        [author.authorMid]: nextPage
+      };
+      setPendingAuthorPageTarget(author.authorMid);
+      clearAuthorPageJumpInput(author.authorMid);
+      await nextTick();
+      updateByAuthorNavState();
+      return;
+    }
 
-      if (resp.data.status === 'no-more') {
-        const maxCachedPn = Math.max(1, Number(resp.data.maxCachedPn) || 1);
-        showErrorToast(`该作者暂无第 ${nextPage} 页（当前最多 ${maxCachedPn} 页）`);
-        setPendingAuthorPageTarget(author.authorMid);
-        return;
+    const resp = await sendMessage({
+      type: 'REQUEST_AUTHOR_PAGE',
+      payload: {
+        groupId: activeGroupId.value,
+        mid: author.authorMid,
+        pn: nextPage,
+        ps: pageSize
       }
+    });
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error ?? '提交分页任务失败');
+    }
 
-      if (resp.data.status === 'cached') {
+    if (resp.data.status === 'no-more') {
+      const maxPage = Math.max(1, Number(resp.data.maxPage) || 1);
+      showErrorToast(`该作者暂无第 ${nextPage} 页（当前最多 ${maxPage} 页）`);
+      setPendingAuthorPageTarget(author.authorMid);
+      return;
+    }
+
+    if (resp.data.status === 'cached') {
+      const available = await loadAuthorExactPage(author.authorMid, nextPage, pageSize);
+      if (available) {
         byAuthorPageMap.value = {
           ...byAuthorPageMap.value,
           [author.authorMid]: nextPage
@@ -1116,21 +1164,11 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
         updateByAuthorNavState();
         return;
       }
-
-      setPendingAuthorPageTarget(author.authorMid, nextPage);
-      showErrorToast(`第 ${nextPage} 页缓存中，已提交分页任务`);
-      startAuthorPagePoll(POLL_MAX_REFRESHING);
-      return;
     }
 
-    byAuthorPageMap.value = {
-      ...byAuthorPageMap.value,
-      [author.authorMid]: nextPage
-    };
-    setPendingAuthorPageTarget(author.authorMid);
-    clearAuthorPageJumpInput(author.authorMid);
-    await nextTick();
-    updateByAuthorNavState();
+    setPendingAuthorPageTarget(author.authorMid, nextPage);
+    showErrorToast(`第 ${nextPage} 页缓存中，已提交分页任务`);
+    startAuthorPagePoll(POLL_MAX_REFRESHING);
   } catch (error) {
     showErrorToast(error instanceof Error ? error.message : '作者分页切换失败');
   } finally {
@@ -1753,40 +1791,39 @@ function stopAuthorPagePoll(): void {
 }
 
 async function refreshFeedForPendingAuthorPages(): Promise<void> {
-  if (!activeGroupId.value || !hasPendingAuthorPageTargets()) {
+  if (!hasPendingAuthorPageTargets()) {
     return;
   }
 
-  const pendingBefore = new Set(
-    Object.keys(pendingAuthorPageTargetMap.value).map((rawMid) => Math.max(1, Number(rawMid) || 0))
-  );
-
-  const resp = await sendMessage({
-    type: 'GET_GROUP_FEED',
-    payload: {
-      groupId: activeGroupId.value,
-      mode: mode.value,
-      recentDays: selectedRecentDays.value,
-      activeReadMarkTs: activeTrackingReadMarkTs.value,
-      showAllForMixed: mode.value === 'mixed' && mixedShowAll.value,
-      allPostsFilter: getAllPostsFilterForRequest(),
-      byAuthorSortByLatest: byAuthorSortByLatest.value
+  const resolvedPending: number[] = [];
+  for (const [rawMid, rawTarget] of Object.entries(pendingAuthorPageTargetMap.value)) {
+    const mid = Math.max(1, Number(rawMid) || 0);
+    const targetPage = Math.max(1, Number(rawTarget) || 0);
+    if (!mid || !targetPage) {
+      continue;
     }
-  });
-
-  if (!resp.ok || !resp.data) {
-    throw new Error(resp.error ?? '刷新分页内容失败');
+    const author = byAuthorFeeds.value.find((item) => item.authorMid === mid);
+    if (!author) {
+      continue;
+    }
+    const pageSize = getAuthorApiPageSize(author);
+    const available = await loadAuthorExactPage(mid, targetPage, pageSize);
+    if (!available) {
+      continue;
+    }
+    byAuthorPageMap.value = {
+      ...byAuthorPageMap.value,
+      [mid]: targetPage
+    };
+    setPendingAuthorPageTarget(mid);
+    setAuthorPageLoading(mid, false);
+    resolvedPending.push(mid);
   }
 
-  if (resp.data.cacheStatus === 'ready' || hasRenderableFeedData(resp.data)) {
-    applyFeedSnapshot(resp.data);
-
-    const resolvedPending = Array.from(pendingBefore).filter(
-      (mid) => pendingAuthorPageTargetMap.value[mid] === undefined
-    );
-    if (resolvedPending.length > 0) {
-      await fetchClickedVideos();
-    }
+  if (resolvedPending.length > 0) {
+    await nextTick();
+    updateByAuthorNavState();
+    await fetchClickedVideos();
   }
 
   if (!hasPendingAuthorPageTargets()) {
@@ -1840,6 +1877,7 @@ function resetAuthorPaginationState(): void {
   byAuthorPageJumpInputMap.value = {};
   byAuthorPageLoadingMap.value = {};
   pendingAuthorPageTargetMap.value = {};
+  byAuthorExactPageVideosMap.value = {};
 }
 
 function syncAuthorPaginationStateWithFeed(): void {
@@ -1860,14 +1898,18 @@ function syncAuthorPaginationStateWithFeed(): void {
 
   const nextPageMap: Record<number, number> = {};
   let hasPendingApplied = false;
+  const nextExactPageVideosMap: Record<number, Record<number, VideoItem[]>> = {};
   for (const author of feed.value.videosByAuthor) {
     const current = Number(byAuthorPageMap.value[author.authorMid]) || 1;
     const totalPages = getAuthorTotalPages(author);
     const pendingTarget = nextPendingMap[author.authorMid];
     const normalizedPendingTarget = pendingTarget ? Math.min(totalPages, Math.max(1, pendingTarget)) : undefined;
-    const cachedPages = new Set(author.cachedPagePns ?? []);
+    nextExactPageVideosMap[author.authorMid] = {
+      ...(byAuthorExactPageVideosMap.value[author.authorMid] ?? {}),
+      1: author.videos.slice(0, getAuthorApiPageSize(author))
+    };
 
-    if (normalizedPendingTarget && cachedPages.has(normalizedPendingTarget)) {
+    if (normalizedPendingTarget && nextExactPageVideosMap[author.authorMid][normalizedPendingTarget]) {
       nextPageMap[author.authorMid] = normalizedPendingTarget;
       delete nextPendingMap[author.authorMid];
       hasPendingApplied = true;
@@ -1878,6 +1920,7 @@ function syncAuthorPaginationStateWithFeed(): void {
   }
   byAuthorPageMap.value = nextPageMap;
   pendingAuthorPageTargetMap.value = nextPendingMap;
+  byAuthorExactPageVideosMap.value = nextExactPageVideosMap;
 
   const nextJumpMap: Record<number, string> = {};
   for (const [rawMid, rawValue] of Object.entries(byAuthorPageJumpInputMap.value)) {

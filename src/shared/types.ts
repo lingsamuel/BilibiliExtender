@@ -22,6 +22,10 @@ export interface ExtensionSettings {
   extraOlderVideoCount: number;
   // 控制作者投稿接口 ps 参数的默认值，并作为前端分页兜底口径。
   authorVideosPageSize: number;
+  // 固定保留 2 页之外，额外保留的连续缓存页数。
+  authorContinuousExtraPageCount: number;
+  // 非连续块缓存的容量上限（按 pageSize 折算页数）。
+  authorNonContinuousCachePageCount: number;
   defaultReadMarkDays: number;
   // 控制是否在侧栏展示默认“全部”聚合分组。
   enableAllGroup: boolean;
@@ -78,6 +82,21 @@ export interface VideoItem {
   };
 }
 
+export interface AuthorVideoVersionFingerprint {
+  totalCount: number;
+  tagCounts: Array<{ tid: number; count: number }>;
+}
+
+export interface AuthorVideoBlock {
+  pageNum: number;
+  pageSize: number;
+  startIndex: number;
+  endExclusive: number;
+  fetchedAt: number;
+  version: AuthorVideoVersionFingerprint;
+  videos: VideoItem[];
+}
+
 export interface AuthorFeed {
   authorMid: number;
   authorName: string;
@@ -90,12 +109,6 @@ export interface AuthorFeed {
   hasAuthorReadMarkOverride?: boolean;
   // 当前作者用于分割线与过滤的有效边界（秒级时间戳，0 表示无边界）。
   effectiveReadBoundaryTs?: number;
-  // 该作者当前缓存里已拉取到的最大页码（至少为 1）。
-  maxCachedPn?: number;
-  // 当前已实际拉取并写入缓存的页码集合（可能不连续）。
-  cachedPagePns?: number[];
-  // 该作者是否仍有后续分页可拉取。
-  hasMorePages?: boolean;
   // 作者投稿总量（来自投稿接口 page.count）。
   totalVideoCount?: number;
   // 作者投稿接口页大小（来自投稿接口 page.ps）。
@@ -163,19 +176,24 @@ export interface AuthorVideoCache {
   follower?: number;
   following?: boolean;
   faceFetchedAt?: number;
-  videos: VideoItem[];
-  // 每页缓存状态：用于页级预取推进与去重回放。
-  pageState: Record<number, { fetchedAt: number; usedInMixed: boolean; lastUsedAt?: number }>;
-  maxCachedPn: number;
-  nextPn: number;
-  hasMore: boolean;
-  // 投稿接口返回的作者视频总量（page.count）
-  totalCount?: number;
-  // 投稿接口返回的页大小（page.ps）
-  apiPageSize?: number;
-  firstPageFetchedAt: number;
-  secondPageFetchedAt?: number;
+  continuousVideos: VideoItem[];
+  continuousVersion?: AuthorVideoVersionFingerprint;
+  continuousUpdatedAt?: number;
+  blocks: AuthorVideoBlock[];
+  latestKnownVersion?: AuthorVideoVersionFingerprint;
+  latestKnownTotalCount?: number;
+  lastFirstPageFetchedAt?: number;
   lastFetchedAt: number;
+  // 兼容旧缓存数据的迁移字段；新实现不再依赖这些字段作为真相。
+  videos?: VideoItem[];
+  pageState?: Record<number, { fetchedAt: number; usedInMixed: boolean; lastUsedAt?: number }>;
+  maxCachedPn?: number;
+  nextPn?: number;
+  hasMore?: boolean;
+  totalCount?: number;
+  apiPageSize?: number;
+  firstPageFetchedAt?: number;
+  secondPageFetchedAt?: number;
 }
 
 // 分组仅持有作者引用，不直接持有视频数据

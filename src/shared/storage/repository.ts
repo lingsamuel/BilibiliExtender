@@ -228,8 +228,35 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
     };
   }
 
+  function normalizeVersion(
+    rawVersion: AuthorVideoCache['continuousVersion'] | AuthorVideoCache['latestKnownVersion'],
+    fallbackTotalCount?: number
+  ): AuthorVideoCache['continuousVersion'] | undefined {
+    if (!rawVersion) {
+      return fallbackTotalCount !== undefined
+        ? {
+            totalCount: Math.max(0, Math.floor(fallbackTotalCount)),
+            tagCounts: []
+          }
+        : undefined;
+    }
+    const totalCount = Math.max(0, Number(rawVersion.totalCount) || fallbackTotalCount || 0);
+    const tagCounts = Array.isArray(rawVersion.tagCounts)
+      ? rawVersion.tagCounts
+        .map((item) => ({
+          tid: Math.max(0, Number(item?.tid) || 0),
+          count: Math.max(0, Number(item?.count) || 0)
+        }))
+        .sort((a, b) => a.tid - b.tid)
+      : [];
+    return {
+      totalCount,
+      tagCounts
+    };
+  }
+
   for (const [rawMid, rawCache] of Object.entries(rawCacheMap)) {
-    if (!rawCache || !Array.isArray(rawCache.videos)) {
+    if (!rawCache || typeof rawCache !== 'object') {
       continue;
     }
 
@@ -239,59 +266,79 @@ export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
     }
 
     const lastFetchedAt = toPositiveNumber(rawCache.lastFetchedAt, now);
-    const firstPageFetchedAt = toPositiveNumber(rawCache.firstPageFetchedAt, lastFetchedAt);
-    const normalizedVideos = rawCache.videos.map((video) => normalizeVideoMeta(video, firstPageFetchedAt));
-
-    const pageState: Record<number, { fetchedAt: number; usedInMixed: boolean; lastUsedAt?: number }> = {};
-    if (rawCache.pageState && typeof rawCache.pageState === 'object') {
-      for (const [rawPn, rawState] of Object.entries(rawCache.pageState)) {
-        const pn = Math.max(1, toPositiveNumber(rawPn, 1));
-        const fetchedAt = toPositiveNumber((rawState as { fetchedAt?: number }).fetchedAt, firstPageFetchedAt);
-        const usedInMixed = Boolean((rawState as { usedInMixed?: boolean }).usedInMixed);
-        const lastUsedAtRaw = (rawState as { lastUsedAt?: number }).lastUsedAt;
-        const lastUsedAt = typeof lastUsedAtRaw === 'number' && lastUsedAtRaw > 0 ? lastUsedAtRaw : undefined;
-        pageState[pn] = { fetchedAt, usedInMixed, lastUsedAt };
-      }
-    }
-
-    if (!pageState[1]) {
-      pageState[1] = { fetchedAt: firstPageFetchedAt, usedInMixed: false };
-    }
-
-    for (const video of normalizedVideos) {
-      const pn = video.meta?.sourcePn ?? 1;
-      if (!pageState[pn]) {
-        pageState[pn] = {
-          fetchedAt: video.meta?.pageFetchedAt ?? firstPageFetchedAt,
-          usedInMixed: false
-        };
-      }
-    }
-
-    const pageNumbers = Object.keys(pageState).map((pn) => Math.max(1, Number(pn) || 1));
-    const maxCachedPn = Math.max(1, toPositiveNumber(rawCache.maxCachedPn, pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1));
-    const nextPn = Math.max(maxCachedPn + 1, toPositiveNumber(rawCache.nextPn, maxCachedPn + 1));
-    const secondPageFetchedAt =
-      rawCache.secondPageFetchedAt && rawCache.secondPageFetchedAt > 0
-        ? rawCache.secondPageFetchedAt
-        : pageState[2]?.fetchedAt;
     const totalCountRaw = Number(rawCache.totalCount);
     const totalCount = Number.isFinite(totalCountRaw) && totalCountRaw >= 0 ? Math.floor(totalCountRaw) : undefined;
-    const apiPageSizeRaw = Number(rawCache.apiPageSize);
-    const apiPageSize = Number.isFinite(apiPageSizeRaw) && apiPageSizeRaw > 0 ? Math.floor(apiPageSizeRaw) : undefined;
+    const firstPageFetchedAt = toPositiveNumber(rawCache.lastFirstPageFetchedAt ?? rawCache.firstPageFetchedAt, lastFetchedAt);
+    const legacyVideos = Array.isArray(rawCache.videos) ? rawCache.videos : [];
+    const rawContinuousVideos = Array.isArray(rawCache.continuousVideos) ? rawCache.continuousVideos : legacyVideos;
+    const continuousVideos = rawContinuousVideos.map((video) => normalizeVideoMeta(video, firstPageFetchedAt));
+    const continuousVersion = normalizeVersion(rawCache.continuousVersion, totalCount);
+    const latestKnownVersion = normalizeVersion(rawCache.latestKnownVersion, totalCount) ?? continuousVersion;
+    const continuousUpdatedAt = rawCache.continuousUpdatedAt && rawCache.continuousUpdatedAt > 0
+      ? rawCache.continuousUpdatedAt
+      : firstPageFetchedAt;
+
+    const blocks = Array.isArray(rawCache.blocks)
+      ? rawCache.blocks
+        .map((rawBlock) => {
+          const pageNum = Math.max(1, toPositiveNumber(rawBlock.pageNum, 1));
+          const pageSize = Math.max(
+            1,
+            toPositiveNumber(rawBlock.pageSize, (rawCache.apiPageSize ?? continuousVideos.length) || 1)
+          );
+          const fetchedAt = toPositiveNumber(rawBlock.fetchedAt, lastFetchedAt);
+          const videos = Array.isArray(rawBlock.videos)
+            ? rawBlock.videos.map((video) => normalizeVideoMeta(video, fetchedAt))
+            : [];
+          const startIndex = Math.max(0, Number(rawBlock.startIndex) || (pageNum - 1) * pageSize);
+          const endExclusive = Math.max(startIndex, Number(rawBlock.endExclusive) || (startIndex + videos.length));
+          const version = normalizeVersion(rawBlock.version, totalCount) ?? latestKnownVersion;
+          if (!version) {
+            return null;
+          }
+          return {
+            pageNum,
+            pageSize,
+            startIndex,
+            endExclusive,
+            fetchedAt,
+            version,
+            videos
+          };
+        })
+        .filter((block): block is NonNullable<typeof block> => block !== null)
+      : [];
+
+    if (blocks.length === 0 && continuousVideos.length > 0) {
+      const legacyPageSizeRaw = Number(rawCache.apiPageSize);
+      const legacyPageSize = Number.isFinite(legacyPageSizeRaw) && legacyPageSizeRaw > 0
+        ? Math.floor(legacyPageSizeRaw)
+        : continuousVideos.length;
+      const version = latestKnownVersion ?? {
+        totalCount: totalCount ?? continuousVideos.length,
+        tagCounts: []
+      };
+      blocks.push({
+        pageNum: 1,
+        pageSize: Math.max(1, legacyPageSize),
+        startIndex: 0,
+        endExclusive: continuousVideos.length,
+        fetchedAt: firstPageFetchedAt,
+        version,
+        videos: continuousVideos.slice(0, Math.max(1, legacyPageSize))
+      });
+    }
 
     normalized[mid] = {
       ...rawCache,
       mid,
-      videos: normalizedVideos,
-      pageState,
-      maxCachedPn,
-      nextPn,
-      hasMore: Boolean(rawCache.hasMore),
-      totalCount,
-      apiPageSize,
-      firstPageFetchedAt,
-      secondPageFetchedAt,
+      continuousVideos,
+      continuousVersion,
+      continuousUpdatedAt,
+      blocks,
+      latestKnownVersion,
+      latestKnownTotalCount: latestKnownVersion?.totalCount ?? totalCount,
+      lastFirstPageFetchedAt: firstPageFetchedAt,
       lastFetchedAt
     };
   }

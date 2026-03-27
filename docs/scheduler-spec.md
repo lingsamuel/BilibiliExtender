@@ -77,40 +77,35 @@ interface SchedulerChannel<TTask extends SchedulerTaskBase> {
 
 ```ts
 interface AuthorVideoTask extends SchedulerTaskBase {
-  key: `author:${number}:pn:${number}`;
+  key: `author:${number}:pn:${number}:ps:${number}`;
   mid: number;
   name: string;
-  // 要拉取的页码：1=首页刷新，>=2=常规预取或时间流按需补页
+  // 作者投稿请求必须显式携带 pageSize；1=首页刷新，>=2=连续窗口维护、时间流补块或精确分页请求
   pn: number;
-  reason: 'first-page-refresh' | 'prefetch-next-page' | 'load-more-boundary';
+  ps: number;
+  reason: 'first-page-refresh' | 'extend-continuous-window' | 'load-more-boundary' | 'request-author-page';
 }
 ```
 
 来源：
 - 定时（两阶段）：
   1. 收集所有启用分组中的作者 `mid`，筛选“首页过期”任务（`pn=1`）；
-  2. 对“所有已有缓存作者”执行低优先级“下一页预取”扫描：
-     - 第二页预取仅是防御性加速，不保证已存在；
-     - 仅当 `1..K` 页都新鲜且第 `K` 页数据已**实际参与目标页组构造**时，才加入 `pn=K+1` 的常规任务；
-     - 若 `pn=K+1` 已缓存但未被使用，不继续预取 `pn=K+2`。
+  2. 对“所有已有缓存作者”执行低优先级“连续窗口维护”扫描：
+     - 第二页仍是默认优先的防御性目标；
+     - 若当前连续缓存长度不足以覆盖 `2 + authorContinuousExtraPageCount` 页窗口，则继续入列后续补块任务；
+     - 该判断不再依赖旧的 `usedInMixed/pageState` 回报，而是统一基于作者投稿列表服务的连续缓存长度与块池状态。
 - 优先：手动刷新、首次访问分组、新建分组初始化后触发。
 - Burst：
   - 任意入口发现“作者缓存不存在”时，进入 Burst 队列并优先拉取 `pn=1`；
-  - 时间流构造器命中作者缓存边界时，进入 Burst 队列并按需拉取 `pn>=2`（通常是 `nextPn`，包含缺失第二页场景）。
+  - 时间流构造器命中作者连续缓存边界时，进入 Burst 队列并按需拉取 `pn>=2`；
+  - 作者分页请求 `REQUEST_AUTHOR_PAGE(groupId, mid, pn, ps)` 也走 Burst，但其结果语义是“精确页块”，不是旧的页级共享缓存命中。
 
 执行：
-1. `pn=1`：刷新首页并更新 `firstPageFetchedAt`；保留历史 `pn>=2` 数据供后续 best-effort 使用。
-2. `pn>=2`：预取或按需补页并更新 `maxCachedPn/nextPn/hasMore`。
-3. 作者投稿接口的分页元信息（`page.count/page.ps`）必须缓存为 `totalCount/apiPageSize`，并用于推导页上限：
-   - `maxPageByCount = max(1, ceil(totalCount / apiPageSize))`（仅在 `totalCount>0 && apiPageSize>0` 时成立）；
-   - 已知 `maxPageByCount` 时，`hasMore` 以 `maxCachedPn < maxPageByCount` 为准，不再依赖单次请求的 `hasMore`。
-4. 越界页保护（关键）：
-   - 当请求页 `pn > maxPageByCount` 时，判定为越界页请求；
-   - 越界页请求不得抬高 `maxCachedPn`，也不得把 `hasMore` 直接写成 `false`；
-   - `nextPn` 仍按“当前真实 `maxCachedPn + 1`”推导，避免跳页后把缓存状态锁死。
-5. 同一 `bvid` 在跨页重复时，按如下规则合并：
-   - 优先选择 `video.meta.updatedAt` 更新的数据；
-   - 若 `meta.updatedAt` 相同，选择来源页 `fetchedAt` 更新的数据。
+1. 任意 `pn/ps` 请求成功后，都必须先落成一个作者投稿块（记录 `pageNum/pageSize/startIndex/endExclusive/version/videos`）。
+2. 刷新首页（`pn=1`）时必须同步提取版本摘要（`page.count + tlist.Count`），并立即尝试重建主连续缓存。
+3. 无论是否同版本，块拼接都优先尝试“相同 `bvid`”，其次尝试“时间戳接续/交叉”；仅当两者都不满足时，同版本块才允许退回到“绝对序号区间无缝衔接/重叠”的弱证据拼接。跨版本块仍必须依赖前两类证据，不能只靠区间拼接。
+4. 调度器维护目标不再是“把 `maxCachedPn` 推进到更深页”，而是“尽量把主连续缓存维持到目标窗口长度”。
+5. 旧版本块不立即丢弃，允许留在块池中直到超出非连续缓存容量后再淘汰。
 
 #### 3.2.2 收藏夹缓存通道（`group-fav`）
 
@@ -203,28 +198,28 @@ interface LikeActionTask extends SchedulerTaskBase {
   4. 仅当本轮缺失作者都完成至少一轮缓存后，返回 `cacheStatus: 'ready'`。
 - 分组有缓存且作者缓存完整时：返回 `cacheStatus: 'ready'`。
 - 时间流目标片段构造（`1-50`、`51-70`、`71-90`...）时：
-  1. 先尝试使用现有可用缓存构造（只保证首页，第二页可能缺失）。
-  2. 若构造触及某作者“当前缓存最旧一条”且判定仍有潜在可见增量，可提交“边界补页意图”给调度器。
+  1. 先尝试使用现有可用连续缓存构造。
+  2. 若构造触及某作者“当前连续缓存末尾”且判定仍有潜在可见增量，可提交“边界补块意图”给调度器。
      - 潜在可见增量判定同时满足：
        - 未跨过当前时间流可见下界（跨过后继续翻页不会产出当前筛选可见数据）；
-       - 且作者仍有更多页（优先使用 `maxPageByCount` 口径，未知时回退 `hasMore`）。
-  3. 本次请求直接返回当前缓存结果，不等待补页任务完成；前台通过后续轮询或下一次读取拿到更新后结果。
+       - 且作者连续缓存长度仍未覆盖已知总量，或块池/最新版本信息表明仍可能存在后续数据。
+  3. 本次请求直接返回当前缓存结果，不等待补块任务完成；前台通过后续轮询或下一次读取拿到更新后结果。
   4. 若任务失败，不影响当前读取返回；错误记录在调度历史中并通过可观测性通道暴露。
-  5. 构造成功后，按作者回报“本次实际使用到的最大页码 K”（仅统计实际参与目标页组构造的数据页），供常规预取判定是否推进到 `K+1`。
+  5. 补块成功后，必须先写块再重建连续缓存；时间流始终只消费重建后的连续数组。
   6. `hasMoreForMixed` 的判定必须与第 2 条保持同口径，避免出现“按钮可点但无增量”或“仍有增量却提前显示无更多”。
 
 #### 3.4.1.1 REQUEST_AUTHOR_PAGE
 
-`REQUEST_AUTHOR_PAGE(groupId, mid, pn)` 的行为统一为“提交作者分页意图 + 建立一次前台等待会话”：
-1. 若目标页已缓存：立即返回 `{ accepted: true, status: 'cached' }`，不建立等待会话，也不发送后续通知。
+`REQUEST_AUTHOR_PAGE(groupId, mid, pn, ps)` 的行为统一为“提交作者分页意图 + 建立一次前台等待会话”：
+1. 若 `(mid, pn, ps)` 的精确页块已缓存且仍可直接复用：立即返回 `{ accepted: true, status: 'cached' }`，不建立等待会话，也不发送后续通知。
 2. 若已确认作者不存在更多页：立即返回 `{ accepted: false, status: 'no-more' }`，不建立等待会话，也不发送后续通知。
 3. 若目标页未缓存且仍可能存在：立即返回 `{ accepted: true, status: 'queued' }`，并向 Burst 队列提交该页任务。
 4. 对 `status: 'queued'` 的分页请求：
-   - 调度器必须记录“发起页面 + groupId + mid + pn”的等待会话，仅用于该次作者分页反馈；
-   - 当目标页任务成功写入缓存后，向对应内容页发送“页已就绪”通知；
+   - 调度器必须记录“发起页面 + groupId + mid + pn + ps”的等待会话，仅用于该次作者分页反馈；
+   - 当目标页任务成功写入块缓存并完成一次连续缓存重建后，向对应内容页发送“页已就绪”通知；
    - 当目标页任务首次执行失败时，即按该次前台等待会话的终态失败处理：向对应内容页发送“页失败”通知，并结束该次等待会话。
 5. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `MANUAL_REFRESH`、时间流边界补页或收藏夹刷新链路。
-6. 前台收到“页已就绪”通知后，应立即补发一次 `GET_GROUP_FEED`；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
+6. 前台收到“页已就绪”通知后，应立即补发一次分页数据读取；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
 7. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
 
 作者分页前台等待策略：
@@ -335,8 +330,8 @@ persist();
 #### 3.7.1 触发条件
 
 1. 任意作者 `mid` 在 `AuthorVideoCache` 中不存在时，触发 Burst 入列（优先 `pn=1`）。
-2. 时间流构造命中分页边界时，触发 Burst 入列（按 `nextPn` 补页）。
-3. Burst 去重键使用 `(mid, pn)`；同一作者同一页避免重复堆积。
+2. 时间流构造命中分页边界时，触发 Burst 入列（由作者投稿列表服务计算下一块的 `pn + ps`）。
+3. Burst 去重键使用 `(mid, pn, ps)`；同一作者同一请求窗口避免重复堆积。
 
 #### 3.7.2 优先级与阻塞规则
 
@@ -407,12 +402,12 @@ interface ManualRefreshResponse {
 新增作者分页意图消息（前台表达“想看第 N 页”，不等待执行完成）：
 
 ```ts
-| { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number } }
+| { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number; ps: number } }
 
 interface RequestAuthorPageResponse {
   accepted: boolean;
   status: 'queued' | 'cached' | 'no-more';
-  maxCachedPn?: number;
+  maxPage?: number;
 }
 ```
 

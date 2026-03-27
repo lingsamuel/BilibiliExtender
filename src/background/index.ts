@@ -49,6 +49,8 @@ import {
 import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
   buildGroupSyncStatus,
+  getAuthorPageCount,
+  getCachedAuthorPageVideos,
   hasAuthorMorePages,
   increaseMixedTarget,
   makeSummary,
@@ -66,7 +68,6 @@ import {
   getAuthorCacheSnapshot,
   observeBurstTaskFirstResult,
   getStatus,
-  reportAuthorPageUsage,
   runSchedulerNow,
   setupAlarm
 } from '@/background/scheduler';
@@ -97,8 +98,8 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
 }
 
 interface MissingAuthorTaskBuckets {
-  burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
-  priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
+  burst: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
+  priority: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
 }
 
 const ALL_GROUP_ID = VIRTUAL_GROUP_ID.ALL;
@@ -145,20 +146,21 @@ async function sendBatchLikeStatusMessage(
 }
 
 /**
- * 判定某个分组内哪些作者还没有完成“至少一轮作者缓存”并按队列分流：
+ * 判定某个分组内哪些作者还没有完成“至少一轮首页缓存”并按队列分流：
  * - 无缓存：进入 Burst；
- * - 有缓存但无 lastFetchedAt：进入常规优先队列。
+ * - 有缓存但仍缺少首页抓取时间：进入常规优先队列。
  */
 function splitMissingAuthorTasks(
   authorMids: number[],
-  authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>
+  authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>,
+  pageSize: number
 ): MissingAuthorTaskBuckets {
-  const burst: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
-  const priority: Array<{ mid: number; name: string; pn: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
+  const burst: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
+  const priority: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
 
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
-    if (cache?.lastFetchedAt) {
+    if (cache?.lastFirstPageFetchedAt || cache?.firstPageFetchedAt) {
       continue;
     }
 
@@ -166,6 +168,7 @@ function splitMissingAuthorTasks(
       mid,
       name: cache?.name?.trim() || String(mid),
       pn: 1,
+      ps: pageSize,
       reason: 'first-page-refresh' as const,
       trigger: 'get-group-feed-missing-author-cache' as const
     };
@@ -538,12 +541,6 @@ async function handleGetGroupFeed(
     warningMsg: undefined
   };
 
-  if (diagnostics && diagnostics.usedPages.length > 0) {
-    await reportAuthorPageUsage(group.groupId, diagnostics.usedPages);
-    // 仅更新页级使用反馈，不改变本次读取返回的内容。
-    authorCacheMap = await getAuthorCacheSnapshot();
-  }
-
   const hasBoundaryIntent = Boolean(diagnostics && diagnostics.boundaryTasks.length > 0);
   if (hasBoundaryIntent) {
     enqueueBurst(
@@ -558,7 +555,7 @@ async function handleGetGroupFeed(
   const runtimeAfter = JSON.stringify(runtimeMap[group.groupId] ?? null);
   const runtimeChanged = runtimeBefore !== runtimeAfter;
 
-  const missingAuthorTasks = splitMissingAuthorTasks(feedCache.authorMids, authorCacheMap);
+  const missingAuthorTasks = splitMissingAuthorTasks(feedCache.authorMids, authorCacheMap, settings.authorVideosPageSize);
   if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
     enqueueBurst(missingAuthorTasks.burst);
     enqueuePriority(missingAuthorTasks.priority);
@@ -1017,11 +1014,15 @@ async function handleRequestAuthorPage(
   const groupId = request.payload.groupId;
   const mid = Math.max(1, Number(request.payload.mid) || 0);
   const pn = Math.max(1, Number(request.payload.pn) || 1);
+  const ps = Math.max(1, Number(request.payload.ps) || 0);
   if (!groupId) {
     throw new Error('分组参数不合法');
   }
   if (!mid) {
     throw new Error('作者参数不合法');
+  }
+  if (!ps) {
+    throw new Error('分页大小参数不合法');
   }
 
   const [groups, settings, authorCacheMap] = await Promise.all([
@@ -1042,19 +1043,21 @@ async function handleRequestAuthorPage(
   }
 
   const cache = authorCacheMap[mid];
-  if (cache?.pageState[pn]) {
+  const cachedVideos = getCachedAuthorPageVideos(cache, pn, ps);
+  const maxPage = getAuthorPageCount(cache, ps);
+  if (cachedVideos.length > 0) {
     return {
       accepted: true,
       status: 'cached',
-      maxCachedPn: cache.maxCachedPn
+      maxPage
     };
   }
 
-  if (cache && !hasAuthorMorePages(cache) && pn > cache.maxCachedPn) {
+  if (typeof maxPage === 'number' && pn > maxPage) {
     return {
       accepted: false,
       status: 'no-more',
-      maxCachedPn: cache.maxCachedPn
+      maxPage
     };
   }
 
@@ -1064,7 +1067,8 @@ async function handleRequestAuthorPage(
       name: cache?.name?.trim() || String(mid),
       groupId,
       pn,
-      reason: 'load-more-boundary',
+      ps,
+      reason: 'request-author-page',
       trigger: 'request-author-page',
       failFast: false
     },
@@ -1075,6 +1079,7 @@ async function handleRequestAuthorPage(
           groupId,
           mid,
           pn,
+          ps,
           status: result.ok ? 'ready' : 'failed',
           error: result.error
         }
@@ -1088,7 +1093,8 @@ async function handleRequestAuthorPage(
       name: cache?.name?.trim() || String(mid),
       groupId,
       pn,
-      reason: 'load-more-boundary',
+      ps,
+      reason: 'request-author-page',
       trigger: 'request-author-page',
       failFast: false
     }
@@ -1097,7 +1103,31 @@ async function handleRequestAuthorPage(
   return {
     accepted: true,
     status: 'queued',
-    maxCachedPn: cache?.maxCachedPn
+    maxPage
+  };
+}
+
+async function handleGetAuthorPage(
+  request: Extract<MessageRequest, { type: 'GET_AUTHOR_PAGE' }>
+): Promise<ResponseMap['GET_AUTHOR_PAGE']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  const pn = Math.max(1, Number(request.payload.pn) || 1);
+  const ps = Math.max(1, Number(request.payload.ps) || 0);
+  if (!mid || !ps) {
+    throw new Error('作者分页参数不合法');
+  }
+
+  const authorCacheMap = await getAuthorCacheSnapshot();
+  const cache = authorCacheMap[mid];
+  const videos = getCachedAuthorPageVideos(cache, pn, ps);
+  return {
+    available: videos.length > 0,
+    mid,
+    pn,
+    ps,
+    maxPage: getAuthorPageCount(cache, ps),
+    totalCount: cache?.latestKnownTotalCount ?? cache?.latestKnownVersion?.totalCount,
+    videos
   };
 }
 
@@ -1206,6 +1236,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleClearAuthorReadMark(request));
     case 'REQUEST_AUTHOR_PAGE':
       return ok(await handleRequestAuthorPage(request, sender));
+    case 'GET_AUTHOR_PAGE':
+      return ok(await handleGetAuthorPage(request));
     case 'GET_AUTHOR_PREFERENCES':
       return ok(await handleGetAuthorPreferences(request));
     case 'MANUAL_REFRESH':

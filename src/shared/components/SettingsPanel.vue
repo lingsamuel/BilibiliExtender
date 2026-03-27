@@ -162,6 +162,32 @@
       </div>
       <div class="bbe-setting-row">
         <div>
+          连续缓存额外页数
+          <div class="bbe-setting-hint">在固定保留 2 页之外，额外保留多少页的连续作者投稿缓存</div>
+        </div>
+        <input
+          v-model.number="settings.authorContinuousExtraPageCount"
+          class="bbe-input"
+          type="number"
+          min="1"
+          max="10"
+        />
+      </div>
+      <div class="bbe-setting-row">
+        <div>
+          非连续缓存页数
+          <div class="bbe-setting-hint">手动翻页、跳页等产生的候选块缓存上限，按页数折算</div>
+        </div>
+        <input
+          v-model.number="settings.authorNonContinuousCachePageCount"
+          class="bbe-input"
+          type="number"
+          min="1"
+          max="10"
+        />
+      </div>
+      <div class="bbe-setting-row">
+        <div>
           调试模式
           <div class="bbe-setting-hint">开启后侧边栏显示调试入口，可查看调度器状态</div>
         </div>
@@ -178,7 +204,12 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT, AUTHOR_VIDEOS_PAGE_SIZE_MAX } from '@/shared/constants';
+import {
+  AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_DEFAULT,
+  AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT,
+  AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
+  AUTHOR_VIDEOS_PAGE_SIZE_MAX
+} from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
@@ -206,6 +237,8 @@ const settings = ref<ExtensionSettings>({
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   authorVideosPageSize: AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
+  authorContinuousExtraPageCount: AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_DEFAULT,
+  authorNonContinuousCachePageCount: AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT,
   defaultReadMarkDays: 7,
   enableAllGroup: true,
   useStorageSync: true,
