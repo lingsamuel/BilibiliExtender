@@ -21,8 +21,8 @@
             <i class="sic-BDC-danmu_square_line" />
             <span>{{ formattedDanmakuCount }}</span>
           </div>
-          <div v-if="video.durationText" class="bili-cover-card__stat">
-            <span>{{ video.durationText }}</span>
+          <div v-if="formattedDurationText" class="bili-cover-card__stat">
+            <span>{{ formattedDurationText }}</span>
           </div>
         </div>
         <span v-if="watchFinished" class="bbe-tag-finished">已看完</span>
@@ -92,7 +92,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { VideoItem } from '@/shared/types';
-import { formatPubdate, formatVideoPlayCount } from '@/shared/utils/format';
+import { formatPubdate, formatVideoDuration, formatVideoPlayCount } from '@/shared/utils/format';
 import { formatRelativePublishedAt } from '@/shared/utils/time';
 
 const props = defineProps<{
@@ -113,6 +113,7 @@ const emit = defineEmits<{
 const playbackPercent = computed(() => props.video.playbackPosiiton ?? 0);
 const watchFinished = computed(() => playbackPercent.value >= 90);
 const formattedPlayCount = computed(() => formatVideoPlayCount(props.video.playCount));
+const formattedDurationText = computed(() => formatVideoDuration(props.video.durationText));
 const formattedDanmakuCount = computed(() => {
   if (!Number.isFinite(props.video.danmakuCount) || props.video.danmakuCount === undefined || props.video.danmakuCount < 0) {
     return undefined;
@@ -120,7 +121,7 @@ const formattedDanmakuCount = computed(() => {
   return String(Math.floor(props.video.danmakuCount));
 });
 const hasCoverStats = computed(() =>
-  Boolean(formattedPlayCount.value || formattedDanmakuCount.value || props.video.durationText)
+  Boolean(formattedPlayCount.value || formattedDanmakuCount.value || formattedDurationText.value)
 );
 const reviewedState = computed(() => {
   if (props.reviewed !== undefined) {

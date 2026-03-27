@@ -86,3 +86,39 @@ export function formatVideoPlayCount(playCount?: number): string | undefined {
 
   return String(Math.floor(playCount));
 }
+
+/**
+ * B 站投稿接口的时长常以 `分钟:秒` 返回。
+ * 当分钟数超过 60 时，将其转成更易读的 `小时:分钟:秒`。
+ * 非预期格式保持原样返回，避免误伤其他展示来源。
+ */
+export function formatVideoDuration(durationText?: string): string | undefined {
+  if (!durationText) {
+    return undefined;
+  }
+
+  const normalized = durationText.trim();
+  const parts = normalized.split(':');
+  if (parts.length !== 2) {
+    return normalized;
+  }
+
+  const [minutesPart, secondsPart] = parts;
+  if (!/^\d+$/.test(minutesPart) || !/^\d+$/.test(secondsPart)) {
+    return normalized;
+  }
+
+  const totalMinutes = Number(minutesPart);
+  const seconds = Number(secondsPart);
+  if (!Number.isInteger(totalMinutes) || !Number.isInteger(seconds) || seconds < 0 || seconds >= 60) {
+    return normalized;
+  }
+
+  if (totalMinutes < 60) {
+    return normalized;
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  return `${hours}:${String(remainingMinutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
