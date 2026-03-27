@@ -14,22 +14,11 @@
         </div>
         <div v-if="hasCoverStats" class="bbe-card-stats">
           <div v-if="formattedPlayCount" class="bbe-card-stat">
-            <span class="bbe-card-stat-icon" aria-hidden="true">
-              <svg viewBox="0 0 16 16">
-                <path d="M5 3.5L12 8L5 12.5V3.5Z" fill="currentColor" />
-              </svg>
-            </span>
+            <span class="bbe-card-stat-icon bbe-card-stat-icon-play" aria-hidden="true" />
             <span>{{ formattedPlayCount }}</span>
           </div>
           <div v-if="formattedDanmakuCount" class="bbe-card-stat">
-            <span class="bbe-card-stat-icon" aria-hidden="true">
-              <svg viewBox="0 0 16 16">
-                <path
-                  d="M3 4.5C3 3.67157 3.67157 3 4.5 3H11.5C12.3284 3 13 3.67157 13 4.5V9.5C13 10.3284 12.3284 11 11.5 11H8.2L5.4 13V11H4.5C3.67157 11 3 10.3284 3 9.5V4.5Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </span>
+            <span class="bbe-card-stat-icon bbe-card-stat-icon-danmaku" aria-hidden="true" />
             <span>{{ formattedDanmakuCount }}</span>
           </div>
           <div v-if="formattedDurationText" class="bbe-card-stat bbe-card-stat-duration">

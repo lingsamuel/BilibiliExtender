@@ -690,13 +690,27 @@ body.bbe-page-scroll-lock {
   height: var(--bbe-card-stat-icon-size);
   margin-right: 2px;
   flex-shrink: 0;
+  font-family: 'freshspace-zpjpp3aqht';
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+  text-transform: none;
+  speak: none;
+  line-height: 1;
+  vertical-align: baseline;
+  text-rendering: geometricPrecision;
 }
 
-.bbe-card-stat-icon svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  fill: currentColor;
+.bbe-card-stat-icon::after {
+  font-size: var(--bbe-card-stat-icon-size);
+}
+
+.bbe-card-stat-icon-play::after {
+  content: '\e015';
+}
+
+.bbe-card-stat-icon-danmaku::after {
+  content: '\e017';
 }
 
 .bbe-reviewed-check {
