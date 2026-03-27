@@ -1,5 +1,9 @@
 import type { GroupSyncStatus } from '@/shared/types';
 
+interface FormatPubdateOptions {
+  hideCurrentYear?: boolean;
+}
+
 export function formatRelativeMinutes(timestampMs?: number): string {
   if (!timestampMs) {
     return '从未刷新';
@@ -44,13 +48,20 @@ export function formatGroupSyncStatus(status?: GroupSyncStatus): string {
   return `上次同步：${diffMinutes}分钟前`;
 }
 
-export function formatPubdate(seconds: number): string {
+/**
+ * 按本地时区格式化投稿时间。
+ * 可选地在“当前年份”场景下省略年份，用于卡片上的紧凑展示。
+ */
+export function formatPubdate(seconds: number, options: FormatPubdateOptions = {}): string {
   const date = new Date(seconds * 1000);
   const y = date.getFullYear();
   const m = `${date.getMonth() + 1}`.padStart(2, '0');
   const d = `${date.getDate()}`.padStart(2, '0');
   const hh = `${date.getHours()}`.padStart(2, '0');
   const mm = `${date.getMinutes()}`.padStart(2, '0');
+  if (options.hideCurrentYear && y === new Date().getFullYear()) {
+    return `${m}-${d} ${hh}:${mm}`;
+  }
   return `${y}-${m}-${d} ${hh}:${mm}`;
 }
 

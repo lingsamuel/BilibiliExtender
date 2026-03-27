@@ -134,7 +134,7 @@ const displayPubdate = computed(() => {
   if (diffSeconds < 24 * 60 * 60) {
     return formatRelativePublishedAt(props.video.pubdate);
   }
-  return precisePubdate.value;
+  return formatPubdate(props.video.pubdate, { hideCurrentYear: true });
 });
 
 const videoUrl = computed(() => `https://www.bilibili.com/video/${props.video.bvid}`);
