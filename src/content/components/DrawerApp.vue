@@ -609,6 +609,30 @@ interface MixedDayGroupWithDivider {
   videos: MixedVideoWithBoundary[];
 }
 
+function getAuthorVideos(author: Pick<AuthorFeed, 'authorMid' | 'videos'>): VideoItem[] {
+  if (Array.isArray(author.videos)) {
+    return author.videos;
+  }
+  console.error('[BBE] 作者数据缺少 videos，已回退为空数组', {
+    authorMid: author.authorMid,
+    author
+  });
+  return [];
+}
+
+function normalizeFeedSnapshot(data: GroupFeedResult): GroupFeedResult {
+  return {
+    ...data,
+    mixedVideos: Array.isArray(data.mixedVideos) ? data.mixedVideos : [],
+    videosByAuthor: Array.isArray(data.videosByAuthor)
+      ? data.videosByAuthor.map((author) => ({
+        ...author,
+        videos: getAuthorVideos(author)
+      }))
+      : []
+  };
+}
+
 /**
  * 前台统一错误提示入口：只弹通知，不覆盖主内容。
  * 这样即使接口失败，也能保留当前可用缓存内容，避免“整页不可用”。
@@ -856,13 +880,14 @@ const mixedTimelineStyle = computed(() => {
  * 缺失时回退到当前展示视频里的最大 pubdate，确保排序稳定。
  */
 function resolveAuthorLatestPubdate(author: AuthorFeed): number | null {
+  const videos = getAuthorVideos(author);
   if (typeof author.latestPubdate === 'number' && author.latestPubdate > 0) {
     return author.latestPubdate;
   }
-  if (author.videos.length === 0) {
+  if (videos.length === 0) {
     return null;
   }
-  return author.videos.reduce((latest, video) => (video.pubdate > latest ? video.pubdate : latest), author.videos[0].pubdate);
+  return videos.reduce((latest, video) => (video.pubdate > latest ? video.pubdate : latest), videos[0].pubdate);
 }
 
 const byAuthorFeeds = computed<AuthorFeed[]>(() => {
@@ -933,21 +958,23 @@ function getAuthorApiPageSize(author: AuthorFeed): number {
 
 function getAuthorTotalPages(author: AuthorFeed): number {
   const pageSize = getAuthorApiPageSize(author);
+  const videos = getAuthorVideos(author);
   const knownTotalCount = Number(author.totalVideoCount);
   if (Number.isFinite(knownTotalCount) && knownTotalCount >= 0) {
     return Math.max(1, Math.ceil(knownTotalCount / pageSize));
   }
   const exactPages = Object.keys(byAuthorExactPageVideosMap.value[author.authorMid] ?? {}).map((rawPage) => Math.max(1, Number(rawPage) || 1));
   const maxExactPage = exactPages.length > 0 ? Math.max(...exactPages) : 1;
-  return Math.max(maxExactPage, Math.max(1, Math.ceil(author.videos.length / pageSize)));
+  return Math.max(maxExactPage, Math.max(1, Math.ceil(videos.length / pageSize)));
 }
 
 function getAuthorTotalCount(author: AuthorFeed): number {
+  const videos = getAuthorVideos(author);
   const knownTotalCount = Number(author.totalVideoCount);
   if (Number.isFinite(knownTotalCount) && knownTotalCount >= 0) {
-    return Math.max(author.videos.length, Math.floor(knownTotalCount));
+    return Math.max(videos.length, Math.floor(knownTotalCount));
   }
-  return Math.max(author.videos.length, getAuthorTotalPages(author) * getAuthorApiPageSize(author));
+  return Math.max(videos.length, getAuthorTotalPages(author) * getAuthorApiPageSize(author));
 }
 
 function getAuthorCurrentPage(author: AuthorFeed): number {
@@ -959,8 +986,9 @@ function getAuthorCurrentPage(author: AuthorFeed): number {
 const byAuthorVisibleVideosMap = computed<Record<number, VideoItem[]>>(() => {
   const result: Record<number, VideoItem[]> = {};
   for (const author of byAuthorFeeds.value) {
+    const videos = getAuthorVideos(author);
     if (!isByAuthorPaginationEnabled.value) {
-      result[author.authorMid] = author.videos;
+      result[author.authorMid] = videos;
       continue;
     }
     const currentPage = getAuthorCurrentPage(author);
@@ -970,7 +998,7 @@ const byAuthorVisibleVideosMap = computed<Record<number, VideoItem[]>>(() => {
       continue;
     }
     if (currentPage === 1) {
-      result[author.authorMid] = author.videos.slice(0, getAuthorApiPageSize(author));
+      result[author.authorMid] = videos.slice(0, getAuthorApiPageSize(author));
       continue;
     }
     result[author.authorMid] = [];
@@ -1339,7 +1367,7 @@ function patchAuthorInFeed(
     if (patch.face) {
       author.authorFace = patch.face;
     }
-    for (const video of author.videos) {
+    for (const video of getAuthorVideos(author)) {
       if (patch.name) {
         video.authorName = patch.name;
       }
@@ -1560,10 +1588,13 @@ function hasRenderableFeedData(data: GroupFeedResult | null | undefined): boolea
   if (!data) {
     return false;
   }
-  if (data.mixedVideos.length > 0) {
+  if (Array.isArray(data.mixedVideos) && data.mixedVideos.length > 0) {
     return true;
   }
-  return data.videosByAuthor.some((author) => author.videos.length > 0);
+  if (!Array.isArray(data.videosByAuthor)) {
+    return false;
+  }
+  return data.videosByAuthor.some((author) => getAuthorVideos(author).length > 0);
 }
 
 function applyFeedWarning(data: GroupFeedResult | null | undefined): void {
@@ -1571,7 +1602,7 @@ function applyFeedWarning(data: GroupFeedResult | null | undefined): void {
 }
 
 function applyFeedSnapshot(data: GroupFeedResult): void {
-  feed.value = data;
+  feed.value = normalizeFeedSnapshot(data);
   syncAuthorPaginationStateWithFeed();
   applyFeedWarning(data);
   readMarkTimestamps.value = data.readMarkTimestamps;
@@ -1687,7 +1718,7 @@ function collectAllBvids(): string[] {
   }
   const bvids = new Set<string>();
   feed.value.mixedVideos.forEach((v) => bvids.add(v.bvid));
-  feed.value.videosByAuthor.forEach((a) => a.videos.forEach((v) => bvids.add(v.bvid)));
+  feed.value.videosByAuthor.forEach((author) => getAuthorVideos(author).forEach((video) => bvids.add(video.bvid)));
   return Array.from(bvids);
 }
 
@@ -1906,9 +1937,10 @@ function syncAuthorPaginationStateWithFeed(): void {
     const totalPages = getAuthorTotalPages(author);
     const pendingTarget = nextPendingMap[author.authorMid];
     const normalizedPendingTarget = pendingTarget ? Math.min(totalPages, Math.max(1, pendingTarget)) : undefined;
+    const videos = getAuthorVideos(author);
     nextExactPageVideosMap[author.authorMid] = {
       ...(byAuthorExactPageVideosMap.value[author.authorMid] ?? {}),
-      1: author.videos.slice(0, getAuthorApiPageSize(author))
+      1: videos.slice(0, getAuthorApiPageSize(author))
     };
 
     if (normalizedPendingTarget && nextExactPageVideosMap[author.authorMid][normalizedPendingTarget]) {
@@ -2390,12 +2422,7 @@ function startPoll(maxAttempts: number): void {
         stopPoll();
         generating.value = false;
         refreshing.value = false;
-        feed.value = resp.data;
-        syncAuthorPaginationStateWithFeed();
-        applyFeedWarning(resp.data);
-        readMarkTimestamps.value = resp.data.readMarkTimestamps;
-        graceReadMarkTs.value = resp.data.graceReadMarkTs;
-        syncSelectedReadFilterKey();
+        applyFeedSnapshot(resp.data);
 
         await fetchClickedVideos();
         await loadSummary();
@@ -2404,11 +2431,7 @@ function startPoll(maxAttempts: number): void {
 
       // 刷新尚未完成时，若已出现部分可展示内容，则先展示增量结果并继续轮询。
       if (hasRenderableFeedData(resp.data)) {
-        feed.value = resp.data;
-        syncAuthorPaginationStateWithFeed();
-        applyFeedWarning(resp.data);
-        readMarkTimestamps.value = resp.data.readMarkTimestamps;
-        graceReadMarkTs.value = resp.data.graceReadMarkTs;
+        applyFeedSnapshot(resp.data);
       }
     } catch {
       // 轮询中的错误静默忽略
@@ -2451,11 +2474,7 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
     if (resp.data.cacheStatus === 'generating') {
       generating.value = true;
       if (hasRenderableFeedData(resp.data)) {
-        feed.value = resp.data;
-        syncAuthorPaginationStateWithFeed();
-        applyFeedWarning(resp.data);
-        readMarkTimestamps.value = resp.data.readMarkTimestamps;
-        graceReadMarkTs.value = resp.data.graceReadMarkTs;
+        applyFeedSnapshot(resp.data);
       } else {
         feed.value = null;
         syncAuthorPaginationStateWithFeed();
@@ -2468,20 +2487,22 @@ async function loadFeed(options?: { loadMore?: boolean }): Promise<void> {
 
     // 加载更多时增量追加，避免整体替换导致列表跳动
     if (isLoadMore && feed.value) {
+      const normalizedFeed = normalizeFeedSnapshot(resp.data);
       const existingBvids = new Set(feed.value.mixedVideos.map((v) => v.bvid));
-      const newVideos = resp.data.mixedVideos.filter((v) => !existingBvids.has(v.bvid));
+      const newVideos = normalizedFeed.mixedVideos.filter((v) => !existingBvids.has(v.bvid));
       feed.value.mixedVideos.push(...newVideos);
-      feed.value.hasMoreForMixed = resp.data.hasMoreForMixed;
-      feed.value.warningMsg = resp.data.warningMsg;
+      feed.value.hasMoreForMixed = normalizedFeed.hasMoreForMixed;
+      feed.value.warningMsg = normalizedFeed.warningMsg;
     } else {
-      feed.value = resp.data;
+      applyFeedSnapshot(resp.data);
     }
-    syncAuthorPaginationStateWithFeed();
-    applyFeedWarning(resp.data);
-
-    readMarkTimestamps.value = resp.data.readMarkTimestamps;
-    graceReadMarkTs.value = resp.data.graceReadMarkTs;
-    syncSelectedReadFilterKey();
+    if (isLoadMore && feed.value) {
+      syncAuthorPaginationStateWithFeed();
+      applyFeedWarning(feed.value);
+      readMarkTimestamps.value = feed.value.readMarkTimestamps;
+      graceReadMarkTs.value = feed.value.graceReadMarkTs;
+      syncSelectedReadFilterKey();
+    }
 
     await fetchClickedVideos();
     if (!options?.loadMore) {
@@ -2516,12 +2537,7 @@ async function reloadFeedWithReadMark(options?: { silent?: boolean }): Promise<v
       throw new Error(resp.error ?? '加载分组内容失败');
     }
 
-    feed.value = resp.data;
-    syncAuthorPaginationStateWithFeed();
-    applyFeedWarning(resp.data);
-    readMarkTimestamps.value = resp.data.readMarkTimestamps;
-    graceReadMarkTs.value = resp.data.graceReadMarkTs;
-    syncSelectedReadFilterKey();
+    applyFeedSnapshot(resp.data);
     await fetchClickedVideos();
     await loadSummary();
   } finally {
