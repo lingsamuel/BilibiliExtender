@@ -2923,12 +2923,15 @@ const mixedAuthorReadMarkBoundaryMap = computed<Record<number, number>>(() => {
 });
 
 /**
- * 时间流下命中“作者级逻辑已阅”的视频卡片默认半透明。
+ * 时间流下，命中“作者级逻辑已阅”或“视频已看过”的卡片默认半透明。
  * hover 时由样式恢复为不透明，避免影响快速扫读。
  */
 function shouldDimMixedVideo(video: VideoItem): boolean {
   if (mode.value !== 'mixed') {
     return false;
+  }
+  if (isVideoReviewed(video)) {
+    return true;
   }
   const boundaryTs = mixedAuthorReadMarkBoundaryMap.value[video.authorMid];
   return typeof boundaryTs === 'number' && boundaryTs > 0 && video.pubdate <= boundaryTs;
