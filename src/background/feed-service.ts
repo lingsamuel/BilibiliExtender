@@ -1,4 +1,4 @@
-import { AUTHOR_VIDEOS_PAGE_SIZE, MIXED_LOAD_INCREMENT, VIRTUAL_GROUP_ID } from '@/shared/constants';
+import { MIXED_LOAD_INCREMENT, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
 import { normalizeDefaultReadMarkDays } from '@/shared/utils/settings';
 import { getRecentDaysBoundaryTs, isWithinRecentDays } from '@/shared/utils/time';
@@ -183,12 +183,13 @@ export async function refreshAuthorCache(
   mid: number,
   name: string,
   authorCacheMap: AuthorCacheMap,
+  settings: Pick<ExtensionSettings, 'authorVideosPageSize'>,
   options?: { pn?: number }
 ): Promise<AuthorVideoCache> {
   const existing = authorCacheMap[mid];
   const pn = Math.max(1, options?.pn ?? 1);
   const pageFetchedAt = Date.now();
-  const { videos, hasMore, totalCount, pageSize } = await getUploaderVideos(mid, pn, AUTHOR_VIDEOS_PAGE_SIZE);
+  const { videos, hasMore, totalCount, pageSize } = await getUploaderVideos(mid, pn, settings.authorVideosPageSize);
   const nextTotalCount = Number.isFinite(totalCount) && totalCount >= 0
     ? Math.floor(totalCount)
     : existing?.totalCount;
@@ -1057,7 +1058,7 @@ export function toFeedResult(
       ).sort((a, b) => a - b),
       hasMorePages: authorCacheMap[mid] ? hasAuthorMorePages(authorCacheMap[mid]) : false,
       totalVideoCount: authorCacheMap[mid]?.totalCount,
-      apiPageSize: authorCacheMap[mid]?.apiPageSize ?? AUTHOR_VIDEOS_PAGE_SIZE,
+      apiPageSize: authorCacheMap[mid]?.apiPageSize ?? settings.authorVideosPageSize,
       videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),
       hasOnlyExtraOlderVideos:
         mode === 'byAuthor' &&
@@ -1219,7 +1220,7 @@ export function toFeedResult(
     hasMoreForMixed,
     readMarkTimestamps: isAllGroup ? [] : readMarkTimestamps,
     graceReadMarkTs: getRecentDaysBaselineTs(normalizedRecentDays),
-    byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE
+    byAuthorPageSize: settings.authorVideosPageSize
   };
 
   return result;

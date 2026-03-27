@@ -149,6 +149,19 @@
       </div>
       <div class="bbe-setting-row">
         <div>
+          作者投稿每页数量
+          <div class="bbe-setting-hint">控制作者投稿接口的每页请求数量，默认 24，最大 42</div>
+        </div>
+        <input
+          v-model.number="settings.authorVideosPageSize"
+          class="bbe-input"
+          type="number"
+          min="1"
+          :max="AUTHOR_VIDEOS_PAGE_SIZE_MAX"
+        />
+      </div>
+      <div class="bbe-setting-row">
+        <div>
           调试模式
           <div class="bbe-setting-hint">开启后侧边栏显示调试入口，可查看调度器状态</div>
         </div>
@@ -165,6 +178,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT, AUTHOR_VIDEOS_PAGE_SIZE_MAX } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
@@ -191,6 +205,7 @@ const settings = ref<ExtensionSettings>({
   schedulerBatchSize: 10,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
+  authorVideosPageSize: AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
   defaultReadMarkDays: 7,
   enableAllGroup: true,
   useStorageSync: true,

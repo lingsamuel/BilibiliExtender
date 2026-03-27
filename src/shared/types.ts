@@ -20,6 +20,8 @@ export interface ExtensionSettings {
   schedulerBatchSize: number;
   timelineMixedMaxCount: number;
   extraOlderVideoCount: number;
+  // 控制作者投稿接口 ps 参数的默认值，并作为前端分页兜底口径。
+  authorVideosPageSize: number;
   defaultReadMarkDays: number;
   // 控制是否在侧栏展示默认“全部”聚合分组。
   enableAllGroup: boolean;

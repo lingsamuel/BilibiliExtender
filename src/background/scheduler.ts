@@ -753,7 +753,8 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
 }
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
-  await refreshAuthorCache(task.mid, task.name, authorCacheMap, { pn: task.pn });
+  const settings = await loadSettings();
+  await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, { pn: task.pn });
 }
 
 /**

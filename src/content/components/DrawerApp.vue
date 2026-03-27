@@ -411,7 +411,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import {
-  AUTHOR_VIDEOS_PAGE_SIZE,
+  AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
   EXTENSION_EVENT,
   POLL_INTERVAL_MS,
   POLL_MAX_REFRESHING,
@@ -925,7 +925,7 @@ const isByAuthorPaginationEnabled = computed(() => {
 });
 
 function getAuthorApiPageSize(author: AuthorFeed): number {
-  return Math.max(1, Number(author.apiPageSize) || feed.value?.byAuthorPageSize || AUTHOR_VIDEOS_PAGE_SIZE);
+  return Math.max(1, Number(author.apiPageSize) || feed.value?.byAuthorPageSize || AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT);
 }
 
 function getAuthorTotalPages(author: AuthorFeed): number {

@@ -1,4 +1,4 @@
-import { AUTHOR_VIDEOS_PAGE_SIZE, DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
+import { DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import {
   coinVideo,
   getMyCreatedFolders,
@@ -492,7 +492,7 @@ async function handleGetGroupFeed(
       hasMoreForMixed: false,
       readMarkTimestamps: [],
       graceReadMarkTs: 0,
-      byAuthorPageSize: AUTHOR_VIDEOS_PAGE_SIZE,
+      byAuthorPageSize: settings.authorVideosPageSize,
       cacheStatus: 'generating'
     };
   }

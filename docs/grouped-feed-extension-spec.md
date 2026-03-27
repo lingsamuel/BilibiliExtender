@@ -527,6 +527,7 @@ interface GroupFeedCache {
 | `backgroundRefreshIntervalMinutes` | 作者缓存刷新间隔（分钟） | `author-video` 通道 alarm 周期 | 10 | 5–120 |
 | `groupFavRefreshIntervalMinutes` | 收藏夹缓存刷新间隔（分钟） | `group-fav` 通道 alarm 周期 | 10 | 5–120 |
 | `schedulerBatchSize` | 每批任务数 | 调度器每个通道每批最多执行任务数（全通道共享） | 10 | 1–50 |
+| `authorVideosPageSize` | 作者投稿每页数量 | 作者投稿接口 `ps` 参数默认值，并作为分页展示兜底口径 | 24 | 1–42 |
 | `enableAllGroup` | 显示“全部”分组 | 是否在侧栏显示默认聚合分组 | `true` | `true/false` |
 
 ### 4.6 红点（未读）规则
@@ -553,6 +554,7 @@ interface GroupFeedCache {
 - `schedulerBatchSize`：调度器每批任务数（默认 10，全通道共享）。
 - `timelineMixedMaxCount`：时间流模式目标基数（默认 50）。
 - `extraOlderVideoCount`：按作者视图下已阅前额外展示数量（默认 1）。
+- `authorVideosPageSize`：作者投稿每页数量，控制投稿接口 `ps` 参数默认值（默认 24，最大 42）。
 - `defaultReadMarkDays`：全局默认近期天数，允许 `1-30` 任意整数，默认 `7`，并作为时间流“至少展示窗口”的基准。
 - `enableAllGroup`：是否显示默认“全部”聚合分组（默认开启）。
 - `useStorageSync`：是否启用 `chrome.storage.sync`（默认开；超限时回退 local 并提示）。
@@ -624,6 +626,7 @@ interface ExtensionSettings {
   schedulerBatchSize: number; // default 10
   timelineMixedMaxCount: number; // default 50
   extraOlderVideoCount: number; // default 1
+  authorVideosPageSize: number; // default 24, max 42
   enableAllGroup: boolean; // default true
   useStorageSync: boolean;
 }
@@ -729,10 +732,11 @@ interface VideoItem {
 5. 作者缓存与收藏夹缓存均支持独立后台定时刷新，两个默认间隔均为 10 分钟。
 6. 作者级视频缓存跨分组共享，避免重复请求同一 UP 主。
 7. 混合模式初始目标默认 50，支持“触底 + 按钮”双触发追加 20，超出目标不裁剪。
-8. 作者视图仅在“全部投稿 + 全部”场景下支持作者内分页，分页大小使用投稿 API 的 `ps` 参数值，且分页器整体水平居中。
+8. 作者视图仅在“全部投稿 + 全部”场景下支持作者内分页，分页大小由高级设置 `authorVideosPageSize` 控制请求默认值，并优先展示投稿 API 实际返回的 `ps` 参数值，且分页器整体水平居中。
 9. 红点按“有效已阅基线”生效：全部投稿筛选（全部/7/14/30 天、10/30 条）不影响分组红点和 Header unread，时间流临时 `全部` 也不影响持久化基线。
 10. 设置页“分组列表”每行提供“立即刷新”按钮，行为与抽屉手动刷新一致。
 11. 设置页支持配置 `schedulerBatchSize`，并对所有调度通道同时生效。
+11.1 设置页高级模式支持配置 `authorVideosPageSize`，默认 `24`，最大 `42`。
 12. 调试页支持“立刻发起调度”；触发后下一次自动调度时间从当前时刻重新起算（`now + interval`）。
 13. 调试页支持 Burst 模式监控：可查看 Burst 队列、当前任务（分组名 + 作者名；缺失作者名时回退 MID）、下一次可执行时间，以及是否处于“错误冷却（60s）”。
 14. “近期投稿”模式支持“按更新时间倒序”勾选项，默认勾选，且按分组记忆勾选状态。
