@@ -82,7 +82,6 @@ export type MessageRequest =
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
   | { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
-  | { type: 'MARK_ALL_GROUPS_READ' }
   | { type: 'GET_SCHEDULER_STATUS' }
   | { type: 'RUN_SCHEDULER_NOW' };
 
@@ -332,7 +331,6 @@ export interface ResponseMap {
     maxCachedPn?: number;
   };
   GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };
-  MARK_ALL_GROUPS_READ: { marks: Record<string, GroupReadMark>; readMarkTs: number };
   GET_SCHEDULER_STATUS: SchedulerStatusResponse;
   RUN_SCHEDULER_NOW: {
     accepted: true;

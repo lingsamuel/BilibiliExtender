@@ -669,38 +669,6 @@ async function handleClearGroupReadMark(
   return result;
 }
 
-async function handleMarkAllGroupsRead(): Promise<ResponseMap['MARK_ALL_GROUPS_READ']> {
-  const [groups, settings, runtimeMap] = await Promise.all([
-    loadGroups(),
-    loadSettings(),
-    loadRuntimeStateMap()
-  ]);
-  const enabledGroups = groups.filter((item) => item.enabled);
-  const readMarkTs = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
-  const mergedMarks: Record<string, GroupReadMark> = {};
-
-  for (const group of enabledGroups) {
-    const marks = await appendGroupReadMark(group.groupId, readMarkTs);
-    if (marks[group.groupId]) {
-      mergedMarks[group.groupId] = marks[group.groupId];
-    }
-    const runtime = runtimeMap[group.groupId] ?? {
-      groupId: group.groupId,
-      unreadCount: 0,
-      mixedTargetCount: settings.timelineMixedMaxCount
-    };
-    runtime.savedReadMarkTs = readMarkTs;
-    runtime.savedRecentDays = runtime.savedRecentDays ?? settings.defaultReadMarkDays;
-    runtimeMap[group.groupId] = runtime;
-  }
-  await saveRuntimeStateMap(runtimeMap);
-
-  return {
-    marks: mergedMarks,
-    readMarkTs
-  };
-}
-
 async function handleGetGroupReadMarks(
   request: Extract<MessageRequest, { type: 'GET_GROUP_READ_MARKS' }>
 ): Promise<ResponseMap['GET_GROUP_READ_MARKS']> {
@@ -1208,8 +1176,6 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleUndoGroupReadMark(request));
     case 'CLEAR_GROUP_READ_MARK':
       return ok(await handleClearGroupReadMark(request));
-    case 'MARK_ALL_GROUPS_READ':
-      return ok(await handleMarkAllGroupsRead());
     case 'FOLLOW_AUTHOR':
       return ok(await handleFollowAuthor(request, sender));
     case 'LIKE_VIDEO':
