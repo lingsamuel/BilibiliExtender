@@ -754,6 +754,16 @@ export async function clearAuthorReadMark(mid: number): Promise<AuthorPreference
   return next;
 }
 
+function getActiveCacheVideos(cache: AuthorVideoCache | undefined): VideoItem[] {
+  if (!cache) {
+    return [];
+  }
+  if (Array.isArray(cache.continuousVideos) && cache.continuousVideos.length > 0) {
+    return cache.continuousVideos;
+  }
+  return Array.isArray(cache.videos) ? cache.videos : [];
+}
+
 /**
  * 清理“孤儿点击记录”：
  * 仅当某个 bvid 已不在任意作者缓存中时，才删除对应点击记录。
@@ -767,7 +777,7 @@ export async function cleanOrphanClicks(authorVideoCacheMap?: AuthorVideoCacheMa
   const activeBvids = new Set<string>();
 
   for (const cache of Object.values(cacheMap)) {
-    for (const video of cache.videos) {
+    for (const video of getActiveCacheVideos(cache)) {
       activeBvids.add(video.bvid);
     }
   }
@@ -801,7 +811,7 @@ export async function cleanOrphanReviewedOverrides(
   const activeBvids = new Set<string>();
 
   for (const cache of Object.values(cacheMap)) {
-    for (const video of cache.videos) {
+    for (const video of getActiveCacheVideos(cache)) {
       activeBvids.add(video.bvid);
     }
   }
