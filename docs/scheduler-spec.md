@@ -211,16 +211,17 @@ interface LikeActionTask extends SchedulerTaskBase {
 #### 3.4.1.1 REQUEST_AUTHOR_PAGE
 
 `REQUEST_AUTHOR_PAGE(groupId, mid, pn, ps)` 的行为统一为“提交作者分页意图 + 建立一次前台等待会话”：
-1. 若 `(mid, pn, ps)` 的精确页块已缓存且仍可直接复用：立即返回 `{ accepted: true, status: 'cached' }`，不建立等待会话，也不发送后续通知。
-2. 若已确认作者不存在更多页：立即返回 `{ accepted: false, status: 'no-more' }`，不建立等待会话，也不发送后续通知。
-3. 若目标页未缓存且仍可能存在：立即返回 `{ accepted: true, status: 'queued' }`，并向 Burst 队列提交该页任务。
-4. 对 `status: 'queued'` 的分页请求：
+1. 若已确认作者不存在更多页：立即返回 `{ accepted: false, status: 'no-more' }`，不建立等待会话，也不发送后续通知。
+2. 只要是用户主动翻页/跳页请求，后台都应立即返回 `{ accepted: true, status: 'queued', requestedAt }`，并向 Burst 队列提交该页任务；后台持久化分页缓存不再作为手动翻页的直接命中。
+3. 对 `status: 'queued'` 的分页请求：
    - 调度器必须记录“发起页面 + groupId + mid + pn + ps”的等待会话，仅用于该次作者分页反馈；
    - 当目标页任务成功写入块缓存并完成一次连续缓存重建后，向对应内容页发送“页已就绪”通知；
    - 当目标页任务首次执行失败时，即按该次前台等待会话的终态失败处理：向对应内容页发送“页失败”通知，并结束该次等待会话。
-5. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV` 或时间流边界补页。
-6. 前台收到“页已就绪”通知后，应立即补发一次分页数据读取；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
-7. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
+4. 前台在当前内容页会话内可复用最近一次手动分页得到的结果，复用有效期使用设置项 `refreshIntervalMinutes`；页面刷新后该会话缓存必须失效。
+5. 前台等待目标页时，读取精确页块必须校验 `fetchedAt >= requestedAt`，避免旧持久化页块被误认为本次手动请求的结果。
+6. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV` 或时间流边界补页。
+7. 前台收到“页已就绪”通知后，应立即补发一次分页数据读取；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
+8. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
 
 作者分页前台等待策略：
 1. `status: 'queued'` 后立即启动兜底轮询，但轮询只用于作者分页当前等待会话。
@@ -417,8 +418,9 @@ interface RefreshGroupResponse {
 
 interface RequestAuthorPageResponse {
   accepted: boolean;
-  status: 'queued' | 'cached' | 'no-more';
+  status: 'queued' | 'no-more';
   maxPage?: number;
+  requestedAt?: number;
 }
 ```
 

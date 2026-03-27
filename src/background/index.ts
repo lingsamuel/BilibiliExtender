@@ -50,7 +50,7 @@ import type { GroupConfig, GroupReadMark } from '@/shared/types';
 import {
   buildGroupSyncStatus,
   getAuthorPageCount,
-  getCachedAuthorPageVideos,
+  getCachedAuthorPageSnapshot,
   hasAuthorMorePages,
   increaseMixedTarget,
   makeSummary,
@@ -1043,15 +1043,7 @@ async function handleRequestAuthorPage(
   }
 
   const cache = authorCacheMap[mid];
-  const cachedVideos = getCachedAuthorPageVideos(cache, pn, ps);
   const maxPage = getAuthorPageCount(cache, ps);
-  if (cachedVideos.length > 0) {
-    return {
-      accepted: true,
-      status: 'cached',
-      maxPage
-    };
-  }
 
   if (typeof maxPage === 'number' && pn > maxPage) {
     return {
@@ -1060,6 +1052,8 @@ async function handleRequestAuthorPage(
       maxPage
     };
   }
+
+  const requestedAt = Date.now();
 
   observeBurstTaskFirstResult(
     {
@@ -1103,7 +1097,8 @@ async function handleRequestAuthorPage(
   return {
     accepted: true,
     status: 'queued',
-    maxPage
+    maxPage,
+    requestedAt
   };
 }
 
@@ -1119,15 +1114,16 @@ async function handleGetAuthorPage(
 
   const authorCacheMap = await getAuthorCacheSnapshot();
   const cache = authorCacheMap[mid];
-  const videos = getCachedAuthorPageVideos(cache, pn, ps);
+  const snapshot = getCachedAuthorPageSnapshot(cache, pn, ps);
   return {
-    available: videos.length > 0,
+    available: snapshot.videos.length > 0,
     mid,
     pn,
     ps,
     maxPage: getAuthorPageCount(cache, ps),
     totalCount: cache?.latestKnownTotalCount ?? cache?.latestKnownVersion?.totalCount,
-    videos
+    fetchedAt: snapshot.fetchedAt,
+    videos: snapshot.videos
   };
 }
 

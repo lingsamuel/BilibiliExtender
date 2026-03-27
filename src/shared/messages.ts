@@ -341,8 +341,9 @@ export interface ResponseMap {
   CLEAR_AUTHOR_READ_MARK: { preference: AuthorPreference };
   REQUEST_AUTHOR_PAGE: {
     accepted: boolean;
-    status: 'queued' | 'cached' | 'no-more';
+    status: 'queued' | 'no-more';
     maxPage?: number;
+    requestedAt?: number;
   };
   GET_AUTHOR_PAGE: {
     available: boolean;
@@ -351,6 +352,7 @@ export interface ResponseMap {
     ps: number;
     maxPage?: number;
     totalCount?: number;
+    fetchedAt?: number;
     videos: VideoItem[];
   };
   GET_AUTHOR_PREFERENCES: { preferences: Record<number, AuthorPreference> };

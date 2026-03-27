@@ -181,6 +181,21 @@ function getPageBlock(
     .sort((a, b) => b.fetchedAt - a.fetchedAt)[0];
 }
 
+function getCachedAuthorPageFetchedAt(
+  cache: AuthorVideoCache | undefined,
+  pn: number,
+  ps: number
+): number | undefined {
+  const exactBlock = getPageBlock(cache, pn, ps);
+  if (exactBlock) {
+    return exactBlock.fetchedAt;
+  }
+  if (pn === 1) {
+    return getCacheFirstPageFetchedAt(cache);
+  }
+  return undefined;
+}
+
 function getAuthorMaxPage(cache: AuthorVideoCache | undefined, pageSize: number): number | undefined {
   const totalCount = getLatestKnownTotalCount(cache);
   if (totalCount === undefined) {
@@ -565,6 +580,17 @@ export function getAuthorPageCount(
   return getAuthorMaxPage(cache, ps);
 }
 
+export function getCachedAuthorPageSnapshot(
+  cache: AuthorVideoCache | undefined,
+  pn: number,
+  ps: number
+): { videos: VideoItem[]; fetchedAt?: number } {
+  return {
+    videos: getCachedAuthorPageVideos(cache, pn, ps),
+    fetchedAt: getCachedAuthorPageFetchedAt(cache, pn, ps)
+  };
+}
+
 /**
  * 从收藏夹拉取视频列表并提取作者列表，同时更新 feedCacheMap。
  * 返回作者列表供调度器生成任务。
@@ -696,7 +722,7 @@ export function buildGroupSyncStatus(
       continue;
     }
 
-    if (!oldestFreshFetchedAt || fetchedAt < oldestFreshFetchedAt) {
+    if (typeof fetchedAt === 'number' && (!oldestFreshFetchedAt || fetchedAt < oldestFreshFetchedAt)) {
       oldestFreshFetchedAt = fetchedAt;
     }
   }
