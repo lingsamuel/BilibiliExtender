@@ -39,6 +39,35 @@
         </div>
       </div>
 
+      <div
+        v-if="refreshConfirmDialog.visible"
+        class="bbe-dialog-backdrop"
+        @click.self="closeRefreshConfirmDialog(false)"
+      >
+        <section
+          class="bbe-dialog-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="bbe-refresh-dialog-title"
+        >
+          <h3 id="bbe-refresh-dialog-title" class="bbe-dialog-title">批量刷新提醒</h3>
+          <p class="bbe-dialog-text">
+            这个刷新会批量请求当前分组下作者的投稿列表，并同步刷新收藏夹作者列表。短时间内请求较多时，可能触发访问限制。
+          </p>
+          <p class="bbe-dialog-text">
+            建议优先手动点击某个作者自己的刷新按钮，只在确实需要整组批量刷新时再继续。
+          </p>
+          <label class="bbe-dialog-check">
+            <input v-model="refreshConfirmDialog.dontShowAgain" type="checkbox" />
+            <span>不再提示</span>
+          </label>
+          <div class="bbe-dialog-actions">
+            <button class="bbe-btn" type="button" @click="closeRefreshConfirmDialog(false)">取消</button>
+            <button class="bbe-btn primary" type="button" @click="closeRefreshConfirmDialog(true)">继续刷新</button>
+          </div>
+        </section>
+      </div>
+
       <section v-if="isDebugView" class="bbe-list bbe-settings-scroll">
         <DebugPanel />
       </section>
@@ -96,8 +125,7 @@
             <span v-if="isUpdating" class="bbe-spinner" aria-hidden="true" />
             <span>{{ refreshText }}</span>
           </span>
-          <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="refreshPosts">刷新投稿列表</button>
-          <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="refreshFav">刷新收藏夹</button>
+          <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="refreshGroup">刷新</button>
           <button class="bbe-btn" @click="closeDrawer">关闭</button>
         </div>
       </header>
@@ -474,6 +502,7 @@ const AUTHOR_TITLE_STICKY_SCROLLTOP_EPSILON_PX = 1;
 const AUTHOR_PAGE_POLL_FAST_ATTEMPTS = 3;
 const AUTHOR_PAGE_POLL_FAST_INTERVAL_MS = 500;
 const AUTHOR_PAGE_POLL_SLOW_INTERVAL_MS = 1000;
+const GROUP_REFRESH_WARNING_SUPPRESSED_KEY = 'drawer.groupRefreshWarningSuppressed';
 const ENTRY_ID = {
   ALL: VIRTUAL_GROUP_ID.ALL,
   SETTINGS: '__bbe_settings__',
@@ -538,6 +567,7 @@ const loading = ref(false);
 const loadingMore = ref(false);
 const refreshing = ref(false);
 const generating = ref(false);
+const suppressGroupRefreshWarning = ref(false);
 const mode = ref<ViewMode>('mixed');
 const summaries = ref<GroupSummary[]>([]);
 const activeGroupId = ref('');
@@ -583,6 +613,11 @@ const mixedTimelineNodeTopMap = ref<Record<string, number>>({});
 const mixedTimelineHeight = ref(0);
 const mixedTimelineWindow = ref<{ start: number; end: number }>({ start: 0, end: -1 });
 const mixedTimelineFocusIndex = ref(0);
+const refreshConfirmDialog = ref({
+  visible: false,
+  dontShowAgain: false
+});
+let refreshConfirmResolver: ((confirmed: boolean) => void) | null = null;
 let mixedTimelineResizeObserver: ResizeObserver | null = null;
 const byAuthorSectionElements = new Map<number, HTMLElement>();
 const byAuthorNavItemElements = new Map<number, HTMLElement>();
@@ -2729,6 +2764,7 @@ async function openDrawer(): Promise<void> {
 
 function closeDrawer(): void {
   visible.value = false;
+  closeRefreshConfirmDialog(false);
   likedStateMap.value = {};
   followPendingMap.value = {};
   authorLikePendingMap.value = {};
@@ -2777,16 +2813,66 @@ async function submitGroupRefresh(type: 'REFRESH_GROUP_POSTS' | 'REFRESH_GROUP_F
   }
 }
 
-async function refreshPosts(): Promise<void> {
-  const confirmed = window.confirm('确认刷新投稿列表吗？这会同时刷新当前分组的收藏夹作者列表，并继续为相关作者发起投稿刷新请求。');
+async function loadGroupRefreshWarningPreference(): Promise<void> {
+  try {
+    const stored = await ext.storage.local.get(GROUP_REFRESH_WARNING_SUPPRESSED_KEY);
+    suppressGroupRefreshWarning.value = stored[GROUP_REFRESH_WARNING_SUPPRESSED_KEY] === true;
+  } catch {
+    // 仅影响提醒展示，读取失败时保持默认每次提示即可。
+  }
+}
+
+function closeRefreshConfirmDialog(confirmed: boolean): void {
+  if (!refreshConfirmDialog.value.visible) {
+    return;
+  }
+
+  const shouldPersist = confirmed && refreshConfirmDialog.value.dontShowAgain;
+  refreshConfirmDialog.value.visible = false;
+  refreshConfirmDialog.value.dontShowAgain = false;
+
+  const resolver = refreshConfirmResolver;
+  refreshConfirmResolver = null;
+
+  if (shouldPersist) {
+    suppressGroupRefreshWarning.value = true;
+    void ext.storage.local.set({
+      [GROUP_REFRESH_WARNING_SUPPRESSED_KEY]: true
+    }).catch((error) => {
+      console.warn('[BBE] save group refresh warning preference failed:', error);
+    });
+  }
+
+  resolver?.(confirmed);
+}
+
+async function confirmGroupRefresh(): Promise<boolean> {
+  if (suppressGroupRefreshWarning.value) {
+    return true;
+  }
+
+  if (refreshConfirmDialog.value.visible) {
+    return false;
+  }
+
+  refreshConfirmDialog.value.visible = true;
+  refreshConfirmDialog.value.dontShowAgain = false;
+  return new Promise((resolve) => {
+    refreshConfirmResolver = resolve;
+  });
+}
+
+/**
+ * 抽屉工具栏只保留一个“刷新”按钮：
+ * - 始终执行“收藏夹刷新 -> 作者投稿刷新”的完整链路；
+ * - 首次及未关闭提示时，先弹出批量刷新风险说明。
+ */
+async function refreshGroup(): Promise<void> {
+  const confirmed = await confirmGroupRefresh();
   if (!confirmed) {
     return;
   }
   await submitGroupRefresh('REFRESH_GROUP_POSTS');
-}
-
-async function refreshFav(): Promise<void> {
-  await submitGroupRefresh('REFRESH_GROUP_FAV');
 }
 
 async function selectEntry(entryId: string): Promise<void> {
@@ -3545,6 +3631,7 @@ watch(byAuthorActiveMid, (mid) => {
 
 onMounted(() => {
   loadDrawerWidth();
+  void loadGroupRefreshWarningPreference();
   window.addEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.addEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
   window.addEventListener('resize', onWindowResize);
@@ -3563,6 +3650,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  closeRefreshConfirmDialog(false);
   setPageScrollLock(false);
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);

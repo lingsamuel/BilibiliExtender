@@ -94,6 +94,61 @@ body.bbe-page-scroll-lock {
   color: #b4234f;
 }
 
+.bbe-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(15 23 42 / 40%);
+}
+
+.bbe-dialog-card {
+  width: min(520px, calc(100% - 24px));
+  border-radius: 16px;
+  border: 1px solid #e4e8ef;
+  background: #fff;
+  box-shadow: 0 18px 48px rgb(15 23 42 / 24%);
+  padding: 18px 18px 16px;
+}
+
+.bbe-dialog-title {
+  margin: 0 0 10px;
+  font-size: 18px;
+  line-height: 1.35;
+  color: #1f2937;
+}
+
+.bbe-dialog-text {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #4b5563;
+}
+
+.bbe-dialog-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: #374151;
+  user-select: none;
+}
+
+.bbe-dialog-check input {
+  margin: 0;
+}
+
+.bbe-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 .bbe-toolbar {
   display: flex;
   align-items: center;

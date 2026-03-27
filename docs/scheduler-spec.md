@@ -257,9 +257,12 @@ interface LikeActionTask extends SchedulerTaskBase {
 
 #### 3.4.4 设置页与抽屉刷新按钮
 
-设置页分组行与抽屉工具栏都提供两个按钮：
-1. “刷新投稿列表”：调用 `REFRESH_GROUP_POSTS`。
-2. “刷新收藏夹”：调用 `REFRESH_GROUP_FAV`。
+前台刷新入口按位置区分：
+1. 抽屉工具栏只保留一个“刷新”按钮，调用 `REFRESH_GROUP_POSTS`。
+2. 该按钮在前端发送消息前，需先弹出批量刷新风险提示，并提供“不再提示”本地持久化选项。
+3. 设置页分组行保留两个按钮：
+   - “刷新投稿列表”：调用 `REFRESH_GROUP_POSTS`。
+   - “刷新收藏夹”：调用 `REFRESH_GROUP_FAV`。
 
 #### 3.4.5 调试页“立刻发起调度”
 
@@ -620,8 +623,8 @@ interface SchedulerStatusResponse {
   - 新增 `schedulerBatchSize` 设置项（全调度器共享）。
   - 分组行新增“刷新投稿列表”“刷新收藏夹”按钮。
 - `src/content/components/DrawerApp.vue`：
-  - 工具栏新增“刷新投稿列表”“刷新收藏夹”按钮。
-  - “刷新投稿列表”点击前加入二次确认。
+  - 工具栏只保留一个“刷新”按钮，并调用 `REFRESH_GROUP_POSTS`。
+  - 点击前弹出批量刷新风险提示，支持勾选“不再提示”后持久化关闭。
 - `src/shared/messages.ts`：
   - 新增 `RUN_SCHEDULER_NOW` 消息类型与响应，调试状态返回 `schedulerBatchSize`。
   - `LIKE_VIDEO`、`BATCH_LIKE_VIDEOS` 消息新增 `pageOrigin`、`pageReferer`，用于点赞请求的 DNR 规则安装。
