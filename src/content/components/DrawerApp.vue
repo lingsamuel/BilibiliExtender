@@ -612,12 +612,14 @@ interface MixedDayGroupWithDivider {
 /**
  * 前台统一错误提示入口：只弹通知，不覆盖主内容。
  * 这样即使接口失败，也能保留当前可用缓存内容，避免“整页不可用”。
+ * 同时把 toast 文本额外打到 console，便于排查那些来不及手动复制的瞬时错误。
  */
 function showErrorToast(message: string): void {
   const text = message.trim();
   if (!text) {
     return;
   }
+  console.error('[BBE][Toast]', text);
   const id = ++toastSeq;
   const next = [...toasts.value, { id, message: text }];
   toasts.value = next.slice(-4);
