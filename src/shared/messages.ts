@@ -82,7 +82,19 @@ export type MessageRequest =
   | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
   | { type: 'UNDO_AUTHOR_READ_MARK'; payload: { mid: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
-  | { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number; ps: number } }
+  | {
+      type: 'REQUEST_AUTHOR_PAGE';
+      payload: {
+        groupId: string;
+        mid: number;
+        pn: number;
+        ps: number;
+        options?: {
+          forceRefreshCurrentPage?: boolean;
+          ensureContinuousFromHead?: boolean;
+        };
+      };
+    }
   | { type: 'GET_AUTHOR_PAGE'; payload: { mid: number; pn: number; ps: number } }
   | { type: 'GET_AUTHOR_PREFERENCES'; payload: { mids: number[] } }
   | { type: 'GET_SCHEDULER_STATUS' }
@@ -145,7 +157,8 @@ export type SchedulerAuthorTaskReason =
   | 'first-page-refresh'
   | 'extend-continuous-window'
   | 'load-more-boundary'
-  | 'request-author-page';
+  | 'request-author-page'
+  | 'refresh-author-current-page';
 export type SchedulerTaskReason =
   | SchedulerAuthorTaskReason
   | 'group-fav-refresh'

@@ -357,6 +357,16 @@ function stitchVideoSequences(
   return null;
 }
 
+export function canReconnectContinuousHead(
+  headVideos: VideoItem[],
+  tailVideos: VideoItem[]
+): boolean {
+  if (tailVideos.length === 0) {
+    return true;
+  }
+  return stitchVideoSequences(headVideos, tailVideos, { allowIntervalFallback: false }) !== null;
+}
+
 /**
  * 根据投稿接口返回的总量信息推导最大分页号。
  * 返回 null 表示当前缓存没有可用的总量口径（需回退到旧 hasMore）。

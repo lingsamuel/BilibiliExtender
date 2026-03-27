@@ -1042,6 +1042,8 @@ async function handleRequestAuthorPage(
     }
   }
 
+  const forceRefreshCurrentPage = request.payload.options?.forceRefreshCurrentPage === true;
+  const ensureContinuousFromHead = request.payload.options?.ensureContinuousFromHead === true;
   const cache = authorCacheMap[mid];
   const maxPage = getAuthorPageCount(cache, ps);
 
@@ -1062,8 +1064,10 @@ async function handleRequestAuthorPage(
       groupId,
       pn,
       ps,
-      reason: 'request-author-page',
+      reason: forceRefreshCurrentPage ? 'refresh-author-current-page' : 'request-author-page',
       trigger: 'request-author-page',
+      forceRefreshCurrentPage,
+      ensureContinuousFromHead,
       failFast: false
     },
     (result) => {
@@ -1088,8 +1092,10 @@ async function handleRequestAuthorPage(
       groupId,
       pn,
       ps,
-      reason: 'request-author-page',
+      reason: forceRefreshCurrentPage ? 'refresh-author-current-page' : 'request-author-page',
       trigger: 'request-author-page',
+      forceRefreshCurrentPage,
+      ensureContinuousFromHead,
       failFast: false
     }
   ]);

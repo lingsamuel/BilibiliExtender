@@ -25,6 +25,7 @@ import type {
 } from '@/shared/messages';
 import {
   buildAuthorListFromFav,
+  canReconnectContinuousHead,
   getAuthorPageCount,
   hasAuthorMorePages,
   isAuthorCacheExpired,
@@ -44,6 +45,8 @@ export interface SchedulerTask {
   ps?: number;
   reason?: SchedulerAuthorTaskReason;
   trigger?: SchedulerTaskTrigger;
+  forceRefreshCurrentPage?: boolean;
+  ensureContinuousFromHead?: boolean;
   // 仅用于“前台同步等待”的补页任务：失败后不重试，直接回传错误。
   failFast?: boolean;
 }
@@ -76,7 +79,9 @@ const MAX_HISTORY = 50;
 const BURST_RETRY_DELAY_MS = 60_000;
 const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
 
-type AuthorTask = Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'ps' | 'reason' | 'failFast' | 'trigger'>> & Pick<SchedulerTask, 'groupId'>;
+type AuthorTask =
+  Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'ps' | 'reason' | 'failFast' | 'trigger'>>
+  & Pick<SchedulerTask, 'groupId' | 'forceRefreshCurrentPage' | 'ensureContinuousFromHead'>;
 type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
 export interface LikeTaskResult {
@@ -327,8 +332,50 @@ function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
     ps: Math.max(1, Number(task.ps) || 1),
     reason: task.reason ?? 'first-page-refresh',
     trigger: task.trigger ?? 'alarm-routine',
+    forceRefreshCurrentPage: task.forceRefreshCurrentPage === true,
+    ensureContinuousFromHead: task.ensureContinuousFromHead === true,
     failFast: task.failFast === true
   };
+}
+
+function mergeAuthorTaskCapabilities(target: AuthorTask, incoming: AuthorTask): void {
+  target.groupId = target.groupId || incoming.groupId;
+  target.name = target.name || incoming.name;
+  if (incoming.reason === 'refresh-author-current-page') {
+    target.reason = incoming.reason;
+  }
+  if (incoming.forceRefreshCurrentPage) {
+    target.forceRefreshCurrentPage = true;
+  }
+  if (incoming.ensureContinuousFromHead) {
+    target.ensureContinuousFromHead = true;
+  }
+  if (incoming.failFast) {
+    target.failFast = true;
+  }
+}
+
+function upgradeExistingBurstTasks(tasks: AuthorTask[]): void {
+  if (tasks.length === 0) {
+    return;
+  }
+
+  const taskMap = new Map(tasks.map((task) => [keyOfAuthorTask(task), task]));
+  const upgrade = (target: AuthorTask | null): void => {
+    if (!target) {
+      return;
+    }
+    const incoming = taskMap.get(keyOfAuthorTask(target));
+    if (!incoming) {
+      return;
+    }
+    mergeAuthorTaskCapabilities(target, incoming);
+  };
+
+  upgrade(burstState.currentTask);
+  for (const task of burstState.queue) {
+    upgrade(task);
+  }
 }
 
 function normalizeLikePageContext(pageContext: LikePageContext): LikePageContext {
@@ -781,12 +828,48 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
   const settings = await loadSettings();
-  await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, {
+  const previousContinuous = (authorCacheMap[task.mid]?.continuousVideos ?? []).slice();
+  const fetchCard = task.reason !== 'request-author-page' && task.reason !== 'refresh-author-current-page';
+  let latestCache = await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, {
     pn: task.pn,
     ps: task.ps,
-    // 用户主动翻页只需要精确页数据，不要顺带请求 Card API。
-    fetchCard: task.reason !== 'request-author-page'
+    // 用户主动翻页/作者级局部刷新只需要页数据，不要顺带请求 Card API。
+    fetchCard
   });
+
+  if (!task.ensureContinuousFromHead || task.pn !== 1 || previousContinuous.length === 0) {
+    return;
+  }
+  if (canReconnectContinuousHead(latestCache.continuousVideos, previousContinuous)) {
+    return;
+  }
+
+  let nextPage = 2;
+  while (true) {
+    // “近期投稿”作者级刷新要求从首页继续顺序补抓，
+    // 直到新头部连续段重新接上旧连续缓存，或明确确认没有更多页为止。
+    const maxPage = getAuthorPageCount(latestCache, task.ps);
+    if (typeof maxPage === 'number' && nextPage > maxPage) {
+      return;
+    }
+    if (typeof maxPage !== 'number' && !hasAuthorMorePages(latestCache)) {
+      return;
+    }
+
+    latestCache = await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, {
+      pn: nextPage,
+      ps: task.ps,
+      fetchCard: false
+    });
+
+    if (canReconnectContinuousHead(latestCache.continuousVideos, previousContinuous)) {
+      return;
+    }
+    if (!hasAuthorMorePages(latestCache)) {
+      return;
+    }
+    nextPage += 1;
+  }
 }
 
 /**
@@ -1320,6 +1403,7 @@ function startLikeActionLoopIfIdle(): void {
 
 export function enqueueBurst(tasks: SchedulerTask[]): number {
   const normalizedTasks = tasks.map(normalizeAuthorTask);
+  upgradeExistingBurstTasks(normalizedTasks);
   const taskKeys = new Set(normalizedTasks.map((task) => keyOfAuthorTask(task)));
   const added = dedupeAndEnqueue(burstState, normalizedTasks, keyOfAuthorTask, false);
   if (taskKeys.size > 0) {

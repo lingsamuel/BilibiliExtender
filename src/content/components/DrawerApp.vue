@@ -288,6 +288,16 @@
                         </button>
                       </div>
                       <div class="bbe-author-title-actions">
+                        <button
+                          type="button"
+                          class="bbe-author-refresh-btn"
+                          :class="{ loading: isAuthorPageLoading(author.authorMid) }"
+                          :disabled="isAuthorPageLoading(author.authorMid)"
+                          title="刷新当前页"
+                          @click="refreshAuthorCurrentPage(author)"
+                        >
+                          <span class="bbe-author-refresh-icon" aria-hidden="true">↻</span>
+                        </button>
                         <button type="button" class="bbe-author-mark-read-btn" @click="markAuthorReadNow(author)">标记已阅</button>
                         <button
                           v-if="author.hasAuthorReadMarkOverride"
@@ -559,7 +569,7 @@ const authorLikePendingMap = ref<Record<number, boolean>>({});
 const byAuthorPageMap = ref<Record<number, number>>({});
 const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
 const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
-const pendingAuthorPageTargetMap = ref<Record<number, { page: number; requestedAt: number }>>({});
+const pendingAuthorPageTargetMap = ref<Record<number, PendingAuthorPageTarget>>({});
 /**
  * 手动翻页/跳页的会话缓存必须区分 pageSize，
  * 否则设置变更页长后会把旧页号命中的结果误复用到新口径上。
@@ -618,6 +628,13 @@ interface AuthorExactPageCacheEntry {
   pageSize: number;
   videos: VideoItem[];
   fetchedAt: number;
+}
+
+interface PendingAuthorPageTarget {
+  page: number;
+  requestedAt: number;
+  intent: 'navigate' | 'refresh';
+  reloadFeedAfterReady: boolean;
 }
 
 function getAuthorVideos(author: Pick<AuthorFeed, 'authorMid' | 'videos'>): VideoItem[] {
@@ -1064,8 +1081,8 @@ function isAuthorPageLoading(authorMid: number): boolean {
   return byAuthorPageLoadingMap.value[authorMid] === true || pendingAuthorPageTargetMap.value[authorMid] !== undefined;
 }
 
-function setPendingAuthorPageTarget(authorMid: number, targetPage?: number, requestedAt?: number): void {
-  if (!targetPage || targetPage <= 0 || !requestedAt || requestedAt <= 0) {
+function setPendingAuthorPageTarget(authorMid: number, target?: PendingAuthorPageTarget): void {
+  if (!target || !target.page || target.page <= 0 || !target.requestedAt || target.requestedAt <= 0) {
     const next = { ...pendingAuthorPageTargetMap.value };
     delete next[authorMid];
     pendingAuthorPageTargetMap.value = next;
@@ -1074,8 +1091,10 @@ function setPendingAuthorPageTarget(authorMid: number, targetPage?: number, requ
   pendingAuthorPageTargetMap.value = {
     ...pendingAuthorPageTargetMap.value,
     [authorMid]: {
-      page: Math.max(1, Math.floor(targetPage)),
-      requestedAt: Math.max(1, Math.floor(requestedAt))
+      page: Math.max(1, Math.floor(target.page)),
+      requestedAt: Math.max(1, Math.floor(target.requestedAt)),
+      intent: target.intent === 'refresh' ? 'refresh' : 'navigate',
+      reloadFeedAfterReady: target.reloadFeedAfterReady === true
     }
   };
 }
@@ -1178,23 +1197,31 @@ function getAuthorPagerItems(author: AuthorFeed): Array<number | '...'> {
   return items;
 }
 
-async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<void> {
-  if (!isByAuthorPaginationEnabled.value || isAuthorPageLoading(author.authorMid) || !activeGroupId.value) {
+interface SubmitAuthorPageRequestOptions {
+  allowSessionCache?: boolean;
+  forceRefreshCurrentPage?: boolean;
+  ensureContinuousFromHead?: boolean;
+  pendingIntent?: PendingAuthorPageTarget['intent'];
+  reloadFeedAfterReady?: boolean;
+  submitToastText?: string;
+  failureMessage?: string;
+}
+
+async function submitAuthorPageRequest(
+  author: AuthorFeed,
+  targetPage: number,
+  options?: SubmitAuthorPageRequestOptions
+): Promise<void> {
+  if (isAuthorPageLoading(author.authorMid) || !activeGroupId.value) {
     return;
   }
-
   const totalPages = getAuthorTotalPages(author);
   const nextPage = Math.min(totalPages, Math.max(1, Math.floor(targetPage)));
-  const currentPage = getAuthorCurrentPage(author);
-  if (nextPage === currentPage) {
-    return;
-  }
-
   const pageSize = getAuthorApiPageSize(author);
   setAuthorPageLoading(author.authorMid, true);
   try {
     const exactPageEntry = getAuthorExactPageCacheEntry(author.authorMid, nextPage, pageSize);
-    if (isAuthorExactPageCacheEntryFresh(exactPageEntry)) {
+    if (options?.allowSessionCache !== false && isAuthorExactPageCacheEntryFresh(exactPageEntry)) {
       byAuthorPageMap.value = {
         ...byAuthorPageMap.value,
         [author.authorMid]: nextPage
@@ -1212,7 +1239,13 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
         groupId: activeGroupId.value,
         mid: author.authorMid,
         pn: nextPage,
-        ps: pageSize
+        ps: pageSize,
+        options: options?.forceRefreshCurrentPage || options?.ensureContinuousFromHead
+          ? {
+              forceRefreshCurrentPage: options?.forceRefreshCurrentPage === true,
+              ensureContinuousFromHead: options?.ensureContinuousFromHead === true
+            }
+          : undefined
       }
     });
     if (!resp.ok || !resp.data) {
@@ -1226,14 +1259,61 @@ async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<v
       return;
     }
 
-    setPendingAuthorPageTarget(author.authorMid, nextPage, resp.data.requestedAt ?? Date.now());
-    showErrorToast(`第 ${nextPage} 页请求中，已提交分页任务`);
+    setPendingAuthorPageTarget(author.authorMid, {
+      page: nextPage,
+      requestedAt: resp.data.requestedAt ?? Date.now(),
+      intent: options?.pendingIntent === 'refresh' ? 'refresh' : 'navigate',
+      reloadFeedAfterReady: options?.reloadFeedAfterReady === true
+    });
+    showErrorToast(options?.submitToastText ?? `第 ${nextPage} 页请求中，已提交分页任务`);
     startAuthorPagePoll(POLL_MAX_REFRESHING);
   } catch (error) {
-    showErrorToast(error instanceof Error ? error.message : '作者分页切换失败');
+    showErrorToast(error instanceof Error ? error.message : (options?.failureMessage ?? '作者分页切换失败'));
   } finally {
     setAuthorPageLoading(author.authorMid, false);
   }
+}
+
+async function goToAuthorPage(author: AuthorFeed, targetPage: number): Promise<void> {
+  if (!isByAuthorPaginationEnabled.value || !activeGroupId.value) {
+    return;
+  }
+
+  const currentPage = getAuthorCurrentPage(author);
+  const totalPages = getAuthorTotalPages(author);
+  const nextPage = Math.min(totalPages, Math.max(1, Math.floor(targetPage)));
+  if (nextPage === currentPage) {
+    return;
+  }
+
+  await submitAuthorPageRequest(author, nextPage, {
+    allowSessionCache: true,
+    pendingIntent: 'navigate',
+    reloadFeedAfterReady: false,
+    failureMessage: '作者分页切换失败'
+  });
+}
+
+async function refreshAuthorCurrentPage(author: AuthorFeed): Promise<void> {
+  if (!activeGroupId.value) {
+    return;
+  }
+
+  const targetPage = mode.value === 'overview' ? getAuthorCurrentPage(author) : 1;
+  const ensureContinuousFromHead = mode.value === 'byAuthor';
+  const submitToastText = ensureContinuousFromHead
+    ? '正在刷新该作者首页，并尝试续接连续缓存'
+    : `正在刷新第 ${targetPage} 页`;
+
+  await submitAuthorPageRequest(author, targetPage, {
+    allowSessionCache: false,
+    forceRefreshCurrentPage: true,
+    ensureContinuousFromHead,
+    pendingIntent: 'refresh',
+    reloadFeedAfterReady: true,
+    submitToastText,
+    failureMessage: '刷新作者当前页失败'
+  });
 }
 
 async function submitAuthorPageJump(author: AuthorFeed): Promise<void> {
@@ -1862,6 +1942,7 @@ async function refreshFeedForPendingAuthorPages(): Promise<void> {
   }
 
   const resolvedPending: number[] = [];
+  let shouldReloadFeedAfterReady = false;
   for (const [rawMid, rawTarget] of Object.entries(pendingAuthorPageTargetMap.value)) {
     const mid = Math.max(1, Number(rawMid) || 0);
     const targetPage = Math.max(1, Number(rawTarget?.page) || 0);
@@ -1882,15 +1963,23 @@ async function refreshFeedForPendingAuthorPages(): Promise<void> {
       ...byAuthorPageMap.value,
       [mid]: targetPage
     };
+    shouldReloadFeedAfterReady = shouldReloadFeedAfterReady || rawTarget.reloadFeedAfterReady === true;
     setPendingAuthorPageTarget(mid);
     setAuthorPageLoading(mid, false);
     resolvedPending.push(mid);
   }
 
   if (resolvedPending.length > 0) {
+    if (shouldReloadFeedAfterReady) {
+      // 作者级“刷新当前页”不只是替换精确页块，还会影响作者标题统计、排序与近期模式结果，
+      // 因此在页块到位后再静默重读一次 feed，让当前面板整体收敛到最新缓存视图。
+      await reloadFeedWithReadMark({ silent: true });
+    }
     await nextTick();
     updateByAuthorNavState();
-    await fetchClickedVideos();
+    if (!shouldReloadFeedAfterReady) {
+      await fetchClickedVideos();
+    }
   }
 
   if (!hasPendingAuthorPageTargets()) {
@@ -1954,13 +2043,18 @@ function syncAuthorPaginationStateWithFeed(): void {
   }
 
   const mids = new Set(feed.value.videosByAuthor.map((author) => author.authorMid));
-  const nextPendingMap: Record<number, { page: number; requestedAt: number }> = {};
+  const nextPendingMap: Record<number, PendingAuthorPageTarget> = {};
   for (const [rawMid, rawTarget] of Object.entries(pendingAuthorPageTargetMap.value)) {
     const mid = Number(rawMid);
     const page = Math.max(1, Math.floor(Number(rawTarget?.page) || 1));
     const requestedAt = Math.max(1, Math.floor(Number(rawTarget?.requestedAt) || 0));
     if (mids.has(mid) && requestedAt > 0) {
-      nextPendingMap[mid] = { page, requestedAt };
+      nextPendingMap[mid] = {
+        page,
+        requestedAt,
+        intent: rawTarget?.intent === 'refresh' ? 'refresh' : 'navigate',
+        reloadFeedAfterReady: rawTarget?.reloadFeedAfterReady === true
+      };
     }
   }
 
@@ -1975,7 +2069,9 @@ function syncAuthorPaginationStateWithFeed(): void {
     const normalizedPendingTarget = pendingTarget
       ? {
           page: Math.min(totalPages, Math.max(1, pendingTarget.page)),
-          requestedAt: pendingTarget.requestedAt
+          requestedAt: pendingTarget.requestedAt,
+          intent: pendingTarget.intent,
+          reloadFeedAfterReady: pendingTarget.reloadFeedAfterReady
         }
       : undefined;
     nextExactPageVideosMap[author.authorMid] = {

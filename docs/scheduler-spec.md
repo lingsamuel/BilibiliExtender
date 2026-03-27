@@ -83,7 +83,12 @@ interface AuthorVideoTask extends SchedulerTaskBase {
   // 作者投稿请求必须显式携带 pageSize；1=首页刷新，>=2=连续窗口维护、时间流补块或精确分页请求
   pn: number;
   ps: number;
-  reason: 'first-page-refresh' | 'extend-continuous-window' | 'load-more-boundary' | 'request-author-page';
+  reason:
+    | 'first-page-refresh'
+    | 'extend-continuous-window'
+    | 'load-more-boundary'
+    | 'request-author-page'
+    | 'refresh-author-current-page';
 }
 ```
 
@@ -210,18 +215,21 @@ interface LikeActionTask extends SchedulerTaskBase {
 
 #### 3.4.1.1 REQUEST_AUTHOR_PAGE
 
-`REQUEST_AUTHOR_PAGE(groupId, mid, pn, ps)` 的行为统一为“提交作者分页意图 + 建立一次前台等待会话”：
+`REQUEST_AUTHOR_PAGE(groupId, mid, pn, ps, options?)` 的行为统一为“提交作者分页意图 + 建立一次前台等待会话”：
 1. 若已确认作者不存在更多页：立即返回 `{ accepted: false, status: 'no-more' }`，不建立等待会话，也不发送后续通知。
 2. 只要是用户主动翻页/跳页请求，后台都应立即返回 `{ accepted: true, status: 'queued', requestedAt }`，并向 Burst 队列提交该页任务；后台持久化分页缓存不再作为手动翻页的直接命中。
-3. 对 `status: 'queued'` 的分页请求：
+3. `options.forceRefreshCurrentPage === true` 表示“作者级刷新按钮”触发：
+   - 必须无视“请求缓存时长”命中，重新发起作者投稿 API 请求；
+   - 若 `options.ensureContinuousFromHead === true`，则表示本次请求不仅要刷新目标页，还要在首页无法与当前连续缓存接续时继续顺序补抓后续页，直到接续成功或确认无更多页。
+4. 对 `status: 'queued'` 的分页请求：
    - 调度器必须记录“发起页面 + groupId + mid + pn + ps”的等待会话，仅用于该次作者分页反馈；
    - 当目标页任务成功写入块缓存并完成一次连续缓存重建后，向对应内容页发送“页已就绪”通知；
    - 当目标页任务首次执行失败时，即按该次前台等待会话的终态失败处理：向对应内容页发送“页失败”通知，并结束该次等待会话。
-4. 前台在当前内容页会话内可复用最近一次手动分页得到的结果，复用有效期使用设置项 `refreshIntervalMinutes`；页面刷新后该会话缓存必须失效。
-5. 前台等待目标页时，读取精确页块必须校验 `fetchedAt >= requestedAt`，避免旧持久化页块被误认为本次手动请求的结果。
-6. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV` 或时间流边界补页。
-7. 前台收到“页已就绪”通知后，应立即补发一次分页数据读取；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
-8. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
+5. 仅普通翻页/跳页可在当前内容页会话内复用最近一次手动分页得到的结果，复用有效期使用设置项 `refreshIntervalMinutes`；页面刷新后该会话缓存必须失效。作者级刷新按钮不读取这层前台 TTL 命中。
+6. 前台等待目标页时，读取精确页块必须校验 `fetchedAt >= requestedAt`，避免旧持久化页块被误认为本次手动请求的结果。
+7. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV` 或时间流边界补页。
+8. 前台收到“页已就绪”通知后，应立即补发一次分页数据读取；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
+9. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
 
 作者分页前台等待策略：
 1. `status: 'queued'` 后立即启动兜底轮询，但轮询只用于作者分页当前等待会话。
@@ -230,6 +238,7 @@ interface LikeActionTask extends SchedulerTaskBase {
    - 收到匹配当前 pending 目标的“页已就绪”通知，并完成一次成功的 `GET_GROUP_FEED`；
    - 收到匹配当前 pending 目标的“页失败”通知；
    - 当前 pending 目标失效（分组切换、模式切换、筛选切换、用户取消等待等）。
+4. 若本次请求带 `ensureContinuousFromHead === true`，则“页已就绪”的判定不以单页落块为准，而应以“目标页已就绪且首页已重新接回连续缓存”作为成功终态。
 
 #### 3.4.2 REFRESH_GROUP_POSTS
 
@@ -414,7 +423,16 @@ interface RefreshGroupResponse {
 新增作者分页意图消息（前台表达“想看第 N 页”，不等待执行完成）：
 
 ```ts
-| { type: 'REQUEST_AUTHOR_PAGE'; payload: { groupId: string; mid: number; pn: number; ps: number } }
+| { type: 'REQUEST_AUTHOR_PAGE'; payload: {
+    groupId: string;
+    mid: number;
+    pn: number;
+    ps: number;
+    options?: {
+      forceRefreshCurrentPage?: boolean;
+      ensureContinuousFromHead?: boolean;
+    };
+  } }
 
 interface RequestAuthorPageResponse {
   accepted: boolean;
@@ -540,6 +558,7 @@ interface SchedulerStatusResponse {
       | 'first-page-refresh'
       | 'prefetch-next-page'
       | 'load-more-boundary'
+      | 'refresh-author-current-page'
       | 'group-fav-refresh'
       | 'single-card-like'
       | 'single-card-unlike'
