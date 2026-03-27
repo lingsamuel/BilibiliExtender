@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "惊蛰：哔哩哔哩关注功能扩展",
-  "version": "0.2.131",
+  "version": "0.2.132",
   "description": "按收藏夹分组查看作者投稿动态",
   "icons": {
     "128": "icons/icon.png"
