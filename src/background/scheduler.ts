@@ -740,7 +740,12 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
   const settings = await loadSettings();
-  await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, { pn: task.pn, ps: task.ps });
+  await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, {
+    pn: task.pn,
+    ps: task.ps,
+    // 用户主动翻页只需要精确页数据，不要顺带请求 Card API。
+    fetchCard: task.reason !== 'request-author-page'
+  });
 }
 
 /**

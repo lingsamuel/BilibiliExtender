@@ -418,11 +418,12 @@ export async function refreshAuthorCache(
     ExtensionSettings,
     'authorVideosPageSize' | 'authorContinuousExtraPageCount' | 'authorNonContinuousCachePageCount'
   >,
-  options?: { pn?: number; ps?: number }
+  options?: { pn?: number; ps?: number; fetchCard?: boolean }
 ): Promise<AuthorVideoCache> {
   const existing = authorCacheMap[mid];
   const pn = Math.max(1, options?.pn ?? 1);
   const ps = Math.max(1, options?.ps ?? settings.authorVideosPageSize);
+  const fetchCard = options?.fetchCard !== false;
   const pageFetchedAt = Date.now();
   const { videos, totalCount, pageSize, version } = await getUploaderVideos(mid, pn, ps);
   const nextTotalCount = Number.isFinite(totalCount) && totalCount >= 0
@@ -440,16 +441,18 @@ export async function refreshAuthorCache(
   let cardFollower: number | undefined;
   let cardFollowing: boolean | undefined;
 
-  try {
-    const card = await getUserCard(mid);
-    cardName = card.name?.trim() || undefined;
-    cardFace = card.face;
-    cardFollower = card.follower;
-    cardFollowing = card.following;
-  } catch {
-    // Card 请求失败时按降级策略处理：
-    // - 若已有 Card 缓存，继续沿用缓存；
-    // - 若无 Card 缓存，允许回退视频接口作者名兜底展示。
+  if (fetchCard) {
+    try {
+      const card = await getUserCard(mid);
+      cardName = card.name?.trim() || undefined;
+      cardFace = card.face;
+      cardFollower = card.follower;
+      cardFollowing = card.following;
+    } catch {
+      // Card 请求失败时按降级策略处理：
+      // - 若已有 Card 缓存，继续沿用缓存；
+      // - 若无 Card 缓存，允许回退视频接口作者名兜底展示。
+    }
   }
 
   // 作者名优先来源于 Card；仅在无 Card 缓存且本轮 Card 失败时回退视频作者名/任务名。
