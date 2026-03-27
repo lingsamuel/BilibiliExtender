@@ -8,6 +8,7 @@
         rel="noreferrer"
         @click="onVideoLinkClick"
         @auxclick="onVideoLinkAuxClick"
+        @contextmenu.stop.prevent="onCoverContextMenu"
       >
         <div class="">
           <img :src="video.cover" :alt="video.title" />
@@ -159,6 +160,16 @@ function onVideoLinkAuxClick(event: MouseEvent): void {
     return;
   }
   emit('click', props.video.bvid);
+}
+
+function onCoverContextMenu(): void {
+  if (reviewedState.value) {
+    return;
+  }
+  emit('toggle-reviewed', {
+    bvid: props.video.bvid,
+    reviewed: true
+  });
 }
 
 function onToggleReviewedClick(): void {
