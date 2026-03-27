@@ -1,3 +1,11 @@
+@font-face {
+  font-family: 'freshspace-zpjpp3aqht';
+  src: url('../assets/fonts/freshspace-zpjpp3aqht.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
 #bbe-root {
   position: fixed;
   inset: 0;
