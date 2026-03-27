@@ -163,12 +163,9 @@ function onVideoLinkAuxClick(event: MouseEvent): void {
 }
 
 function onCoverContextMenu(): void {
-  if (reviewedState.value) {
-    return;
-  }
   emit('toggle-reviewed', {
     bvid: props.video.bvid,
-    reviewed: true
+    reviewed: !reviewedState.value
   });
 }
 
