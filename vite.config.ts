@@ -20,6 +20,7 @@ const contentConfig = defineConfig({
     outDir,
     emptyOutDir: false,
     cssCodeSplit: false,
+    sourcemap: true,
     rollupOptions: {
       input: {
         content: resolve(__dirname, 'src/content/main.ts')
@@ -41,6 +42,7 @@ const mainConfig = defineConfig({
   build: {
     outDir,
     emptyOutDir: true,
+    sourcemap: true,
     rollupOptions: {
       input: {
         options: resolve(__dirname, 'options.html'),
