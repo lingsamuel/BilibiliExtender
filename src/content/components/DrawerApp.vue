@@ -96,7 +96,8 @@
             <span v-if="isUpdating" class="bbe-spinner" aria-hidden="true" />
             <span>{{ refreshText }}</span>
           </span>
-          <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="manualRefresh">手动刷新</button>
+          <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="refreshPosts">刷新投稿列表</button>
+          <button class="bbe-btn" :disabled="loading || refreshing || generating" @click="refreshFav">刷新收藏夹</button>
           <button class="bbe-btn" @click="closeDrawer">关闭</button>
         </div>
       </header>
@@ -2616,13 +2617,13 @@ function setPageScrollLock(locked: boolean): void {
   body.classList.remove(PAGE_SCROLL_LOCK_CLASS);
 }
 
-async function manualRefresh(): Promise<void> {
+async function submitGroupRefresh(type: 'REFRESH_GROUP_POSTS' | 'REFRESH_GROUP_FAV'): Promise<void> {
   if (!activeGroupId.value) return;
 
   try {
     refreshing.value = true;
     const resp = await sendMessage({
-      type: 'MANUAL_REFRESH',
+      type,
       payload: { groupId: activeGroupId.value }
     });
 
@@ -2636,6 +2637,18 @@ async function manualRefresh(): Promise<void> {
     refreshing.value = false;
     showErrorToast(error instanceof Error ? error.message : '刷新失败');
   }
+}
+
+async function refreshPosts(): Promise<void> {
+  const confirmed = window.confirm('确认刷新投稿列表吗？这会同时刷新当前分组的收藏夹作者列表，并继续为相关作者发起投稿刷新请求。');
+  if (!confirmed) {
+    return;
+  }
+  await submitGroupRefresh('REFRESH_GROUP_POSTS');
+}
+
+async function refreshFav(): Promise<void> {
+  await submitGroupRefresh('REFRESH_GROUP_FAV');
 }
 
 async function selectEntry(entryId: string): Promise<void> {

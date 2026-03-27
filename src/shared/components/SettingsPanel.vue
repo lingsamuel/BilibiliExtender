@@ -48,9 +48,16 @@
         <button
           class="bbe-btn"
           :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
-          @click="refreshGroupNow(group.groupId)"
+          @click="refreshGroupPosts(group.groupId)"
         >
-          {{ isGroupRefreshing(group.groupId) ? '刷新中...' : '立即刷新' }}
+          {{ isGroupRefreshing(group.groupId) ? '提交中...' : '刷新投稿列表' }}
+        </button>
+        <button
+          class="bbe-btn"
+          :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
+          @click="refreshGroupFav(group.groupId)"
+        >
+          刷新收藏夹
         </button>
         <button class="bbe-btn danger" @click="removeGroup(group.groupId)">删除</button>
       </div>
@@ -496,28 +503,46 @@ function isGroupRefreshing(groupId: string): boolean {
   return refreshingGroups.value.has(groupId);
 }
 
-/**
- * 设置页中的“立即刷新”与抽屉手动刷新保持同语义：
- * 始终提交 MANUAL_REFRESH，由后台先刷新收藏夹缓存，再强制刷新该分组作者首页。
- */
-async function refreshGroupNow(groupId: string): Promise<void> {
+async function submitGroupRefresh(
+  groupId: string,
+  type: 'REFRESH_GROUP_POSTS' | 'REFRESH_GROUP_FAV',
+  successMessage: string
+): Promise<void> {
   if (refreshingGroups.value.has(groupId)) return;
 
   refreshingGroups.value.add(groupId);
   try {
     const resp = await sendMessage({
-      type: 'MANUAL_REFRESH',
+      type,
       payload: { groupId }
     });
     if (!resp.ok || !resp.data?.accepted) {
       throw new Error(resp.error ?? '提交刷新失败');
     }
-    setNotice('已提交刷新任务，请稍后查看结果');
+    setNotice(successMessage);
   } catch (error) {
     setError(error instanceof Error ? error.message : '提交刷新失败');
   } finally {
     refreshingGroups.value.delete(groupId);
   }
+}
+
+/**
+ * “刷新投稿列表”会继续衔接作者投稿刷新，请先明确确认，避免误触发大量请求。
+ */
+async function refreshGroupPosts(groupId: string): Promise<void> {
+  const confirmed = window.confirm('确认刷新投稿列表吗？这会同时刷新当前分组的收藏夹作者列表，并继续为相关作者发起投稿刷新请求。');
+  if (!confirmed) {
+    return;
+  }
+  await submitGroupRefresh(groupId, 'REFRESH_GROUP_POSTS', '已提交投稿列表刷新任务，请稍后查看结果');
+}
+
+/**
+ * “刷新收藏夹”只更新分组标题与作者列表，不继续刷新作者投稿缓存。
+ */
+async function refreshGroupFav(groupId: string): Promise<void> {
+  await submitGroupRefresh(groupId, 'REFRESH_GROUP_FAV', '已提交收藏夹刷新任务，请稍后查看结果');
 }
 
 async function removeGroup(groupId: string): Promise<void> {

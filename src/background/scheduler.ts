@@ -51,6 +51,7 @@ export interface SchedulerTask {
 interface GroupFavTask {
   groupId: string;
   trigger: SchedulerTaskTrigger;
+  authorRefreshMode: 'stale' | 'force' | 'none';
 }
 
 interface LikePageContext {
@@ -489,6 +490,38 @@ function hasRunningRegularTask(): boolean {
   return authorState.running || groupFavState.running;
 }
 
+function getGroupFavAuthorRefreshModePriority(mode: GroupFavTask['authorRefreshMode']): number {
+  if (mode === 'force') return 2;
+  if (mode === 'stale') return 1;
+  return 0;
+}
+
+function upgradeExistingGroupFavTasks(tasks: GroupFavTask[]): void {
+  if (tasks.length === 0) {
+    return;
+  }
+
+  const taskMap = new Map(tasks.map((task) => [task.groupId, task]));
+  const upgrade = (target: GroupFavTask | null): void => {
+    if (!target) {
+      return;
+    }
+    const incoming = taskMap.get(target.groupId);
+    if (!incoming) {
+      return;
+    }
+    if (getGroupFavAuthorRefreshModePriority(incoming.authorRefreshMode) > getGroupFavAuthorRefreshModePriority(target.authorRefreshMode)) {
+      target.authorRefreshMode = incoming.authorRefreshMode;
+      target.trigger = incoming.trigger;
+    }
+  };
+
+  upgrade(groupFavState.currentTask);
+  for (const task of groupFavState.queue) {
+    upgrade(task);
+  }
+}
+
 function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
   if (taskKeys.size === 0 || authorState.queue.length === 0) {
     return;
@@ -721,7 +754,11 @@ async function collectStaleGroupFavTasks(
   }
 
   stale.sort((a, b) => a.updatedAt - b.updatedAt);
-  return stale.map((item) => ({ groupId: item.groupId, trigger }));
+  return stale.map((item) => ({
+    groupId: item.groupId,
+    trigger,
+    authorRefreshMode: 'stale'
+  }));
 }
 
 async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promise<GroupFavTask[]> {
@@ -735,7 +772,11 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
   }
 
   oldest.sort((a, b) => a.updatedAt - b.updatedAt);
-  return oldest.map((item) => ({ groupId: item.groupId, trigger }));
+  return oldest.map((item) => ({
+    groupId: item.groupId,
+    trigger,
+    authorRefreshMode: 'stale'
+  }));
 }
 
 async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
@@ -750,8 +791,7 @@ async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): 
 
 /**
  * 刷新单个分组的收藏夹缓存：重建作者列表并同步收藏夹标题。
- * 完成后会把该分组作者任务插入作者通道。
- * 手动刷新场景下需要强制刷新该分组作者首页，因此会忽略作者缓存新鲜度判定。
+ * 是否继续衔接作者投稿刷新，由任务上的 authorRefreshMode 显式决定。
  */
 async function runGroupFavTask(task: GroupFavTask): Promise<void> {
   const [groups, feedCacheMap, authorCacheMap, settings] = await Promise.all([
@@ -792,9 +832,13 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
     await saveGroups(groups);
   }
 
+  if (task.authorRefreshMode === 'none') {
+    return;
+  }
+
   const burstTasks: AuthorTask[] = [];
   const priorityTasks: AuthorTask[] = [];
-  const forceAuthorRefresh = task.trigger === 'manual-refresh';
+  const forceAuthorRefresh = task.authorRefreshMode === 'force';
   for (const author of authors) {
     const cache = authorCacheMap[author.mid];
     const task: AuthorTask = {
@@ -804,7 +848,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       pn: 1,
       ps: settings.authorVideosPageSize,
       reason: 'first-page-refresh',
-      trigger: forceAuthorRefresh ? 'manual-refresh' : 'group-fav-chain',
+      trigger: forceAuthorRefresh ? 'manual-refresh-posts' : 'group-fav-chain',
       failFast: false
     };
 
@@ -813,7 +857,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       continue;
     }
 
-    // 手动刷新需要强制刷新该分组作者首页；自动链路仍只补“已有缓存但已过期”的目标。
+    // “刷新投稿列表”需要强制刷新该分组作者首页；其他链路只补“已有缓存但已过期”的目标。
     if (forceAuthorRefresh || isAuthorCacheExpired(cache, settings)) {
       priorityTasks.push(task);
     }
@@ -1392,8 +1436,17 @@ export function enqueuePriority(tasks: SchedulerTask[]): number {
   return added;
 }
 
-export function enqueuePriorityGroup(groupIds: string[], trigger: SchedulerTaskTrigger = 'manual-refresh'): number {
-  const tasks: GroupFavTask[] = groupIds.map((groupId) => ({ groupId, trigger }));
+export function enqueuePriorityGroup(
+  groupIds: string[],
+  trigger: SchedulerTaskTrigger = 'manual-refresh-posts',
+  authorRefreshMode: GroupFavTask['authorRefreshMode'] = 'stale'
+): number {
+  const tasks: GroupFavTask[] = groupIds.map((groupId) => ({
+    groupId,
+    trigger,
+    authorRefreshMode
+  }));
+  upgradeExistingGroupFavTasks(tasks);
   const added = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, true);
   if (added > 0) {
     startGroupFavLoopIfIdle();

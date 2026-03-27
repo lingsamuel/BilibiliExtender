@@ -32,7 +32,8 @@ export type MessageRequest =
         byAuthorSortByLatest?: boolean;
       };
     }
-  | { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
+  | { type: 'REFRESH_GROUP_POSTS'; payload: { groupId: string } }
+  | { type: 'REFRESH_GROUP_FAV'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ'; payload: { groupId: string } }
   | { type: 'MARK_GROUP_READ_MARK'; payload: { groupId: string; readMarkTs?: number } }
   | { type: 'UNDO_GROUP_READ_MARK'; payload: { groupId: string } }
@@ -155,7 +156,8 @@ export type SchedulerTaskTrigger =
   | 'alarm-routine'
   | 'debug-run-now'
   | 'manual-click'
-  | 'manual-refresh'
+  | 'manual-refresh-posts'
+  | 'manual-refresh-fav'
   | 'group-created-auto-refresh'
   | 'get-group-feed-missing-fav-cache'
   | 'get-group-feed-missing-author-cache'
@@ -294,7 +296,8 @@ export interface ResponseMap {
     settings: ExtensionSettings;
   };
   GET_GROUP_FEED: GroupFeedResult & { cacheStatus: 'ready' | 'generating' };
-  MANUAL_REFRESH: { accepted: boolean };
+  REFRESH_GROUP_POSTS: { accepted: boolean };
+  REFRESH_GROUP_FAV: { accepted: boolean };
   MARK_GROUP_READ: { groupId: string; unreadCount: number };
   MARK_GROUP_READ_MARK: { marks: Record<string, GroupReadMark> };
   UNDO_GROUP_READ_MARK: { marks: Record<string, GroupReadMark>; removedReadMarkTs?: number };

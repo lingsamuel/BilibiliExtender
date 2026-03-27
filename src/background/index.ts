@@ -1144,32 +1144,56 @@ async function handleGetAuthorPreferences(
   return { preferences };
 }
 
-/**
- * 手动刷新：优先提交“收藏夹刷新任务”。
- * 收藏夹任务完成后会强制刷新该分组作者首页，前台通过轮询 GET_GROUP_FEED 等待缓存就绪。
- */
-async function handleManualRefresh(
-  request: Extract<MessageRequest, { type: 'MANUAL_REFRESH' }>
-): Promise<ResponseMap['MANUAL_REFRESH']> {
+async function handleGroupRefreshRequest(input: {
+  groupId: string;
+  trigger: 'manual-refresh-posts' | 'manual-refresh-fav';
+  authorRefreshMode: 'force' | 'none';
+}): Promise<{ accepted: boolean }> {
   const groups = await loadGroups();
 
-  if (request.payload.groupId === ALL_GROUP_ID) {
+  if (input.groupId === ALL_GROUP_ID) {
     const enabledGroupIds = groups.filter((item) => item.enabled).map((item) => item.groupId);
     if (enabledGroupIds.length === 0) {
       throw new Error('当前没有可刷新的启用分组');
     }
-    enqueuePriorityGroup(enabledGroupIds, 'manual-refresh');
+    enqueuePriorityGroup(enabledGroupIds, input.trigger, input.authorRefreshMode);
     return { accepted: true };
   }
 
-  const group = groups.find((item) => item.groupId === request.payload.groupId && item.enabled);
+  const group = groups.find((item) => item.groupId === input.groupId && item.enabled);
   if (!group) {
     throw new Error('分组不存在或已禁用');
   }
 
-  enqueuePriorityGroup([group.groupId], 'manual-refresh');
+  enqueuePriorityGroup([group.groupId], input.trigger, input.authorRefreshMode);
 
   return { accepted: true };
+}
+
+/**
+ * “刷新投稿列表”：先刷新收藏夹缓存，再强制刷新该分组作者首页。
+ */
+async function handleRefreshGroupPosts(
+  request: Extract<MessageRequest, { type: 'REFRESH_GROUP_POSTS' }>
+): Promise<ResponseMap['REFRESH_GROUP_POSTS']> {
+  return handleGroupRefreshRequest({
+    groupId: request.payload.groupId,
+    trigger: 'manual-refresh-posts',
+    authorRefreshMode: 'force'
+  });
+}
+
+/**
+ * “刷新收藏夹”：只刷新分组标题与作者列表，不继续刷新作者投稿缓存。
+ */
+async function handleRefreshGroupFav(
+  request: Extract<MessageRequest, { type: 'REFRESH_GROUP_FAV' }>
+): Promise<ResponseMap['REFRESH_GROUP_FAV']> {
+  return handleGroupRefreshRequest({
+    groupId: request.payload.groupId,
+    trigger: 'manual-refresh-fav',
+    authorRefreshMode: 'none'
+  });
 }
 
 async function handleGetSchedulerStatus(): Promise<ResponseMap['GET_SCHEDULER_STATUS']> {
@@ -1240,8 +1264,10 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleGetAuthorPage(request));
     case 'GET_AUTHOR_PREFERENCES':
       return ok(await handleGetAuthorPreferences(request));
-    case 'MANUAL_REFRESH':
-      return ok(await handleManualRefresh(request));
+    case 'REFRESH_GROUP_POSTS':
+      return ok(await handleRefreshGroupPosts(request));
+    case 'REFRESH_GROUP_FAV':
+      return ok(await handleRefreshGroupFav(request));
     case 'GET_SCHEDULER_STATUS':
       return ok(await handleGetSchedulerStatus());
     case 'RUN_SCHEDULER_NOW':

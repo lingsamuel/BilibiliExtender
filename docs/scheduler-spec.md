@@ -16,7 +16,7 @@
 - 通道 C：交互点赞任务（`like-action`）
 
 前台行为统一为“读缓存 + 提交任务”，不直接发起重型 API 刷新请求。
-- 前台只允许提交“刷新意图”（如手动刷新、分组创建触发刷新），不得携带调度细节（如 `mid`、`pn`、队列位置、是否等待完成）。
+- 前台只允许提交“刷新意图”（如“刷新投稿列表”“刷新收藏夹”、分组创建触发刷新），不得携带调度细节（如 `mid`、`pn`、队列位置、是否等待完成）。
 - 调度器必须异步执行刷新任务；`GET_GROUP_FEED` 必须保持纯缓存读取，不得在请求路径中同步等待补页任务完成。
 
 ### 1.3 非目标
@@ -94,7 +94,7 @@ interface AuthorVideoTask extends SchedulerTaskBase {
      - 第二页仍是默认优先的防御性目标；
      - 若当前连续缓存长度不足以覆盖 `2 + authorContinuousExtraPageCount` 页窗口，则继续入列后续补块任务；
      - 该判断不再依赖旧的 `usedInMixed/pageState` 回报，而是统一基于作者投稿列表服务的连续缓存长度与块池状态。
-- 优先：手动刷新、首次访问分组、新建分组初始化后触发。
+- 优先：“刷新投稿列表”、首次访问分组、新建分组初始化后触发。
 - Burst：
   - 任意入口发现“作者缓存不存在”时，进入 Burst 队列并优先拉取 `pn=1`；
   - 时间流构造器命中作者连续缓存边界时，进入 Burst 队列并按需拉取 `pn>=2`；
@@ -120,7 +120,7 @@ interface GroupFavTask extends SchedulerTaskBase {
 
 来源：
 - 定时：遍历所有启用分组，按 `groupFavRefreshIntervalMinutes` 判断 `GroupFeedCache.updatedAt` 是否过期。
-- 优先：`MANUAL_REFRESH`、分组列表“立即刷新”。
+- 优先：`REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV`、首次访问分组与新增分组初始化后触发的收藏夹刷新。
 
 执行：
 1. 读取分组配置，调用 `getAllFavVideos(mediaId)`。
@@ -218,7 +218,7 @@ interface LikeActionTask extends SchedulerTaskBase {
    - 调度器必须记录“发起页面 + groupId + mid + pn + ps”的等待会话，仅用于该次作者分页反馈；
    - 当目标页任务成功写入块缓存并完成一次连续缓存重建后，向对应内容页发送“页已就绪”通知；
    - 当目标页任务首次执行失败时，即按该次前台等待会话的终态失败处理：向对应内容页发送“页失败”通知，并结束该次等待会话。
-5. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `MANUAL_REFRESH`、时间流边界补页或收藏夹刷新链路。
+5. 上述通知能力仅用于 `REQUEST_AUTHOR_PAGE`，不得扩展到 `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV` 或时间流边界补页。
 6. 前台收到“页已就绪”通知后，应立即补发一次分页数据读取；收到“页失败”通知后，应立即停止本次作者分页等待中的兜底轮询。
 7. 等待会话一旦因 `failed` 结束，调度器不得再向该会话补发后续 `ready`；若后续因其他入口再次入队并成功，只能作为新的读取结果被动可见。
 
@@ -230,18 +230,28 @@ interface LikeActionTask extends SchedulerTaskBase {
    - 收到匹配当前 pending 目标的“页失败”通知；
    - 当前 pending 目标失效（分组切换、模式切换、筛选切换、用户取消等待等）。
 
-#### 3.4.2 MANUAL_REFRESH
+#### 3.4.2 REFRESH_GROUP_POSTS
 
-`MANUAL_REFRESH(groupId)` 的行为统一为“立即入列两段刷新链路”：
+`REFRESH_GROUP_POSTS(groupId)` 的行为统一为“立即入列两段刷新链路”：
+1. 前台点击前必须先完成二次确认；未确认时不得发消息。
+2. 确认后优先入列 `group-fav` 任务。
+3. `group-fav` 成功后，基于最新作者列表优先入列 `author-video` 任务。
+4. 接口立即返回 `{ accepted: true }`，前台轮询 `GET_GROUP_FEED`。
+
+#### 3.4.3 REFRESH_GROUP_FAV
+
+`REFRESH_GROUP_FAV(groupId)` 的行为为“仅刷新分组收藏夹缓存”：
 1. 优先入列 `group-fav` 任务。
-2. `group-fav` 成功后，基于最新作者列表优先入列 `author-video` 任务。
+2. `group-fav` 成功后不得继续衔接任何 `author-video` 任务。
 3. 接口立即返回 `{ accepted: true }`，前台轮询 `GET_GROUP_FEED`。
 
-#### 3.4.3 设置页“立即刷新”
+#### 3.4.4 设置页与抽屉刷新按钮
 
-分组列表每行新增“立即刷新”按钮，行为与抽屉手动刷新完全一致，调用同一 `MANUAL_REFRESH` 消息。
+设置页分组行与抽屉工具栏都提供两个按钮：
+1. “刷新投稿列表”：调用 `REFRESH_GROUP_POSTS`。
+2. “刷新收藏夹”：调用 `REFRESH_GROUP_FAV`。
 
-#### 3.4.4 调试页“立刻发起调度”
+#### 3.4.5 调试页“立刻发起调度”
 
 1. 调试页新增“立刻发起调度”按钮，触发目标范围为全部通道（`author-video` + `group-fav`）。
 2. 每个通道执行“单次补齐调度”：本次触发仅保证该通道队列总量达到 `schedulerBatchSize`，不会把候选任务全量入队。
@@ -254,17 +264,17 @@ interface LikeActionTask extends SchedulerTaskBase {
 5. 若通道空闲则立即启动执行循环；若已在运行则只合并任务队列，不创建并行循环。
 6. 触发后必须重置该通道 alarm 的下次触发时间：`nextAlarmAt = now + 对应通道 interval`。
 
-#### 3.4.5 前台调度边界（新增）
+#### 3.4.6 前台调度边界（新增）
 
 1. 前台业务路径不得调用“同步补页并等待结果”的接口（如 `ENSURE_AUTHOR_PAGE` 类能力）。
-2. 前台可提交 `MANUAL_REFRESH` / `REQUEST_AUTHOR_PAGE` 等“刷新意图”，但不得通过参数控制调度器内部策略（如强制 `failFast`、队首插入、通道选择、重试策略）。
+2. 前台可提交 `REFRESH_GROUP_POSTS` / `REFRESH_GROUP_FAV` / `REQUEST_AUTHOR_PAGE` 等“刷新意图”，但不得通过参数控制调度器内部策略（如强制 `failFast`、队首插入、通道选择、重试策略）。
 3. 刷新意图仅表达“需要什么数据”，是否立即执行、先执行哪条任务、何时完成由调度器自行决定。
 4. 调试接口（如 `RUN_SCHEDULER_NOW`）仅用于调试面板，不得进入生产用户交互主路径。
 
-#### 3.4.6 新增分组自动刷新
+#### 3.4.7 新增分组自动刷新
 
 1. `UPSERT_GROUP` 在“新增分组”场景下，保存成功后立即触发一次该分组刷新（等价入列一条 `group-fav` 优先任务）。
-2. “编辑已有分组”不自动触发此刷新，避免重复请求；仍由手动刷新或调度器驱动更新。
+2. “编辑已有分组”不自动触发此刷新，避免重复请求；仍由“刷新投稿列表”“刷新收藏夹”或调度器驱动更新。
 
 ### 3.5 常规模式批次与限速规则（关键约束）
 
@@ -389,12 +399,13 @@ globalCooldown: {
 
 ## 4. 消息协议
 
-沿用现有消息，`MANUAL_REFRESH` 请求/响应不变：
+刷新意图消息拆分为两个：
 
 ```ts
-| { type: 'MANUAL_REFRESH'; payload: { groupId: string } }
+| { type: 'REFRESH_GROUP_POSTS'; payload: { groupId: string } }
+| { type: 'REFRESH_GROUP_FAV'; payload: { groupId: string } }
 
-interface ManualRefreshResponse {
+interface RefreshGroupResponse {
   accepted: boolean;
 }
 ```
@@ -535,7 +546,8 @@ interface SchedulerStatusResponse {
     trigger:
       | 'alarm-routine'
       | 'debug-run-now'
-      | 'manual-refresh'
+      | 'manual-refresh-posts'
+      | 'manual-refresh-fav'
       | 'manual-click'
       | 'request-author-page'
       | 'group-created-auto-refresh'
@@ -573,7 +585,8 @@ interface SchedulerStatusResponse {
 
 - `src/background/scheduler.ts`：改为通道装配与对外门面。
 - `src/background/index.ts`：
-  - `MANUAL_REFRESH` 改为触发“收藏夹刷新 → 作者视频刷新”链路。
+  - `REFRESH_GROUP_POSTS` 触发“收藏夹刷新 → 作者视频刷新”链路。
+  - `REFRESH_GROUP_FAV` 只触发收藏夹刷新链路。
   - `GET_GROUP_FEED` 无缓存时触发 `group-fav` 优先任务。
 - `src/background/index.ts`：
   - 新增 `RUN_SCHEDULER_NOW` 消息路由。
@@ -584,7 +597,10 @@ interface SchedulerStatusResponse {
 - `src/shared/components/SettingsPanel.vue`：
   - 新增 `groupFavRefreshIntervalMinutes` 设置项。
   - 新增 `schedulerBatchSize` 设置项（全调度器共享）。
-  - 分组行新增“立即刷新”按钮。
+  - 分组行新增“刷新投稿列表”“刷新收藏夹”按钮。
+- `src/content/components/DrawerApp.vue`：
+  - 工具栏新增“刷新投稿列表”“刷新收藏夹”按钮。
+  - “刷新投稿列表”点击前加入二次确认。
 - `src/shared/messages.ts`：
   - 新增 `RUN_SCHEDULER_NOW` 消息类型与响应，调试状态返回 `schedulerBatchSize`。
   - `LIKE_VIDEO`、`BATCH_LIKE_VIDEOS` 消息新增 `pageOrigin`、`pageReferer`，用于点赞请求的 DNR 规则安装。
