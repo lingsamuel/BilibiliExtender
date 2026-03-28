@@ -31,7 +31,7 @@
 
 本方案的目标是：
 
-1. 保留当前大类优先级语义
+1. 保留当前通道编排语义
    - Burst 仍高于作者常规与分组收藏夹常规执行；
    - 用户手动触发仍高于后台例行刷新；
    - 不把所有通道粗暴合并成一个全局大队列。
@@ -39,7 +39,7 @@
 2. 引入“逻辑请求批次”概念
    - 同一次用户动作、同一次 `GET_GROUP_FEED` 缺失补齐、同一次 alarm 收集出来的一批作者任务，应共享同一批次元数据。
 
-3. 在同层优先级内保证“旧请求优先”
+3. 在同一个队列的同层优先级内保证“旧请求优先”
    - 先来的逻辑请求，不应被后来的同层请求整体插队。
 
 4. 在同一请求批次内部尽量先刷新更旧的数据
@@ -103,9 +103,11 @@
 - 同一个 `requestAt`
 - 同一来源 `trigger`
 
-### 5.3 任务优先级层
+### 5.3 队列内优先级层
 
-用于表达“这一类任务应整体排在另一类任务之前”，它高于 `requestAt`。
+用于表达“同一个队列里，这一类任务应整体排在另一类任务之前”。
+
+它不是跨队列总优先级，不用于比较 `author-video`、`group-fav`、`burst` 之间谁全局更靠前。
 
 ## 6. 数据模型
 
@@ -115,7 +117,6 @@
 
 ```ts
 interface SchedulerOrderMeta {
-  priorityClass: number;
   requestAt: number;
   requestBatchId: string;
   requestSeq: number;
@@ -125,23 +126,19 @@ interface SchedulerOrderMeta {
 
 字段含义：
 
-1. `priorityClass`
-   - 业务优先级层。
-   - 数值越小，优先级越高。
-
-2. `requestAt`
+1. `requestAt`
    - 逻辑请求发生时间。
    - 由“发起意图的那一刻”生成，不是“任务真正塞入队列的时刻”。
 
-3. `requestBatchId`
+2. `requestBatchId`
    - 逻辑请求批次 ID。
    - 用于显式表达“这几条任务属于同一次请求”，避免仅靠毫秒时间戳分组带来的歧义。
 
-4. `requestSeq`
+3. `requestSeq`
    - 同一个请求批次内部的稳定序号。
    - 用于兜底同批次内完全同分数时的先后关系。
 
-5. `enqueueSeq`
+4. `enqueueSeq`
    - 全局单调递增序号。
    - 表示该任务对象真正被调度器接纳的先后顺序，作为最终兜底。
 
@@ -151,6 +148,7 @@ interface SchedulerOrderMeta {
 
 ```ts
 interface AuthorTaskOrderMeta extends SchedulerOrderMeta {
+  queueOrderClass: number;
   staleAt: number;
 }
 ```
@@ -170,6 +168,7 @@ staleAt = lastFirstPageFetchedAt || firstPageFetchedAt || lastFetchedAt || 0
 
 - 对 `pn > 1` 的 Burst 补页任务，如果已有作者缓存，也统一使用该作者首页抓取时间；
 - 本轮方案不再单独为“第 N 页块自己的 fetchedAt”设计排序键，先保持作者级口径统一。
+- `queueOrderClass` 只在作者任务所在的队列内部比较。
 
 ### 6.3 分组收藏夹任务扩展
 
@@ -177,6 +176,7 @@ staleAt = lastFirstPageFetchedAt || firstPageFetchedAt || lastFetchedAt || 0
 
 ```ts
 interface GroupFavTaskOrderMeta extends SchedulerOrderMeta {
+  queueOrderClass: number;
   staleAt: number;
 }
 ```
@@ -200,7 +200,6 @@ interface SchedulerRequestContext {
   requestBatchId: string;
   requestAt: number;
   trigger: SchedulerTaskTrigger;
-  priorityClass: number;
 }
 ```
 
@@ -210,35 +209,56 @@ interface SchedulerRequestContext {
 2. 同一次入口生成的全部任务共享同一个 `requestBatchId` 与 `requestAt`
 3. 二段链路衍生任务必须继承父上下文，而不是重新生成时间
 
-## 7. 优先级层定义
+## 7. 三个队列各自的排序规则
 
-为避免“单纯按时间排序”冲掉现有业务语义，本方案先保留一层显式优先级分类。
+本方案不再定义一个跨 `author-video`、`group-fav`、`burst` 共享的总优先级表。
 
-建议优先级层如下：
+改为：
 
-| `priorityClass` | 任务类型 | 说明 |
+1. 每个队列维护自己的 `queueOrderClass`
+2. 每个队列只在本队列内部比较 `queueOrderClass`
+3. 队列之间的影响继续由现有编排规则决定
+
+### 7.1 作者常规队列
+
+建议 `author-video` 队列内优先级如下：
+
+| `queueOrderClass` | 任务类型 | 说明 |
 | --- | --- | --- |
-| `0` | Burst 队首交互任务 | 预留给 `enqueueBurstHeadAndWait(...)` 这类必须抢到 Burst 队首的任务 |
+| `0` | 用户主动刷新链路 | 例如 `REFRESH_GROUP_POSTS` 衍生作者任务、`GET_GROUP_FEED` 缺首页缓存补齐 |
+| `1` | 常规首页维护 | alarm 驱动的首页过期刷新 |
+| `2` | 低优先预取 | `extend-continuous-window` |
+| `3` | 调试页补齐 | `RUN_SCHEDULER_NOW` 触发的补齐任务 |
+
+### 7.2 Burst 队列
+
+建议 `burst` 队列内优先级如下：
+
+| `queueOrderClass` | 任务类型 | 说明 |
+| --- | --- | --- |
+| `0` | Burst 队首交互任务 | 预留给 `enqueueBurstHeadAndWait(...)` 这种必须抢到队首的任务 |
 | `1` | Burst 交互任务 | 例如 `REQUEST_AUTHOR_PAGE`、作者级局部刷新 |
 | `2` | Burst 自动任务 | 例如无缓存作者首刷、时间流边界补页 |
-| `3` | 常规用户刷新链路 | 例如 `REFRESH_GROUP_POSTS` 衍生作者任务、`GET_GROUP_FEED` 缺首页缓存补齐 |
-| `4` | 常规维护任务 | 例如 alarm 驱动的首页过期刷新、分组收藏夹过期刷新 |
-| `5` | 低优先维护任务 | 例如 `extend-continuous-window` 预取、调试页补齐 |
 
-说明：
+### 7.3 分组收藏夹队列
 
-1. `priorityClass` 只表达大类先后，不替代具体去重与业务开关。
-2. `group-fav` 与作者任务不要求共享同一个数值空间来做“全局总序”，但建议按同一套语义定义，方便继承与调试展示。
-3. 未来如果确认“时间流边界补页必须高于一般无缓存首刷”，可继续细分 `priorityClass=1/2`，但当前先不扩层。
+建议 `group-fav` 队列内优先级如下：
+
+| `queueOrderClass` | 任务类型 | 说明 |
+| --- | --- | --- |
+| `0` | 用户主动分组刷新 | `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV` |
+| `1` | 缺缓存补齐 | `GET_GROUP_FEED` 发现无收藏夹缓存、新增分组自动刷新 |
+| `2` | 常规维护 | alarm 驱动的分组收藏夹过期刷新 |
+| `3` | 调试页补齐 | `RUN_SCHEDULER_NOW` 触发的补齐任务 |
 
 ## 8. 排序规则
 
 ### 8.1 基本原则
 
-排序使用复合键，而不是单一时间戳：
+排序使用复合键，而不是单一时间戳。每个队列内部都用同一类结构，但只在本队列内比较：
 
 ```txt
-priorityClass
+queueOrderClass
 -> requestAt
 -> staleAt
 -> requestSeq
@@ -249,7 +269,7 @@ priorityClass
 
 含义：
 
-1. 先保留大类优先级
+1. 先比较本队列内的大类优先级
 2. 同一层里旧请求优先
 3. 同一请求里旧缓存优先
 4. 同条件下保持稳定
@@ -261,7 +281,7 @@ priorityClass
 排序键：
 
 ```txt
-priorityClass
+queueOrderClass
 -> requestAt
 -> staleAt
 -> requestSeq
@@ -276,10 +296,10 @@ priorityClass
 
 ### 8.3 Burst 队列排序
 
-Burst 队列也使用同一套复合排序，但保留两个额外约束：
+Burst 队列也使用同一套复合排序，但 `queueOrderClass` 只在 Burst 队列内部解释，并保留两个额外约束：
 
 1. 当前正在执行的 `currentTask` 不参与重排。
-2. 若某入口明确要求“队首插入语义”，仍通过更高 `priorityClass` 或专门的头插入口实现，不用 `requestAt` 去模拟。
+2. 若某入口明确要求“队首插入语义”，仍通过更高 Burst `queueOrderClass` 或专门的头插入口实现，不用 `requestAt` 去模拟。
 
 这意味着：
 
@@ -291,7 +311,7 @@ Burst 队列也使用同一套复合排序，但保留两个额外约束：
 `group-fav` 队列也应使用同一套排序键：
 
 ```txt
-priorityClass
+queueOrderClass
 -> requestAt
 -> staleAt
 -> requestSeq
@@ -346,7 +366,7 @@ priorityClass
 
 1. 每次前台显式翻页请求都创建一个新的 `SchedulerRequestContext`
 2. 若目标页已确认无更多页，则不创建上下文
-3. 进入 Burst 的分页任务携带 `priorityClass=1`
+3. 进入 Burst 的分页任务携带 Burst 队列里的交互级 `queueOrderClass`
 
 说明：
 
@@ -358,7 +378,7 @@ priorityClass
 规则：
 
 1. 一次 `GET_GROUP_FEED` 构造过程中收集到的全部 `boundaryTasks` 共享一个 `SchedulerRequestContext`
-2. 这些任务进入 Burst 时使用自动 Burst 的优先级层
+2. 这些任务进入 Burst 时使用 Burst 队列里的自动任务层
 
 ### 9.6 alarm 常规收集
 
@@ -369,7 +389,7 @@ priorityClass
    - 首页过期刷新
    - 连续窗口预取
    共享同一 `requestBatchId`
-3. 但两类任务仍用不同 `priorityClass`
+3. 但两类任务仍用作者常规队列里不同的 `queueOrderClass`
 
 这意味着：
 
@@ -382,11 +402,11 @@ priorityClass
 
 1. 每次调试页点击都生成新的上下文
 2. “补齐到 batch size”的任务共享同一批次
-3. 优先级应低于真正的用户主动刷新，高于普通预取是否需要提升由实现时再确认
+3. 在各自队列内，优先级应低于真正的用户主动刷新
 
 当前建议：
 
-- 先按 `priorityClass=5` 处理，避免调试按钮影响生产用户语义。
+- 先按各自队列里的最低维护层处理，避免调试按钮影响生产用户语义。
 
 ## 10. 去重与元数据合并规则
 
@@ -402,7 +422,7 @@ priorityClass
    - `failFast`
 
 2. 新增排序元数据升级规则：
-   - `priorityClass` 取更高优先级（更小的值）
+   - `queueOrderClass` 取本队列里更高优先级（更小的值）
    - `requestAt` 取更旧的值
    - `requestBatchId` 跟随“最终保留下来的更旧 / 更高优先级语义”
    - `requestSeq` 取更靠前的值
@@ -415,7 +435,7 @@ priorityClass
 
 除现有 `authorRefreshMode` 升级规则外，再补充：
 
-1. `priorityClass` 取更高优先级
+1. `queueOrderClass` 取本队列里更高优先级
 2. `requestAt` 取更旧值
 3. `requestBatchId` / `requestSeq` 跟随被保留的旧请求语义
 
@@ -450,17 +470,17 @@ priorityClass
 
 实现本方案后，应满足以下行为：
 
-1. 同一层优先级中，旧请求永远不会被新请求整体插队。
+1. 同一个队列的同一层优先级中，旧请求永远不会被新请求整体插队。
 2. 同一请求批次中，缓存更旧的作者优先刷新。
 3. 手动刷新仍整体高于后台 alarm 维护。
-4. Burst 仍整体高于作者常规与分组收藏夹常规执行。
+4. Burst 仍整体高于作者常规与分组收藏夹常规执行，但这是通道编排规则，不是跨队列共享排序值。
 5. 未来即使队列里积压数百个作者，也能维持“先满足旧请求，再追求更旧数据优先”的顺序。
 
 ## 13. 开放问题
 
 以下问题需要在真正实现前再确认：
 
-1. `REQUEST_AUTHOR_PAGE` 是否应继续只是 `priorityClass=1`，还是应该恢复成真正的 Burst 队首插入语义。
+1. `REQUEST_AUTHOR_PAGE` 是否应继续只是 Burst 队列里的交互层，还是应该恢复成真正的 Burst 队首插入语义。
 2. `load-more-boundary` 是否应高于“无缓存作者首刷”。
 3. `RUN_SCHEDULER_NOW` 是否要保持最低维护优先级，还是在调试场景里提升到高于普通 alarm。
-4. 调试状态是否需要把 `requestAt / requestBatchId / priorityClass` 直接暴露出来，方便验证顺序。
+4. 调试状态是否需要把 `requestAt / requestBatchId / queueOrderClass` 直接暴露出来，方便验证顺序。
