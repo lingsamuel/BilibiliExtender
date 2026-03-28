@@ -60,6 +60,7 @@ import {
   type MixedBuildDiagnostics
 } from '@/background/feed-service';
 import {
+  createSchedulerRequestContext,
   enqueueBurst,
   enqueueLikeBatch,
   enqueueLikeActionAndWait,
@@ -98,8 +99,8 @@ function normalizeGroupInput(group: GroupConfig): GroupConfig {
 }
 
 interface MissingAuthorTaskBuckets {
-  burst: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
-  priority: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
+  burst: Array<{ mid: number; name: string; pn: number; ps: number; staleAt: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
+  priority: Array<{ mid: number; name: string; pn: number; ps: number; staleAt: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }>;
 }
 
 const ALL_GROUP_ID = VIRTUAL_GROUP_ID.ALL;
@@ -155,8 +156,8 @@ function splitMissingAuthorTasks(
   authorCacheMap: Awaited<ReturnType<typeof getAuthorCacheSnapshot>>,
   pageSize: number
 ): MissingAuthorTaskBuckets {
-  const burst: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
-  const priority: Array<{ mid: number; name: string; pn: number; ps: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
+  const burst: Array<{ mid: number; name: string; pn: number; ps: number; staleAt: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
+  const priority: Array<{ mid: number; name: string; pn: number; ps: number; staleAt: number; reason: 'first-page-refresh'; trigger: 'get-group-feed-missing-author-cache' }> = [];
 
   for (const mid of authorMids) {
     const cache = authorCacheMap[mid];
@@ -169,6 +170,7 @@ function splitMissingAuthorTasks(
       name: cache?.name?.trim() || String(mid),
       pn: 1,
       ps: pageSize,
+      staleAt: cache?.lastFirstPageFetchedAt || cache?.firstPageFetchedAt || cache?.lastFetchedAt || 0,
       reason: 'first-page-refresh' as const,
       trigger: 'get-group-feed-missing-author-cache' as const
     };
@@ -546,6 +548,10 @@ async function handleGetGroupFeed(
     enqueueBurst(
       diagnostics!.boundaryTasks.map((task) => ({
         ...task,
+        staleAt: authorCacheMap[task.mid]?.lastFirstPageFetchedAt
+          || authorCacheMap[task.mid]?.firstPageFetchedAt
+          || authorCacheMap[task.mid]?.lastFetchedAt
+          || 0,
         reason: 'load-more-boundary',
         trigger: 'get-group-feed-boundary'
       }))
@@ -557,8 +563,9 @@ async function handleGetGroupFeed(
 
   const missingAuthorTasks = splitMissingAuthorTasks(feedCache.authorMids, authorCacheMap, settings.authorVideosPageSize);
   if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
-    enqueueBurst(missingAuthorTasks.burst);
-    enqueuePriority(missingAuthorTasks.priority);
+    const requestContext = createSchedulerRequestContext();
+    enqueueBurst(missingAuthorTasks.burst, requestContext);
+    enqueuePriority(missingAuthorTasks.priority, requestContext);
     if (runtimeChanged || runtimeMutatedByLoadMore) {
       await saveRuntimeStateMap(runtimeMap);
     }
@@ -1064,6 +1071,7 @@ async function handleRequestAuthorPage(
       groupId,
       pn,
       ps,
+      staleAt: cache?.lastFirstPageFetchedAt || cache?.firstPageFetchedAt || cache?.lastFetchedAt || 0,
       reason: forceRefreshCurrentPage ? 'refresh-author-current-page' : 'request-author-page',
       trigger: 'request-author-page',
       forceRefreshCurrentPage,
@@ -1092,6 +1100,7 @@ async function handleRequestAuthorPage(
       groupId,
       pn,
       ps,
+      staleAt: cache?.lastFirstPageFetchedAt || cache?.firstPageFetchedAt || cache?.lastFetchedAt || 0,
       reason: forceRefreshCurrentPage ? 'refresh-author-current-page' : 'request-author-page',
       trigger: 'request-author-page',
       forceRefreshCurrentPage,

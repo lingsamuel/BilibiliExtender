@@ -236,42 +236,25 @@ key = `like:${bvid}`
 
 ### 5.2 同一队列内的入队优先级
 
-当前实现没有统一的“排序器”。队列顺序主要由“插到头部还是尾部”决定。
+当前实现里，三个作者相关队列都已经具备统一的“入队后稳定重排”逻辑，但它们各自维护自己的排序规则，不共享跨队列总优先级表。
 
-#### 5.2.1 优先入队
+共同点：
 
-以下 API 会把新任务插到队首：
+1. 新任务入队后，不再只靠“头插 / 尾插”决定最终顺序。
+2. 队列会在去重 / 合并后按复合键稳定排序：
+   - `queueOrderClass`
+   - `requestAt`
+   - `staleAt`
+   - `requestSeq`
+   - `enqueueSeq`
+3. `queueOrderClass` 只在本队列内部比较。
+4. `requestAt` / `requestBatchId` 表示逻辑请求批次，用于保证“旧请求优先”。
+5. `staleAt` 表示该任务对应缓存的新旧程度，用于保证“同批次内更旧数据优先”。
 
-- `enqueuePriority(...)`
-- `enqueuePriorityGroup(...)`
-- `enqueueLikeActionAndWait(...)`
-- `enqueueLikeBatch(...)`
-- `enqueueBurstHeadAndWait(...)` 的内部单任务入队
+仍保持特例：
 
-实现方式是：
-
-```ts
-state.queue.unshift(...newTasks)
-```
-
-性质：
-
-- 同一次调用内，输入数组顺序会被保留；
-- 但整批新任务会整体压到旧队列前面。
-
-#### 5.2.2 常规入队
-
-以下路径会把任务插到队尾：
-
-- `enqueueBurst(...)`
-- 常规 alarm 收集后的 `dedupeAndEnqueue(..., false)`
-- 调试页补齐后的 `fillQueueToBatchSize(...)`
-
-实现方式是：
-
-```ts
-state.queue.push(...newTasks)
-```
+1. `like-action` 仍然是独立串行队列，不参与这套排序模型。
+2. `enqueueBurstHeadAndWait(...)` 仍通过 Burst 队列里的最高层级表达“队首语义”，但现在是靠 Burst 队列内排序实现，而不是简单 `unshift`。
 
 ### 5.3 当前去重范围
 
@@ -297,17 +280,17 @@ state.queue.push(...newTasks)
    - 当前代码存在该能力，但仓库内还没有线上入口真正调用它。
 
 2. Burst 队列中已经存在的任务
-   - 包括无缓存首刷、时间流边界补页、`REQUEST_AUTHOR_PAGE`
-   - 这些任务都走 `enqueueBurst(...)`，默认追加到 Burst 队尾
+   - `REQUEST_AUTHOR_PAGE` / 作者级局部刷新 高于自动 Burst
+   - 自动 Burst 包括无缓存首刷、时间流边界补页
 
 3. 作者常规优先任务
-   - `enqueuePriority(...)`
    - 例如 `GET_GROUP_FEED` 发现“已有缓存壳但缺首页抓取时间”的作者
    - 例如 `group-fav` 成功后衔接出来的作者刷新任务
+   - 同一层内再按 `requestAt -> staleAt` 排序
 
 4. 分组收藏夹优先任务
-   - `enqueuePriorityGroup(...)`
-   - 例如手动刷新、缺分组缓存、新增分组自动刷新
+   - 手动刷新高于缺缓存补齐
+   - 缺缓存补齐高于 alarm 常规维护
 
 5. alarm 常规任务
    - 作者首页过期刷新
@@ -327,42 +310,89 @@ state.queue.push(...newTasks)
 
 ### 6.1 作者常规队列
 
-作者常规队列当前没有按“请求时间”或“缓存更新时间”做统一重排。
+作者常规队列现在会在每次入队后按固定排序键重排。
 
-它的顺序来源分三类：
+排序键：
+
+```txt
+queueOrderClass
+-> requestAt
+-> staleAt
+-> requestSeq
+-> enqueueSeq
+```
+
+作者常规队列的 `queueOrderClass` 当前分层如下：
+
+1. `0`
+   - 用户主动刷新链路
+   - 例如 `GET_GROUP_FEED` 缺首页缓存补齐
+   - 例如 `REFRESH_GROUP_POSTS` 衍生作者任务
+
+2. `1`
+   - 常规首页维护
+   - 例如 alarm 驱动的首页过期刷新
+
+3. `2`
+   - 低优先连续窗口预取
+   - `extend-continuous-window`
+
+4. `3`
+   - 调试页 `RUN_SCHEDULER_NOW` 补齐任务
+
+对应收集来源仍然分三类：
 
 1. 常规 alarm 收集
    - 无缓存作者：不进常规队列，进 Burst
    - 过期首页任务：按 `lastFirstPageFetchedAt || firstPageFetchedAt || lastFetchedAt` 升序收集
    - 连续窗口预取：按 `mid`、`pn` 升序收集
-   - 最终以 `[staleTasks..., prefetchTasks...]` 的顺序整体追加到队尾
+   - 入队后再按队列排序键统一重排
 
 2. `GET_GROUP_FEED` 缺首页缓存
-   - 仅把“已有缓存壳但缺首页抓取时间”的作者走 `enqueuePriority(...)`
-   - 整批压到队首
+   - 仅把“已有缓存壳但缺首页抓取时间”的作者送入作者常规队列
+   - 这一批任务共享同一个 `requestBatchId / requestAt`
 
 3. `group-fav` 成功后的二段衔接
    - `authorRefreshMode='force'` 时：
-     - 该分组所有已有缓存作者都会以优先任务形式重新压到队首
+     - 该分组所有已有缓存作者都会进入作者常规队列
    - `authorRefreshMode='stale'` 时：
-     - 只把已过期作者压到队首
+     - 只把已过期作者送入作者常规队列
+   - 二段衍生作者任务会继承原始 `group-fav` 任务的 `requestBatchId / requestAt`
 
-这也是“重复手动全量刷新会把上一轮尾部作者继续往后挤”的根源：
+因此，作者常规队列当前已经具备两条修正后的性质：
 
-- 队列内没有“旧请求优先”或“更旧作者优先”的统一重排；
-- 只有“新来的优先任务整批压队首”。
+1. 同层里旧请求优先。
+2. 同一请求内更旧缓存优先。
 
 ### 6.2 Burst 队列
 
-Burst 队列当前有两种入队方式：
+Burst 队列同样会在入队后按排序键重排。
 
-1. `enqueueBurst(...)`
-   - 默认追加到队尾
-   - 当前线上入口都走这个路径
+排序键：
 
-2. `enqueueBurstHeadAndWait(...)`
-   - 会把任务插到队首
+```txt
+queueOrderClass
+-> requestAt
+-> staleAt
+-> requestSeq
+-> enqueueSeq
+```
+
+Burst 队列的 `queueOrderClass` 当前分层如下：
+
+1. `0`
+   - `enqueueBurstHeadAndWait(...)`
+   - 最高层的 Burst 队首语义
    - 当前仓库内存在实现，但没有被实际业务入口调用
+
+2. `1`
+   - 交互型 Burst
+   - 例如 `REQUEST_AUTHOR_PAGE`
+
+3. `2`
+   - 自动 Burst
+   - 例如无缓存作者首刷
+   - 时间流命中边界补页
 
 当前线上会进入 Burst 的入口包括：
 
@@ -371,23 +401,44 @@ Burst 队列当前有两种入队方式：
 - `REQUEST_AUTHOR_PAGE`
 - `group-fav` 成功后发现的新作者首刷
 
-Burst 当前不会根据 `reason` 再做二次排序。
+需要注意：
+
+1. Burst 仍然不会中断正在执行的当前项。
+2. 但新入队 Burst 会影响“下一项”选择，因为队列会重新按排序键排列。
 
 ### 6.3 分组收藏夹队列
 
-分组收藏夹队列顺序来源分三类：
+分组收藏夹队列现在也会按请求批次与缓存新旧程度重排。
 
-1. 常规 alarm 收集
-   - 按 `GroupFeedCache.updatedAt` 升序
-   - 追加到队尾
+排序键：
 
-2. 手动/缺缓存/新增分组
-   - 统一走 `enqueuePriorityGroup(...)`
-   - 整批压到队首
+```txt
+queueOrderClass
+-> requestAt
+-> staleAt
+-> requestSeq
+-> enqueueSeq
+```
 
-3. 调试页“立刻发起调度”
-   - 先保留现有队列
-   - 若未满 batch size，再按“最旧分组优先”补到队尾
+分组收藏夹队列的 `queueOrderClass` 当前分层如下：
+
+1. `0`
+   - 用户主动分组刷新
+   - `REFRESH_GROUP_POSTS`、`REFRESH_GROUP_FAV`
+
+2. `1`
+   - 缺缓存补齐与新增分组自动刷新
+   - `GET_GROUP_FEED` 缺收藏夹缓存、新增分组自动刷新
+
+3. `2`
+   - 常规 alarm 收集
+   - 低于手动刷新与缺缓存补齐
+
+4. `3`
+   - 调试页“立刻发起调度”
+   - 作为最低层维护任务补齐到 batch size
+
+其中 `staleAt` 使用 `GroupFeedCache.updatedAt || 0`。
 
 此外，分组收藏夹队列存在“弱任务升级为强任务”的能力：
 
@@ -475,18 +526,20 @@ Burst 的失败语义与常规队列不同：
 当前实现中：
 
 - `GET_GROUP_FEED` 命中边界后调用的是 `enqueueBurst(...)`
-- 这会把任务追加到 Burst 队尾
+- 这会把任务作为自动 Burst 入列
+- 它会参与 Burst 队列排序，但不会升级成 Burst 队首层
 
 因此，当前“时间流边界补页”并不具备最高级 Burst 抢占。
 
-### 8.3 `REQUEST_AUTHOR_PAGE` 当前也只是追加到 Burst 队尾
+### 8.3 `REQUEST_AUTHOR_PAGE` 当前不是 Burst 队首专用入口
 
 当前实现中：
 
 - `REQUEST_AUTHOR_PAGE` 会建立等待会话
-- 但实际入队仍然走 `enqueueBurst(...)`
+- 实际入队仍然走 `enqueueBurst(...)`
+- 但它会进入 Burst 队列里的交互层，高于自动 Burst
 
-所以它不会自动插到已有 Burst 任务前面。
+所以它不会变成“物理 `unshift` 到队首”的特殊入口，但会在 Burst 队列重排后优先于自动 Burst 任务。
 
 ### 8.4 `like-action` 当前不受 Burst 阻塞，也不受全局冷却限制
 
@@ -511,17 +564,18 @@ Burst 的失败语义与常规队列不同：
 
 ## 9. 当前已知的优先级风险点
 
-当前实现下，以下风险是结构性存在的：
+当前实现下，以下问题仍需要关注：
 
-1. 重复的“手动刷新投稿列表”可能让旧请求尾部作者持续后移
-   - 原因是 `group-fav` 成功后会再次把作者优先任务整批 `unshift` 到作者常规队列队首
-   - 队列内部没有“请求时间更旧优先”的统一排序
-
-2. Burst 内部当前也没有按请求时间再排序
-   - 线上入口都走 Burst 队尾追加
-   - 先来的 Burst 会先执行，但不会因为 `reason` 自动提升
-
-3. 常规队列去重不覆盖 `batchFailed`
+1. 常规队列去重仍不覆盖 `batchFailed`
    - 同 key 失败任务在批次收尾前，理论上可能再次被入队
 
-这些风险并不表示当前实现一定错误，但说明它的优先级主要依赖“头插/尾插”而不是一个稳定的全局排序规则。
+2. `enqueueBurstHeadAndWait(...)` 这类最高层 Burst 入口当前仍没有真实线上调用方
+   - 也就是说，现有 Burst 抢占层虽然已预留，但生产路径目前只覆盖交互 Burst 与自动 Burst 两层
+
+3. `load-more-boundary` 仍不是 Burst 队首层
+   - 它只是自动 Burst，不是“必须立刻抢到下一项”的最高抢占语义
+
+已经被本轮修正消除的问题：
+
+1. 重复“手动刷新投稿列表”导致旧请求尾部作者持续后移
+2. 作者常规队列与 Burst 队列缺少“旧请求优先”排序

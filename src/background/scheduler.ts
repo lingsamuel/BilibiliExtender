@@ -45,17 +45,44 @@ export interface SchedulerTask {
   ps?: number;
   reason?: SchedulerAuthorTaskReason;
   trigger?: SchedulerTaskTrigger;
+  staleAt?: number;
+  queueOrderClass?: number;
+  requestContext?: SchedulerRequestContext;
+  requestSeq?: number;
   forceRefreshCurrentPage?: boolean;
   ensureContinuousFromHead?: boolean;
   // 仅用于“前台同步等待”的补页任务：失败后不重试，直接回传错误。
   failFast?: boolean;
 }
 
-interface GroupFavTask {
+export interface SchedulerRequestContext {
+  requestAt: number;
+  requestBatchId: string;
+}
+
+interface SchedulerOrderMeta {
+  requestAt: number;
+  requestBatchId: string;
+  requestSeq: number;
+  enqueueSeq: number;
+}
+
+interface QueueOrderMeta extends SchedulerOrderMeta {
+  queueOrderClass: number;
+  staleAt: number;
+}
+
+interface GroupFavTaskInput {
   groupId: string;
   trigger: SchedulerTaskTrigger;
   authorRefreshMode: 'stale' | 'force' | 'none';
+  staleAt?: number;
+  queueOrderClass?: number;
+  requestContext?: SchedulerRequestContext;
+  requestSeq?: number;
 }
+
+interface GroupFavTask extends Omit<GroupFavTaskInput, 'staleAt' | 'queueOrderClass' | 'requestContext' | 'requestSeq'>, QueueOrderMeta {}
 
 interface LikePageContext {
   tabId: number;
@@ -81,7 +108,9 @@ const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
 
 type AuthorTask =
   Required<Pick<SchedulerTask, 'mid' | 'name' | 'pn' | 'ps' | 'reason' | 'failFast' | 'trigger'>>
-  & Pick<SchedulerTask, 'groupId' | 'forceRefreshCurrentPage' | 'ensureContinuousFromHead'>;
+  & Required<Pick<SchedulerTask, 'staleAt' | 'queueOrderClass' | 'requestSeq'>>
+  & Pick<SchedulerTask, 'groupId' | 'forceRefreshCurrentPage' | 'ensureContinuousFromHead'>
+  & SchedulerOrderMeta;
 type BurstCooldownReason = 'intra-delay' | 'error' | null;
 
 export interface LikeTaskResult {
@@ -187,6 +216,8 @@ const burstState = createBurstState();
 const history: HistoryEntry[] = [];
 let historyHydrated = false;
 let historyPersistTimer: ReturnType<typeof setTimeout> | null = null;
+let requestBatchCounter = 0;
+let enqueueSequence = 0;
 // 全局风控冷却门：命中 WBI 重试失败后，所有通道统一暂停请求一段时间。
 const globalCooldownState: GlobalCooldownState = {
   nextAllowedAt: 0,
@@ -315,15 +346,31 @@ function getGroupTitle(group: GroupConfig): string {
   return group.alias?.trim() || group.mediaTitle || group.groupId;
 }
 
-function keyOfAuthorTask(task: Pick<AuthorTask, 'mid' | 'pn' | 'ps'>): string {
-  return `${task.mid}:${task.pn}:${task.ps}`;
+export function createSchedulerRequestContext(): SchedulerRequestContext {
+  const requestAt = Date.now();
+  requestBatchCounter += 1;
+  return {
+    requestAt,
+    requestBatchId: `req:${requestAt}:${requestBatchCounter}`
+  };
+}
+
+function inheritSchedulerRequestContext(task: Pick<SchedulerOrderMeta, 'requestAt' | 'requestBatchId'>): SchedulerRequestContext {
+  return {
+    requestAt: task.requestAt,
+    requestBatchId: task.requestBatchId
+  };
+}
+
+function keyOfAuthorTask(task: Pick<SchedulerTask, 'mid' | 'pn' | 'ps'>): string {
+  return `${task.mid}:${Math.max(1, Number(task.pn) || 1)}:${Math.max(1, Number(task.ps) || 1)}`;
 }
 
 function keyOfLikeTask(task: Pick<LikeActionTask, 'bvid'>): LikeActionTask['key'] {
   return `like:${task.bvid}`;
 }
 
-function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
+function buildAuthorTaskBase(task: SchedulerTask): Omit<AuthorTask, keyof SchedulerOrderMeta | 'staleAt' | 'queueOrderClass' | 'requestSeq'> {
   return {
     mid: task.mid,
     name: task.name?.trim() || String(task.mid),
@@ -336,6 +383,119 @@ function normalizeAuthorTask(task: SchedulerTask): AuthorTask {
     ensureContinuousFromHead: task.ensureContinuousFromHead === true,
     failFast: task.failFast === true
   };
+}
+
+function resolveRegularAuthorQueueOrderClass(task: SchedulerTask): number {
+  if (typeof task.queueOrderClass === 'number') {
+    return task.queueOrderClass;
+  }
+  if (task.reason === 'extend-continuous-window') {
+    return 2;
+  }
+  if (task.trigger === 'debug-run-now') {
+    return 3;
+  }
+  if (task.trigger === 'alarm-routine') {
+    return 1;
+  }
+  return 0;
+}
+
+function resolveBurstQueueOrderClass(task: SchedulerTask): number {
+  if (typeof task.queueOrderClass === 'number') {
+    return task.queueOrderClass;
+  }
+  if (task.trigger === 'request-author-page' || task.reason === 'request-author-page' || task.reason === 'refresh-author-current-page') {
+    return 1;
+  }
+  return 2;
+}
+
+function normalizeRegularAuthorTask(task: SchedulerTask, requestContext: SchedulerRequestContext, requestSeq: number): AuthorTask {
+  return {
+    ...buildAuthorTaskBase(task),
+    staleAt: Math.max(0, Number(task.staleAt) || 0),
+    queueOrderClass: resolveRegularAuthorQueueOrderClass(task),
+    requestAt: task.requestContext?.requestAt ?? requestContext.requestAt,
+    requestBatchId: task.requestContext?.requestBatchId ?? requestContext.requestBatchId,
+    requestSeq: task.requestSeq ?? requestSeq,
+    enqueueSeq: ++enqueueSequence
+  };
+}
+
+function normalizeBurstAuthorTask(task: SchedulerTask, requestContext: SchedulerRequestContext, requestSeq: number): AuthorTask {
+  return {
+    ...buildAuthorTaskBase(task),
+    staleAt: Math.max(0, Number(task.staleAt) || 0),
+    queueOrderClass: resolveBurstQueueOrderClass(task),
+    requestAt: task.requestContext?.requestAt ?? requestContext.requestAt,
+    requestBatchId: task.requestContext?.requestBatchId ?? requestContext.requestBatchId,
+    requestSeq: task.requestSeq ?? requestSeq,
+    enqueueSeq: ++enqueueSequence
+  };
+}
+
+function resolveGroupFavQueueOrderClass(task: GroupFavTaskInput): number {
+  if (typeof task.queueOrderClass === 'number') {
+    return task.queueOrderClass;
+  }
+  if (task.trigger === 'manual-refresh-posts' || task.trigger === 'manual-refresh-fav') {
+    return 0;
+  }
+  if (task.trigger === 'get-group-feed-missing-fav-cache' || task.trigger === 'group-created-auto-refresh') {
+    return 1;
+  }
+  if (task.trigger === 'alarm-routine') {
+    return 2;
+  }
+  if (task.trigger === 'debug-run-now') {
+    return 3;
+  }
+  return 1;
+}
+
+function normalizeGroupFavTask(task: GroupFavTaskInput, requestContext: SchedulerRequestContext, requestSeq: number): GroupFavTask {
+  return {
+    groupId: task.groupId,
+    trigger: task.trigger,
+    authorRefreshMode: task.authorRefreshMode,
+    staleAt: Math.max(0, Number(task.staleAt) || 0),
+    queueOrderClass: resolveGroupFavQueueOrderClass(task),
+    requestAt: task.requestContext?.requestAt ?? requestContext.requestAt,
+    requestBatchId: task.requestContext?.requestBatchId ?? requestContext.requestBatchId,
+    requestSeq: task.requestSeq ?? requestSeq,
+    enqueueSeq: ++enqueueSequence
+  };
+}
+
+function compareTaskRequestPriority(
+  left: Pick<QueueOrderMeta, 'queueOrderClass' | 'requestAt' | 'requestSeq'>,
+  right: Pick<QueueOrderMeta, 'queueOrderClass' | 'requestAt' | 'requestSeq'>
+): number {
+  return left.queueOrderClass - right.queueOrderClass
+    || left.requestAt - right.requestAt
+    || left.requestSeq - right.requestSeq;
+}
+
+function compareQueueOrderedTask(
+  left: Pick<QueueOrderMeta, 'queueOrderClass' | 'requestAt' | 'staleAt' | 'requestSeq' | 'enqueueSeq'>,
+  right: Pick<QueueOrderMeta, 'queueOrderClass' | 'requestAt' | 'staleAt' | 'requestSeq' | 'enqueueSeq'>
+): number {
+  return left.queueOrderClass - right.queueOrderClass
+    || left.requestAt - right.requestAt
+    || left.staleAt - right.staleAt
+    || left.requestSeq - right.requestSeq
+    || left.enqueueSeq - right.enqueueSeq;
+}
+
+function mergeQueueOrderMeta(target: QueueOrderMeta, incoming: QueueOrderMeta): void {
+  if (compareTaskRequestPriority(incoming, target) < 0) {
+    target.queueOrderClass = incoming.queueOrderClass;
+    target.requestAt = incoming.requestAt;
+    target.requestBatchId = incoming.requestBatchId;
+    target.requestSeq = incoming.requestSeq;
+  }
+  target.staleAt = Math.min(target.staleAt, incoming.staleAt);
 }
 
 function mergeAuthorTaskCapabilities(target: AuthorTask, incoming: AuthorTask): void {
@@ -353,29 +513,7 @@ function mergeAuthorTaskCapabilities(target: AuthorTask, incoming: AuthorTask): 
   if (incoming.failFast) {
     target.failFast = true;
   }
-}
-
-function upgradeExistingBurstTasks(tasks: AuthorTask[]): void {
-  if (tasks.length === 0) {
-    return;
-  }
-
-  const taskMap = new Map(tasks.map((task) => [keyOfAuthorTask(task), task]));
-  const upgrade = (target: AuthorTask | null): void => {
-    if (!target) {
-      return;
-    }
-    const incoming = taskMap.get(keyOfAuthorTask(target));
-    if (!incoming) {
-      return;
-    }
-    mergeAuthorTaskCapabilities(target, incoming);
-  };
-
-  upgrade(burstState.currentTask);
-  for (const task of burstState.queue) {
-    upgrade(task);
-  }
+  mergeQueueOrderMeta(target, incoming);
 }
 
 function normalizeLikePageContext(pageContext: LikePageContext): LikePageContext {
@@ -485,19 +623,55 @@ function dedupeAndEnqueue<TTask>(
   return newTasks.length;
 }
 
+function dedupeMergeAndSort<TTask>(
+  state: QueueState<TTask>,
+  tasks: TTask[],
+  keyOf: (task: TTask) => string,
+  mergeExisting: (target: TTask, incoming: TTask) => void,
+  compare: (left: TTask, right: TTask) => number
+): number {
+  const queuedMap = new Map<string, TTask>();
+  for (const item of state.queue) {
+    queuedMap.set(keyOf(item), item);
+  }
+
+  let added = 0;
+  for (const task of tasks) {
+    const key = keyOf(task);
+    if (state.currentTask && keyOf(state.currentTask) === key) {
+      mergeExisting(state.currentTask, task);
+      continue;
+    }
+    const existing = queuedMap.get(key);
+    if (existing) {
+      mergeExisting(existing, task);
+      continue;
+    }
+    state.queue.push(task);
+    queuedMap.set(key, task);
+    added += 1;
+  }
+
+  if (state.queue.length > 1) {
+    // 队列内统一按排序键重排，保证“旧请求优先”与“同批更旧缓存优先”稳定生效。
+    state.queue.sort(compare);
+  }
+  return added;
+}
+
 /**
  * 调试页“立刻发起调度”使用的补齐策略：
- * 仅补到 batchSize，不做全量入队，且按候选列表顺序（最旧优先）补齐。
+ * 仅挑出要补的候选任务，不在这里直接改队列，后续仍统一走正常入队与排序逻辑。
  */
-function fillQueueToBatchSize<TTask>(
+function pickTasksToBatchSize<TTask>(
   state: QueueState<TTask>,
   candidates: TTask[],
   keyOf: (task: TTask) => string,
   batchSize: number
-): number {
+): TTask[] {
   const need = Math.max(0, batchSize - state.queue.length);
   if (need === 0 || candidates.length === 0) {
-    return 0;
+    return [];
   }
 
   const existing = buildExistingTaskKeySet(state, keyOf);
@@ -514,12 +688,7 @@ function fillQueueToBatchSize<TTask>(
     }
   }
 
-  if (picked.length === 0) {
-    return 0;
-  }
-
-  state.queue.push(...picked);
-  return picked.length;
+  return picked;
 }
 
 function getExistingLikeActionByBvid(bvid: string): LikeActionTask | null {
@@ -543,30 +712,12 @@ function getGroupFavAuthorRefreshModePriority(mode: GroupFavTask['authorRefreshM
   return 0;
 }
 
-function upgradeExistingGroupFavTasks(tasks: GroupFavTask[]): void {
-  if (tasks.length === 0) {
-    return;
+function mergeGroupFavTask(target: GroupFavTask, incoming: GroupFavTask): void {
+  if (getGroupFavAuthorRefreshModePriority(incoming.authorRefreshMode) > getGroupFavAuthorRefreshModePriority(target.authorRefreshMode)) {
+    target.authorRefreshMode = incoming.authorRefreshMode;
+    target.trigger = incoming.trigger;
   }
-
-  const taskMap = new Map(tasks.map((task) => [task.groupId, task]));
-  const upgrade = (target: GroupFavTask | null): void => {
-    if (!target) {
-      return;
-    }
-    const incoming = taskMap.get(target.groupId);
-    if (!incoming) {
-      return;
-    }
-    if (getGroupFavAuthorRefreshModePriority(incoming.authorRefreshMode) > getGroupFavAuthorRefreshModePriority(target.authorRefreshMode)) {
-      target.authorRefreshMode = incoming.authorRefreshMode;
-      target.trigger = incoming.trigger;
-    }
-  };
-
-  upgrade(groupFavState.currentTask);
-  for (const task of groupFavState.queue) {
-    upgrade(task);
-  }
+  mergeQueueOrderMeta(target, incoming);
 }
 
 function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
@@ -574,6 +725,33 @@ function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
     return;
   }
   authorState.queue = authorState.queue.filter((task) => !taskKeys.has(keyOfAuthorTask(task)));
+}
+
+function enqueueRegularAuthorTasks(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+  if (tasks.length === 0) {
+    return 0;
+  }
+  const context = requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeRegularAuthorTask(task, context, index));
+  return dedupeMergeAndSort(authorState, normalizedTasks, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
+}
+
+function enqueueBurstTasks(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+  if (tasks.length === 0) {
+    return 0;
+  }
+  const context = requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeBurstAuthorTask(task, context, index));
+  return dedupeMergeAndSort(burstState, normalizedTasks, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
+}
+
+function enqueueGroupFavTasks(tasks: GroupFavTaskInput[], requestContext?: SchedulerRequestContext): number {
+  if (tasks.length === 0) {
+    return 0;
+  }
+  const context = requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeGroupFavTask(task, context, index));
+  return dedupeMergeAndSort(groupFavState, normalizedTasks, (task) => task.groupId, mergeGroupFavTask, compareQueueOrderedTask);
 }
 
 async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<number | undefined> {
@@ -589,7 +767,7 @@ async function resetAlarm(alarmName: string, intervalMinutes: number): Promise<n
 async function collectStaleAuthorTasks(
   settings: ExtensionSettings,
   trigger: SchedulerTaskTrigger
-): Promise<AuthorTask[]> {
+): Promise<SchedulerTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -625,11 +803,12 @@ async function collectStaleAuthorTasks(
   }
 
   stale.sort((a, b) => a.lastFetchedAt - b.lastFetchedAt);
-  return stale.map(({ mid, name }) => ({
+  return stale.map(({ mid, name, lastFetchedAt }) => ({
     mid,
     name,
     pn: 1,
     ps: settings.authorVideosPageSize,
+    staleAt: lastFetchedAt,
     reason: 'first-page-refresh',
     trigger,
     failFast: false
@@ -639,7 +818,7 @@ async function collectStaleAuthorTasks(
 async function collectNoCacheAuthorTasks(
   settings: ExtensionSettings,
   trigger: SchedulerTaskTrigger
-): Promise<AuthorTask[]> {
+): Promise<SchedulerTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -667,6 +846,7 @@ async function collectNoCacheAuthorTasks(
       name: String(mid),
       pn: 1,
       ps: settings.authorVideosPageSize,
+      staleAt: 0,
       reason: 'first-page-refresh',
       trigger,
       failFast: false
@@ -676,7 +856,7 @@ async function collectNoCacheAuthorTasks(
 async function collectOldestAuthorTasks(
   settings: ExtensionSettings,
   trigger: SchedulerTaskTrigger
-): Promise<AuthorTask[]> {
+): Promise<SchedulerTask[]> {
   const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -709,11 +889,12 @@ async function collectOldestAuthorTasks(
   }
 
   oldest.sort((a, b) => a.lastFetchedAt - b.lastFetchedAt);
-  return oldest.map(({ mid, name }) => ({
+  return oldest.map(({ mid, name, lastFetchedAt }) => ({
     mid,
     name,
     pn: 1,
     ps: settings.authorVideosPageSize,
+    staleAt: lastFetchedAt,
     reason: 'first-page-refresh',
     trigger,
     failFast: false
@@ -755,9 +936,9 @@ function resolveNextPrefetchPn(
 async function collectPrefetchAuthorTasks(
   settings: ExtensionSettings,
   trigger: SchedulerTaskTrigger
-): Promise<AuthorTask[]> {
+): Promise<SchedulerTask[]> {
   const authorCacheMap = await loadAuthorVideoCacheMap();
-  const tasks: AuthorTask[] = [];
+  const tasks: SchedulerTask[] = [];
 
   for (const cache of Object.values(authorCacheMap)) {
     const pn = resolveNextPrefetchPn(cache, settings);
@@ -769,20 +950,21 @@ async function collectPrefetchAuthorTasks(
       name: cache.name ?? String(cache.mid),
       pn,
       ps: settings.authorVideosPageSize,
+      staleAt: cache.lastFirstPageFetchedAt || cache.firstPageFetchedAt || cache.lastFetchedAt || 0,
       reason: 'extend-continuous-window',
       trigger,
       failFast: false
     });
   }
 
-  tasks.sort((a, b) => a.mid - b.mid || a.pn - b.pn);
+  tasks.sort((a, b) => a.mid - b.mid || (Number(a.pn) || 1) - (Number(b.pn) || 1));
   return tasks;
 }
 
 async function collectStaleGroupFavTasks(
   settings: ExtensionSettings,
   trigger: SchedulerTaskTrigger
-): Promise<GroupFavTask[]> {
+): Promise<GroupFavTaskInput[]> {
   const [groups, feedCacheMap] = await Promise.all([loadGroups(), loadFeedCacheMap()]);
   const intervalMs = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10) * 60 * 1000;
   const now = Date.now();
@@ -803,12 +985,13 @@ async function collectStaleGroupFavTasks(
   stale.sort((a, b) => a.updatedAt - b.updatedAt);
   return stale.map((item) => ({
     groupId: item.groupId,
+    staleAt: item.updatedAt,
     trigger,
     authorRefreshMode: 'stale'
   }));
 }
 
-async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promise<GroupFavTask[]> {
+async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promise<GroupFavTaskInput[]> {
   const [groups, feedCacheMap] = await Promise.all([loadGroups(), loadFeedCacheMap()]);
   const oldest: Array<{ groupId: string; updatedAt: number }> = [];
 
@@ -821,6 +1004,7 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
   oldest.sort((a, b) => a.updatedAt - b.updatedAt);
   return oldest.map((item) => ({
     groupId: item.groupId,
+    staleAt: item.updatedAt,
     trigger,
     authorRefreshMode: 'stale'
   }));
@@ -919,35 +1103,37 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
     return;
   }
 
-  const burstTasks: AuthorTask[] = [];
-  const priorityTasks: AuthorTask[] = [];
+  const requestContext = inheritSchedulerRequestContext(task);
+  const burstTasks: SchedulerTask[] = [];
+  const priorityTasks: SchedulerTask[] = [];
   const forceAuthorRefresh = task.authorRefreshMode === 'force';
   for (const author of authors) {
     const cache = authorCacheMap[author.mid];
-    const task: AuthorTask = {
+    const authorTask: SchedulerTask = {
       mid: author.mid,
       name: cache?.name ?? author.name,
       groupId: group.groupId,
       pn: 1,
       ps: settings.authorVideosPageSize,
+      staleAt: cache?.lastFirstPageFetchedAt || cache?.firstPageFetchedAt || cache?.lastFetchedAt || 0,
       reason: 'first-page-refresh',
       trigger: forceAuthorRefresh ? 'manual-refresh-posts' : 'group-fav-chain',
       failFast: false
     };
 
     if (!cache) {
-      burstTasks.push(task);
+      burstTasks.push(authorTask);
       continue;
     }
 
     // “刷新投稿列表”需要强制刷新该分组作者首页；其他链路只补“已有缓存但已过期”的目标。
     if (forceAuthorRefresh || isAuthorCacheExpired(cache, settings)) {
-      priorityTasks.push(task);
+      priorityTasks.push(authorTask);
     }
   }
 
-  enqueueBurst(burstTasks);
-  enqueuePriority(priorityTasks);
+  enqueueBurst(burstTasks, requestContext);
+  enqueuePriority(priorityTasks, requestContext);
 }
 
 async function runLikeTask(task: LikeActionTask): Promise<LikeTaskResult> {
@@ -1401,11 +1587,11 @@ function startLikeActionLoopIfIdle(): void {
   }
 }
 
-export function enqueueBurst(tasks: SchedulerTask[]): number {
-  const normalizedTasks = tasks.map(normalizeAuthorTask);
-  upgradeExistingBurstTasks(normalizedTasks);
-  const taskKeys = new Set(normalizedTasks.map((task) => keyOfAuthorTask(task)));
-  const added = dedupeAndEnqueue(burstState, normalizedTasks, keyOfAuthorTask, false);
+export function enqueueBurst(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+  const previewContext = requestContext ?? tasks[0]?.requestContext ?? createSchedulerRequestContext();
+  const previewTasks = tasks.map((task, index) => normalizeBurstAuthorTask(task, previewContext, index));
+  const taskKeys = new Set(previewTasks.map((task) => keyOfAuthorTask(task)));
+  const added = enqueueBurstTasks(tasks, previewContext);
   if (taskKeys.size > 0) {
     // Burst 任务优先级高于常规作者队列，入列后清掉常规队列里的同目标，避免重复调用。
     removeAuthorTasksFromRegularQueue(taskKeys);
@@ -1420,7 +1606,7 @@ export function observeBurstTaskFirstResult(
   task: SchedulerTask,
   listener: (result: { ok: boolean; error?: string }) => void
 ): () => void {
-  const normalizedTask = normalizeAuthorTask(task);
+  const normalizedTask = buildAuthorTaskBase(task);
   const key = keyOfAuthorTask(normalizedTask);
   const listeners = burstTaskFirstResultListeners.get(key) ?? [];
   listeners.push(listener);
@@ -1468,24 +1654,30 @@ function markBurstTaskFailFastByKeys(taskKeys: Set<string>): void {
 }
 
 export async function enqueueBurstHeadAndWait(
-  tasks: SchedulerTask[]
+  tasks: SchedulerTask[],
+  requestContext?: SchedulerRequestContext
 ): Promise<{ success: Array<{ mid: number; pn: number }>; failed: Array<{ mid: number; pn: number; error: string }> }> {
   if (tasks.length === 0) {
     return { success: [], failed: [] };
   }
 
-  const normalizedTasks = tasks.map((task) => ({
-    ...normalizeAuthorTask(task),
+  const context = requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeBurstAuthorTask({
+    ...task,
+    queueOrderClass: 0
+  }, context, index));
+  const failFastTasks = normalizedTasks.map((task) => ({
+    ...task,
     failFast: true,
     reason: 'load-more-boundary' as const
   }));
-  const taskKeys = new Set(normalizedTasks.map((task) => keyOfAuthorTask(task)));
+  const taskKeys = new Set(failFastTasks.map((task) => keyOfAuthorTask(task)));
   markBurstTaskFailFastByKeys(taskKeys);
 
-  const waitJobs = normalizedTasks.map(async (task) => {
+  const waitJobs = failFastTasks.map(async (task) => {
     const key = keyOfAuthorTask(task);
     const waiter = waitForBurstTask(task);
-    const added = dedupeAndEnqueue(burstState, [task], keyOfAuthorTask, true);
+    const added = dedupeMergeAndSort(burstState, [task], keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
     if (added > 0) {
       removeAuthorTasksFromRegularQueue(new Set([key]));
     }
@@ -1505,15 +1697,16 @@ export async function enqueueBurstHeadAndWait(
   return { success, failed };
 }
 
-export function enqueuePriority(tasks: SchedulerTask[]): number {
+export function enqueuePriority(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
   if (tasks.length === 0) {
     return 0;
   }
 
-  const normalizedTasks = tasks.map(normalizeAuthorTask);
+  const context = requestContext ?? tasks[0]?.requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeRegularAuthorTask(task, context, index));
   const burstKeys = buildExistingTaskKeySet(burstState, keyOfAuthorTask);
   const filtered = normalizedTasks.filter((task) => !burstKeys.has(keyOfAuthorTask(task)));
-  const added = dedupeAndEnqueue(authorState, filtered, keyOfAuthorTask, true);
+  const added = dedupeMergeAndSort(authorState, filtered, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
   if (added > 0) {
     startAuthorLoopIfIdle();
   }
@@ -1523,15 +1716,15 @@ export function enqueuePriority(tasks: SchedulerTask[]): number {
 export function enqueuePriorityGroup(
   groupIds: string[],
   trigger: SchedulerTaskTrigger = 'manual-refresh-posts',
-  authorRefreshMode: GroupFavTask['authorRefreshMode'] = 'stale'
+  authorRefreshMode: GroupFavTask['authorRefreshMode'] = 'stale',
+  requestContext?: SchedulerRequestContext
 ): number {
-  const tasks: GroupFavTask[] = groupIds.map((groupId) => ({
+  const tasks: GroupFavTaskInput[] = groupIds.map((groupId) => ({
     groupId,
     trigger,
     authorRefreshMode
   }));
-  upgradeExistingGroupFavTasks(tasks);
-  const added = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, true);
+  const added = enqueueGroupFavTasks(tasks, requestContext);
   if (added > 0) {
     startGroupFavLoopIfIdle();
   }
@@ -1688,6 +1881,7 @@ export async function enqueueLikeBatchAndWait(
 async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
   const settings = await loadSettings();
   const interval = normalizeInterval(settings.backgroundRefreshIntervalMinutes, 10);
+  const requestContext = createSchedulerRequestContext();
 
   let nextAlarmAt: number | undefined;
   if (options?.resetAlarmSchedule) {
@@ -1699,10 +1893,10 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
     collectStaleAuthorTasks(settings, 'alarm-routine'),
     collectPrefetchAuthorTasks(settings, 'alarm-routine')
   ]);
-  const burstQueued = enqueueBurst(noCacheTasks);
+  const burstQueued = enqueueBurst(noCacheTasks, requestContext);
   const routineTasks = [...staleTasks, ...prefetchTasks];
   authorState.currentBatchDelay = calcBatchDelay(routineTasks.length, interval, normalizeBatchSize(settings));
-  const normalQueued = dedupeAndEnqueue(authorState, routineTasks, keyOfAuthorTask, false);
+  const normalQueued = enqueueRegularAuthorTasks(routineTasks, requestContext);
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -1717,6 +1911,7 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
   const settings = await loadSettings();
   const interval = normalizeInterval(settings.backgroundRefreshIntervalMinutes, 10);
   const batchSize = normalizeBatchSize(settings);
+  const requestContext = createSchedulerRequestContext();
 
   let nextAlarmAt: number | undefined;
   if (options?.resetAlarmSchedule) {
@@ -1727,10 +1922,11 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
     collectNoCacheAuthorTasks(settings, 'debug-run-now'),
     collectOldestAuthorTasks(settings, 'debug-run-now')
   ]);
-  const burstQueued = enqueueBurst(noCacheTasks);
+  const burstQueued = enqueueBurst(noCacheTasks, requestContext);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
   authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
-  const normalQueued = fillQueueToBatchSize(authorState, candidates, keyOfAuthorTask, batchSize);
+  const picked = pickTasksToBatchSize(authorState, candidates, keyOfAuthorTask, batchSize);
+  const normalQueued = enqueueRegularAuthorTasks(picked, requestContext);
   startAuthorLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -1744,6 +1940,7 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
 async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
   const settings = await loadSettings();
   const interval = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10);
+  const requestContext = createSchedulerRequestContext();
 
   let nextAlarmAt: number | undefined;
   if (options?.resetAlarmSchedule) {
@@ -1752,7 +1949,7 @@ async function triggerGroupFavRoutine(options?: { resetAlarmSchedule: boolean })
 
   const tasks = await collectStaleGroupFavTasks(settings, 'alarm-routine');
   groupFavState.currentBatchDelay = calcBatchDelay(tasks.length, interval, normalizeBatchSize(settings));
-  const queued = dedupeAndEnqueue(groupFavState, tasks, (task) => task.groupId, false);
+  const queued = enqueueGroupFavTasks(tasks, requestContext);
   startGroupFavLoopIfIdle();
 
   if (!nextAlarmAt) {
@@ -1767,6 +1964,7 @@ async function triggerGroupFavRoutineNow(options?: { resetAlarmSchedule: boolean
   const settings = await loadSettings();
   const interval = normalizeInterval(settings.groupFavRefreshIntervalMinutes, 10);
   const batchSize = normalizeBatchSize(settings);
+  const requestContext = createSchedulerRequestContext();
 
   let nextAlarmAt: number | undefined;
   if (options?.resetAlarmSchedule) {
@@ -1776,7 +1974,8 @@ async function triggerGroupFavRoutineNow(options?: { resetAlarmSchedule: boolean
   const candidates = await collectOldestGroupFavTasks('debug-run-now');
   const targetTotal = Math.max(batchSize, groupFavState.queue.length);
   groupFavState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
-  const queued = fillQueueToBatchSize(groupFavState, candidates, (task) => task.groupId, batchSize);
+  const picked = pickTasksToBatchSize(groupFavState, candidates, (task) => task.groupId, batchSize);
+  const queued = enqueueGroupFavTasks(picked, requestContext);
   startGroupFavLoopIfIdle();
 
   if (!nextAlarmAt) {
