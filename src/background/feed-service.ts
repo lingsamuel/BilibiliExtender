@@ -1,5 +1,11 @@
 import { MIXED_LOAD_INCREMENT, VIRTUAL_GROUP_ID } from '@/shared/constants';
-import { getUploaderVideos, getUserCard, getAllFavVideos, type FavMediaItem } from '@/shared/api/bilibili';
+import {
+  getUploaderVideos,
+  getUserCard,
+  getAllFavVideos,
+  type ApiRequestTracker,
+  type FavMediaItem
+} from '@/shared/api/bilibili';
 import { normalizeDefaultReadMarkDays } from '@/shared/utils/settings';
 import { getRecentDaysBoundaryTs, isWithinRecentDays } from '@/shared/utils/time';
 import type {
@@ -443,14 +449,16 @@ export async function refreshAuthorCache(
     ExtensionSettings,
     'authorVideosPageSize' | 'authorContinuousExtraPageCount' | 'authorNonContinuousCachePageCount'
   >,
-  options?: { pn?: number; ps?: number; fetchCard?: boolean }
+  options?: { pn?: number; ps?: number; fetchCard?: boolean; requestTracker?: ApiRequestTracker }
 ): Promise<AuthorVideoCache> {
   const existing = authorCacheMap[mid];
   const pn = Math.max(1, options?.pn ?? 1);
   const ps = Math.max(1, options?.ps ?? settings.authorVideosPageSize);
   const fetchCard = options?.fetchCard !== false;
   const pageFetchedAt = Date.now();
-  const { videos, totalCount, pageSize, version } = await getUploaderVideos(mid, pn, ps);
+  const { videos, totalCount, pageSize, version } = await getUploaderVideos(mid, pn, ps, {
+    requestTracker: options?.requestTracker
+  });
   const nextTotalCount = Number.isFinite(totalCount) && totalCount >= 0
     ? Math.floor(totalCount)
     : getLatestKnownTotalCount(existing);
@@ -468,7 +476,7 @@ export async function refreshAuthorCache(
 
   if (fetchCard) {
     try {
-      const card = await getUserCard(mid);
+      const card = await getUserCard(mid, options?.requestTracker);
       cardName = card.name?.trim() || undefined;
       cardFace = card.face;
       cardFollower = card.follower;

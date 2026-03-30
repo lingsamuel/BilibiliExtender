@@ -2,16 +2,24 @@ import {
   ALARM_NAMES,
   BG_REFRESH_BATCH_SIZE_DEFAULT,
   BG_REFRESH_INTRA_DELAY_MS,
-  BG_REFRESH_MIN_BATCH_DELAY_MS
+  BG_REFRESH_MIN_BATCH_DELAY_MS,
+  OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN,
+  OPPORTUNISTIC_REFRESH_DEBOUNCE_MS,
+  OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS,
+  OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW,
+  OPPORTUNISTIC_REFRESH_REQUEST_BUDGET,
+  OPPORTUNISTIC_REFRESH_WINDOW_MS
 } from '@/shared/constants';
 import {
   loadAuthorVideoCacheMap,
   loadFeedCacheMap,
   loadGroups,
+  loadOpportunisticRefreshState,
   loadSchedulerHistory,
   loadSettings,
   saveAuthorVideoCacheMap,
   saveFeedCacheMap,
+  saveOpportunisticRefreshState,
   saveGroups,
   saveSchedulerHistory
 } from '@/shared/storage/repository';
@@ -33,7 +41,12 @@ import {
   type AuthorCacheMap,
   type MixedUsedPageItem
 } from '@/background/feed-service';
-import { BilibiliApiError, getMyCreatedFolders, likeVideo } from '@/shared/api/bilibili';
+import {
+  BilibiliApiError,
+  getMyCreatedFolders,
+  likeVideo,
+  type ApiRequestTracker
+} from '@/shared/api/bilibili';
 import { runWithLikeRequestHeaders } from '@/background/request-dnr';
 import { WbiExpiredError } from '@/shared/utils/wbi';
 
@@ -146,12 +159,30 @@ interface HistoryEntry {
   aid?: number;
   pn?: number;
   name: string;
-  mode: 'regular' | 'burst';
+  mode: 'regular' | 'burst' | 'opportunistic';
   success: boolean;
   timestamp: number;
   taskReason: SchedulerTaskReason;
   trigger: SchedulerTaskTrigger;
   error?: string;
+}
+
+type OpportunisticSkipReason =
+  | 'debounced'
+  | 'window-ratelimited'
+  | 'busy'
+  | 'global-cooldown'
+  | 'no-candidate';
+
+interface OpportunisticRefreshState {
+  lastTriggerAt?: number;
+  requestTimestamps: number[];
+  authorCooldownByMid: Record<string, number>;
+  lastFolderListSyncAt?: number;
+}
+
+interface RequestMeter extends ApiRequestTracker {
+  readonly count: number;
 }
 
 interface LikeTaskWaiterResult {
@@ -233,6 +264,18 @@ const burstTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: s
 const burstTaskFirstResultListeners = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
 const likeTaskWaiters = new Map<string, Array<(result: LikeTaskWaiterResult) => void>>();
 void ensureHistoryHydrated();
+
+function createRequestMeter(): RequestMeter {
+  let count = 0;
+  return {
+    get count() {
+      return count;
+    },
+    recordRequest() {
+      count += 1;
+    }
+  };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -576,6 +619,63 @@ function normalizeInterval(mins: number, fallback: number): number {
   return Math.min(120, Math.max(5, value));
 }
 
+function trimOpportunisticRequestTimestamps(timestamps: number[], now: number): number[] {
+  const minTs = now - OPPORTUNISTIC_REFRESH_WINDOW_MS;
+  return timestamps.filter((item) => item >= minTs);
+}
+
+function trimAuthorCooldownMap(
+  cooldownMap: OpportunisticRefreshState['authorCooldownByMid'],
+  now: number
+): OpportunisticRefreshState['authorCooldownByMid'] {
+  const next: OpportunisticRefreshState['authorCooldownByMid'] = {};
+  const minTs = now - OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS;
+  for (const [mid, ts] of Object.entries(cooldownMap)) {
+    if (ts >= minTs) {
+      next[mid] = ts;
+    }
+  }
+  return next;
+}
+
+function normalizeOpportunisticState(
+  state: OpportunisticRefreshState,
+  now: number
+): OpportunisticRefreshState {
+  return {
+    lastTriggerAt: state.lastTriggerAt && state.lastTriggerAt > 0 ? state.lastTriggerAt : undefined,
+    requestTimestamps: trimOpportunisticRequestTimestamps(state.requestTimestamps ?? [], now),
+    authorCooldownByMid: trimAuthorCooldownMap(state.authorCooldownByMid ?? {}, now),
+    lastFolderListSyncAt: state.lastFolderListSyncAt && state.lastFolderListSyncAt > 0
+      ? state.lastFolderListSyncAt
+      : undefined
+  };
+}
+
+function recordOpportunisticRequests(
+  state: OpportunisticRefreshState,
+  count: number,
+  now: number
+): void {
+  const safeCount = Math.max(0, Math.floor(count));
+  if (safeCount <= 0) {
+    state.requestTimestamps = trimOpportunisticRequestTimestamps(state.requestTimestamps, now);
+    return;
+  }
+  const appended = new Array<number>(safeCount).fill(now);
+  state.requestTimestamps = trimOpportunisticRequestTimestamps(
+    [...state.requestTimestamps, ...appended],
+    now
+  );
+}
+
+function getRemainingOpportunisticRequestBudget(state: OpportunisticRefreshState): number {
+  return Math.max(
+    0,
+    OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW - state.requestTimestamps.length
+  );
+}
+
 function calcBatchDelay(totalTasks: number, intervalMinutes: number, batchSize: number): number {
   const safeBatchSize = Math.max(1, batchSize);
   const batchCount = Math.max(1, Math.ceil(totalTasks / safeBatchSize));
@@ -704,6 +804,13 @@ function isBurstActive(): boolean {
 
 function hasRunningRegularTask(): boolean {
   return authorState.running || groupFavState.running;
+}
+
+function hasOpportunisticConflict(): boolean {
+  return isBurstActive()
+    || hasRunningRegularTask()
+    || authorState.queue.length > 0
+    || groupFavState.queue.length > 0;
 }
 
 function getGroupFavAuthorRefreshModePriority(mode: GroupFavTask['authorRefreshMode']): number {
@@ -1010,7 +1117,125 @@ async function collectOldestGroupFavTasks(trigger: SchedulerTaskTrigger): Promis
   }));
 }
 
-async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): Promise<void> {
+async function collectOpportunisticAuthorCandidate(
+  settings: ExtensionSettings,
+  state: OpportunisticRefreshState
+): Promise<SchedulerTask | null> {
+  const [groups, feedCacheMap, authorCacheMap] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap(),
+    loadAuthorVideoCacheMap()
+  ]);
+  const enabledGroups = groups.filter((group) => group.enabled);
+  if (enabledGroups.length === 0) {
+    return null;
+  }
+
+  const mids = new Set<number>();
+  for (const group of enabledGroups) {
+    const cache = feedCacheMap[group.groupId];
+    if (!cache) {
+      continue;
+    }
+    for (const mid of cache.authorMids) {
+      mids.add(mid);
+    }
+  }
+
+  const now = Date.now();
+  const candidates: Array<{ mid: number; name: string; staleAt: number }> = [];
+  for (const mid of mids) {
+    const cache = authorCacheMap[mid];
+    if (!cache?.lastFirstPageFetchedAt && !cache?.firstPageFetchedAt) {
+      continue;
+    }
+
+    const freshnessBase = Math.max(
+      cache.lastFirstPageFetchedAt || cache.firstPageFetchedAt || cache.lastFetchedAt || 0,
+      Number(state.authorCooldownByMid[String(mid)]) || 0
+    );
+    if (now - freshnessBase < OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS) {
+      continue;
+    }
+
+    candidates.push({
+      mid,
+      name: cache.name ?? String(mid),
+      staleAt: freshnessBase
+    });
+  }
+
+  candidates.sort((a, b) => a.staleAt - b.staleAt);
+  const target = candidates[0];
+  if (!target) {
+    return null;
+  }
+
+  return {
+    mid: target.mid,
+    name: target.name,
+    pn: 1,
+    ps: settings.authorVideosPageSize,
+    staleAt: target.staleAt,
+    reason: 'first-page-refresh',
+    trigger: 'tab-open-opportunistic',
+    failFast: false
+  };
+}
+
+async function shouldSyncFolderListOpportunistically(state: OpportunisticRefreshState): Promise<boolean> {
+  const groups = await loadGroups();
+  if (!groups.some((group) => group.enabled)) {
+    return false;
+  }
+  const lastSyncAt = state.lastFolderListSyncAt || 0;
+  return Date.now() - lastSyncAt >= OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS;
+}
+
+/**
+ * 机会式收藏夹列表同步只做低成本的标题校正，不触发每个分组的收藏夹全量内容拉取。
+ */
+async function syncFolderTitles(
+  requestTracker: ApiRequestTracker
+): Promise<{ changed: boolean; enabledGroupCount: number }> {
+  const groups = await loadGroups();
+  const enabledGroups = groups.filter((group) => group.enabled);
+  if (enabledGroups.length === 0) {
+    return { changed: false, enabledGroupCount: 0 };
+  }
+
+  const folders = await getMyCreatedFolders(requestTracker);
+  const folderTitleMap = new Map<number, string>();
+  for (const folder of folders) {
+    folderTitleMap.set(folder.id, folder.title);
+  }
+
+  let changed = false;
+  for (const group of enabledGroups) {
+    const nextTitle = folderTitleMap.get(group.mediaId);
+    if (!nextTitle || nextTitle === group.mediaTitle) {
+      continue;
+    }
+    group.mediaTitle = nextTitle;
+    group.updatedAt = Date.now();
+    changed = true;
+  }
+
+  if (changed) {
+    await saveGroups(groups);
+  }
+
+  return {
+    changed,
+    enabledGroupCount: enabledGroups.length
+  };
+}
+
+async function runAuthorTask(
+  task: AuthorTask,
+  authorCacheMap: AuthorCacheMap,
+  requestTracker?: ApiRequestTracker
+): Promise<void> {
   const settings = await loadSettings();
   const previousContinuous = (authorCacheMap[task.mid]?.continuousVideos ?? []).slice();
   const fetchCard = task.reason !== 'request-author-page' && task.reason !== 'refresh-author-current-page';
@@ -1018,7 +1243,8 @@ async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): 
     pn: task.pn,
     ps: task.ps,
     // 用户主动翻页/作者级局部刷新只需要页数据，不要顺带请求 Card API。
-    fetchCard
+    fetchCard,
+    requestTracker
   });
 
   if (!task.ensureContinuousFromHead || task.pn !== 1 || previousContinuous.length === 0) {
@@ -1043,7 +1269,8 @@ async function runAuthorTask(task: AuthorTask, authorCacheMap: AuthorCacheMap): 
     latestCache = await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, {
       pn: nextPage,
       ps: task.ps,
-      fetchCard: false
+      fetchCard: false,
+      requestTracker
     });
 
     if (canReconnectContinuousHead(latestCache.continuousVideos, previousContinuous)) {
@@ -1878,6 +2105,224 @@ export async function enqueueLikeBatchAndWait(
   return batch.completion;
 }
 
+function buildOpportunisticSkipResponse(reason: OpportunisticSkipReason): {
+  accepted: boolean;
+  skipped: boolean;
+  reason: string;
+} {
+  const messageMap: Record<OpportunisticSkipReason, string> = {
+    debounced: '机会式刷新命中全局防抖，已跳过',
+    'window-ratelimited': '机会式刷新命中滑动窗口限流，已跳过',
+    busy: '当前存在更高优先级或常规调度压力，已跳过机会式刷新',
+    'global-cooldown': '当前处于全局风控冷却中，已跳过机会式刷新',
+    'no-candidate': '当前没有达到最小刷新阈值的机会式刷新候选'
+  };
+  return {
+    accepted: false,
+    skipped: true,
+    reason: messageMap[reason]
+  };
+}
+
+/**
+ * 标签页首次打开时，尝试执行一轮低峰值机会式刷新。
+ * 该通道不入常规队列，只在调度器空闲且命中预算/冷却条件时顺手做少量维护。
+ */
+export async function runTabOpenOpportunisticRefresh(): Promise<{
+  accepted: boolean;
+  skipped?: boolean;
+  reason?: string;
+}> {
+  await ensureHistoryHydrated();
+  const now = Date.now();
+  const persistedState = await loadOpportunisticRefreshState();
+  const state = normalizeOpportunisticState(persistedState, now);
+
+  if (hasOpportunisticConflict()) {
+    await saveOpportunisticRefreshState(state);
+    return buildOpportunisticSkipResponse('busy');
+  }
+  if (globalCooldownState.nextAllowedAt > now) {
+    await saveOpportunisticRefreshState(state);
+    return buildOpportunisticSkipResponse('global-cooldown');
+  }
+  if (state.lastTriggerAt && now - state.lastTriggerAt < OPPORTUNISTIC_REFRESH_DEBOUNCE_MS) {
+    await saveOpportunisticRefreshState(state);
+    return buildOpportunisticSkipResponse('debounced');
+  }
+
+  const windowBudget = getRemainingOpportunisticRequestBudget(state);
+  if (windowBudget <= 0) {
+    await saveOpportunisticRefreshState(state);
+    return buildOpportunisticSkipResponse('window-ratelimited');
+  }
+
+  const settings = await loadSettings();
+  const [authorCandidate, shouldSyncFolderList] = await Promise.all([
+    collectOpportunisticAuthorCandidate(settings, state),
+    shouldSyncFolderListOpportunistically(state)
+  ]);
+  const remainingBudget = Math.min(OPPORTUNISTIC_REFRESH_REQUEST_BUDGET, windowBudget);
+  const canRunAuthorHead = !!authorCandidate && remainingBudget >= 2;
+  const canRunFolderSync = shouldSyncFolderList && remainingBudget >= 2;
+
+  if (!authorCandidate && !shouldSyncFolderList) {
+    await saveOpportunisticRefreshState(state);
+    return buildOpportunisticSkipResponse('no-candidate');
+  }
+  if (!canRunAuthorHead && !canRunFolderSync) {
+    await saveOpportunisticRefreshState(state);
+    return buildOpportunisticSkipResponse('window-ratelimited');
+  }
+
+  state.lastTriggerAt = now;
+  let liveBudget = remainingBudget;
+  let authorCacheMap: AuthorCacheMap | null = null;
+
+  if (canRunAuthorHead && authorCandidate) {
+    authorCacheMap = await loadAuthorVideoCacheMap();
+    const authorTask = normalizeRegularAuthorTask(authorCandidate, createSchedulerRequestContext(), 0);
+    const requestMeter = createRequestMeter();
+    let authorHeadSucceeded = false;
+    try {
+      await runAuthorTask(authorTask, authorCacheMap, requestMeter);
+      authorHeadSucceeded = true;
+      pushHistory({
+        channel: 'author-video',
+        mid: authorTask.mid,
+        pn: authorTask.pn,
+        name: authorTask.name,
+        mode: 'opportunistic',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: authorTask.reason,
+        trigger: 'tab-open-opportunistic'
+      });
+    } catch (error) {
+      if (isWbiRatelimitError(error)) {
+        triggerGlobalWbiCooldown();
+      }
+      pushHistory({
+        channel: 'author-video',
+        mid: authorTask.mid,
+        pn: authorTask.pn,
+        name: authorTask.name,
+        mode: 'opportunistic',
+        success: false,
+        timestamp: Date.now(),
+        taskReason: authorTask.reason,
+        trigger: 'tab-open-opportunistic',
+        error: error instanceof Error ? error.message : String(error)
+      });
+      console.warn('[BBE] 机会式作者首页刷新失败 mid:', authorTask.mid, error);
+    } finally {
+      recordOpportunisticRequests(state, requestMeter.count, Date.now());
+      state.authorCooldownByMid[String(authorTask.mid)] = Date.now();
+      liveBudget = Math.max(0, liveBudget - requestMeter.count);
+      await saveAuthorVideoCacheMap(authorCacheMap);
+    }
+
+    let extraFetched = 0;
+    while (
+      authorHeadSucceeded
+      && !hasOpportunisticConflict()
+      &&
+      authorCacheMap
+      && liveBudget > 0
+      && extraFetched < OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN
+    ) {
+      const currentCache = authorCacheMap[authorTask.mid];
+      const nextPn = resolveNextPrefetchPn(currentCache, settings);
+      if (!nextPn) {
+        break;
+      }
+
+      const requestMeter = createRequestMeter();
+      try {
+        await refreshAuthorCache(authorTask.mid, authorTask.name, authorCacheMap, settings, {
+          pn: nextPn,
+          ps: settings.authorVideosPageSize,
+          fetchCard: false,
+          requestTracker: requestMeter
+        });
+        pushHistory({
+          channel: 'author-video',
+          mid: authorTask.mid,
+          pn: nextPn,
+          name: authorTask.name,
+          mode: 'opportunistic',
+          success: true,
+          timestamp: Date.now(),
+          taskReason: 'extend-continuous-window',
+          trigger: 'tab-open-opportunistic'
+        });
+      } catch (error) {
+        if (isWbiRatelimitError(error)) {
+          triggerGlobalWbiCooldown();
+        }
+        pushHistory({
+          channel: 'author-video',
+          mid: authorTask.mid,
+          pn: nextPn,
+          name: authorTask.name,
+          mode: 'opportunistic',
+          success: false,
+          timestamp: Date.now(),
+          taskReason: 'extend-continuous-window',
+          trigger: 'tab-open-opportunistic',
+          error: error instanceof Error ? error.message : String(error)
+        });
+        console.warn('[BBE] 机会式连续窗口补块失败 mid:', authorTask.mid, 'pn:', nextPn, error);
+        recordOpportunisticRequests(state, requestMeter.count, Date.now());
+        liveBudget = Math.max(0, liveBudget - requestMeter.count);
+        break;
+      }
+
+      recordOpportunisticRequests(state, requestMeter.count, Date.now());
+      liveBudget = Math.max(0, liveBudget - requestMeter.count);
+      extraFetched += 1;
+      await saveAuthorVideoCacheMap(authorCacheMap);
+    }
+  }
+
+  if (shouldSyncFolderList && liveBudget >= 2 && globalCooldownState.nextAllowedAt <= Date.now()) {
+    const requestMeter = createRequestMeter();
+    try {
+      await syncFolderTitles(requestMeter);
+      state.lastFolderListSyncAt = Date.now();
+      pushHistory({
+        channel: 'group-fav',
+        name: 'folder-list-sync',
+        mode: 'opportunistic',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: 'group-fav-refresh',
+        trigger: 'tab-open-opportunistic'
+      });
+    } catch (error) {
+      pushHistory({
+        channel: 'group-fav',
+        name: 'folder-list-sync',
+        mode: 'opportunistic',
+        success: false,
+        timestamp: Date.now(),
+        taskReason: 'group-fav-refresh',
+        trigger: 'tab-open-opportunistic',
+        error: error instanceof Error ? error.message : String(error)
+      });
+      console.warn('[BBE] 机会式收藏夹列表同步失败:', error);
+    } finally {
+      recordOpportunisticRequests(state, requestMeter.count, Date.now());
+    }
+  }
+
+  await saveOpportunisticRefreshState(state);
+  return {
+    accepted: true,
+    reason: '已处理标签页触发机会式刷新'
+  };
+}
+
 async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
   const settings = await loadSettings();
   const interval = normalizeInterval(settings.backgroundRefreshIntervalMinutes, 10);
@@ -1925,7 +2370,12 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
   const burstQueued = enqueueBurst(noCacheTasks, requestContext);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
   authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
-  const picked = pickTasksToBatchSize(authorState, candidates, keyOfAuthorTask, batchSize);
+  const picked = pickTasksToBatchSize(
+    authorState as QueueState<SchedulerTask>,
+    candidates,
+    keyOfAuthorTask,
+    batchSize
+  );
   const normalQueued = enqueueRegularAuthorTasks(picked, requestContext);
   startAuthorLoopIfIdle();
 
@@ -1974,7 +2424,12 @@ async function triggerGroupFavRoutineNow(options?: { resetAlarmSchedule: boolean
   const candidates = await collectOldestGroupFavTasks('debug-run-now');
   const targetTotal = Math.max(batchSize, groupFavState.queue.length);
   groupFavState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
-  const picked = pickTasksToBatchSize(groupFavState, candidates, (task) => task.groupId, batchSize);
+  const picked = pickTasksToBatchSize(
+    groupFavState as QueueState<GroupFavTaskInput>,
+    candidates,
+    (task) => task.groupId,
+    batchSize
+  );
   const queued = enqueueGroupFavTasks(picked, requestContext);
   startGroupFavLoopIfIdle();
 

@@ -2,6 +2,7 @@ import { createApp } from 'vue';
 import DrawerApp from '@/content/components/DrawerApp.vue';
 import { startAuthorGroupManager } from '@/content/author-group-manager';
 import { EXTENSION_EVENT } from '@/shared/constants';
+import { sendMessage } from '@/shared/messages';
 import '@/styles/content.css';
 
 const ROOT_ID = 'bbe-root';
@@ -235,6 +236,11 @@ function bootstrap(): void {
   createApp(DrawerApp).mount(root);
   startInjectNavEntry();
   startAuthorGroupManager(root);
+  // 每个匹配站点标签页在 content script 首次完成初始化后只上报一次，
+  // 作为“标签页初次打开”机会式刷新的触发信号。
+  void sendMessage({ type: 'REPORT_BILIBILI_TAB_OPEN' }).catch(() => {
+    // 机会式刷新失败不影响页面主功能。
+  });
 }
 
 bootstrap();

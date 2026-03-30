@@ -25,6 +25,12 @@ type AuthorVideoCacheMap = Record<number, AuthorVideoCache>;
 type AuthorPreferenceMap = Record<number, AuthorPreference>;
 type ClickedVideoMap = Record<string, number>;
 type LikedVideoMap = Record<string, number>;
+export interface OpportunisticRefreshState {
+  lastTriggerAt?: number;
+  requestTimestamps: number[];
+  authorCooldownByMid: Record<string, number>;
+  lastFolderListSyncAt?: number;
+}
 type SchedulerHistoryEntry = {
   channel: 'author-video' | 'group-fav' | 'like-action';
   mid?: number;
@@ -36,7 +42,7 @@ type SchedulerHistoryEntry = {
   success: boolean;
   timestamp: number;
   error?: string;
-  mode: 'regular' | 'burst';
+  mode: 'regular' | 'burst' | 'opportunistic';
   taskReason: SchedulerTaskReason;
   trigger: SchedulerTaskTrigger;
 };
@@ -59,6 +65,7 @@ const memoryCache: {
   likedVideos?: LikedVideoMap;
   videoReviewedOverrides?: Record<string, boolean>;
   authorPreferences?: AuthorPreferenceMap;
+  opportunisticRefresh?: OpportunisticRefreshState;
   schedulerHistory?: SchedulerHistoryEntry[];
 } = {
   hasLastGroupId: false
@@ -198,6 +205,59 @@ export async function loadFeedCacheMap(): Promise<FeedCacheMap> {
 export async function saveFeedCacheMap(cacheMap: FeedCacheMap): Promise<void> {
   memoryCache.feed = cacheMap;
   await storageSet(ext.storage.local, STORAGE_KEYS.FEED_CACHE, cacheMap);
+}
+
+function normalizeOpportunisticRefreshState(raw: unknown): OpportunisticRefreshState {
+  const source = raw && typeof raw === 'object' ? raw as Partial<OpportunisticRefreshState> : {};
+  const requestTimestamps = Array.isArray(source.requestTimestamps)
+    ? source.requestTimestamps
+      .filter((item) => typeof item === 'number' && Number.isFinite(item) && item > 0)
+      .map((item) => Math.floor(item))
+      .sort((a, b) => a - b)
+    : [];
+  const authorCooldownByMid: Record<string, number> = {};
+  const rawCooldowns = source.authorCooldownByMid && typeof source.authorCooldownByMid === 'object'
+    ? source.authorCooldownByMid
+    : {};
+
+  for (const [mid, ts] of Object.entries(rawCooldowns)) {
+    const normalizedTs = Math.floor(Number(ts) || 0);
+    if (normalizedTs > 0) {
+      authorCooldownByMid[mid] = normalizedTs;
+    }
+  }
+
+  return {
+    lastTriggerAt: typeof source.lastTriggerAt === 'number' && source.lastTriggerAt > 0
+      ? Math.floor(source.lastTriggerAt)
+      : undefined,
+    requestTimestamps,
+    authorCooldownByMid,
+    lastFolderListSyncAt: typeof source.lastFolderListSyncAt === 'number' && source.lastFolderListSyncAt > 0
+      ? Math.floor(source.lastFolderListSyncAt)
+      : undefined
+  };
+}
+
+export async function loadOpportunisticRefreshState(): Promise<OpportunisticRefreshState> {
+  if (memoryCache.opportunisticRefresh) {
+    return memoryCache.opportunisticRefresh;
+  }
+
+  const rawState = await storageGet(
+    ext.storage.local,
+    STORAGE_KEYS.OPPORTUNISTIC_REFRESH_STATE,
+    {} as OpportunisticRefreshState
+  );
+  const normalized = normalizeOpportunisticRefreshState(rawState);
+  memoryCache.opportunisticRefresh = normalized;
+  return normalized;
+}
+
+export async function saveOpportunisticRefreshState(state: OpportunisticRefreshState): Promise<void> {
+  const normalized = normalizeOpportunisticRefreshState(state);
+  memoryCache.opportunisticRefresh = normalized;
+  await storageSet(ext.storage.local, STORAGE_KEYS.OPPORTUNISTIC_REFRESH_STATE, normalized);
 }
 
 export async function loadAuthorVideoCacheMap(): Promise<AuthorVideoCacheMap> {
@@ -370,7 +430,6 @@ export async function saveLastGroupId(groupId: string): Promise<void> {
 }
 
 type ReadMarkMap = Record<string, GroupReadMark>;
-type ClickedVideoMap = Record<string, number>;
 type VideoReviewedOverrideMap = Record<string, boolean>;
 const MAX_AUTHOR_READ_MARK_COUNT = 10;
 
@@ -627,12 +686,16 @@ export async function loadSchedulerHistory(): Promise<SchedulerHistoryEntry[]> {
         success: item.success === true,
         timestamp: item.timestamp,
         error: typeof item.error === 'string' ? item.error : undefined,
-        mode: item.mode === 'burst' ? 'burst' : 'regular',
+        mode: item.mode === 'burst'
+          ? 'burst'
+          : item.mode === 'opportunistic'
+            ? 'opportunistic'
+            : 'regular',
         taskReason,
         trigger: item.trigger ?? (channel === 'like-action' ? 'manual-click' : 'alarm-routine')
       };
     });
-  return memoryCache.schedulerHistory;
+  return memoryCache.schedulerHistory ?? [];
 }
 
 export async function saveSchedulerHistory(history: SchedulerHistoryEntry[]): Promise<void> {

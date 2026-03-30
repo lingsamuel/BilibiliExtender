@@ -14,6 +14,7 @@ export const STORAGE_KEYS = {
   RUNTIME: 'bbe:runtime',
   FEED_CACHE: 'bbe:feed:cache',
   AUTHOR_VIDEO_CACHE: 'bbe:author-video-cache',
+  OPPORTUNISTIC_REFRESH_STATE: 'bbe:opportunistic-refresh-state',
   LAST_GROUP_ID: 'bbe:last:group',
   GROUP_READ_MARKS: 'bbe:group-read-marks',
   AUTHOR_PREFERENCES: 'bbe:author-preferences',
@@ -52,6 +53,18 @@ export const BG_REFRESH_BATCH_SIZE_DEFAULT = 10;
 export const BG_REFRESH_INTRA_DELAY_MS = 1000;
 // 批次间延迟下限（ms）
 export const BG_REFRESH_MIN_BATCH_DELAY_MS = 30_000;
+// 标签页触发机会式刷新：全局防抖窗口（ms）。
+export const OPPORTUNISTIC_REFRESH_DEBOUNCE_MS = 60_000;
+// 标签页触发机会式刷新：30 分钟滑动窗口（ms）。
+export const OPPORTUNISTIC_REFRESH_WINDOW_MS = 30 * 60 * 1000;
+// 标签页触发机会式刷新：30 分钟内最多额外消耗的 HTTP 请求数。
+export const OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW = 60;
+// 单次机会式刷新允许消耗的预估请求预算。
+export const OPPORTUNISTIC_REFRESH_REQUEST_BUDGET = 4;
+// 同一作者/收藏夹列表进入机会式刷新的最小间隔（ms）。
+export const OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS = 10 * 60 * 1000;
+// 单个作者在一次机会式刷新里最多额外补取的连续窗口页块数。
+export const OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN = 1;
 
 // 前台轮询间隔（ms）
 export const POLL_INTERVAL_MS = 3000;

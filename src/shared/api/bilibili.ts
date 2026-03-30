@@ -19,6 +19,10 @@ interface ApiResponse<T> {
   data: T;
 }
 
+export interface ApiRequestTracker {
+  recordRequest(): void;
+}
+
 export class BilibiliApiError extends Error {
   readonly code: number;
   readonly apiMessage: string;
@@ -115,7 +119,8 @@ export interface VideoActionTarget {
 
 async function fetchApi<T>(
   path: string,
-  params?: Record<string, string | number>
+  params?: Record<string, string | number>,
+  requestTracker?: ApiRequestTracker
 ): Promise<ApiResponse<T>> {
   const url = new URL(path, API_BASE);
 
@@ -125,6 +130,7 @@ async function fetchApi<T>(
     });
   }
 
+  requestTracker?.recordRequest();
   const response = await fetch(url.toString(), {
     credentials: 'include'
   });
@@ -148,7 +154,8 @@ async function fetchApi<T>(
 async function postApi<T>(
   path: string,
   body: Record<string, string | number>,
-  query?: Record<string, string | number>
+  query?: Record<string, string | number>,
+  requestTracker?: ApiRequestTracker
 ): Promise<ApiResponse<T>> {
   const url = new URL(path, API_BASE);
   const form = new URLSearchParams();
@@ -163,6 +170,7 @@ async function postApi<T>(
     form.set(key, String(value));
   });
 
+  requestTracker?.recordRequest();
   const response = await fetch(url.toString(), {
     method: 'POST',
     credentials: 'include',
@@ -195,8 +203,8 @@ let cachedWbiKey: { imgKey: string; subKey: string; expiredAt: number } | null =
 /**
  * 获取当前登录用户；当未登录时会抛错给上层统一处理。
  */
-export async function getCurrentUser(): Promise<CurrentUser> {
-  const payload = await fetchApi<NavData>('/x/web-interface/nav');
+export async function getCurrentUser(requestTracker?: ApiRequestTracker): Promise<CurrentUser> {
+  const payload = await fetchApi<NavData>('/x/web-interface/nav', undefined, requestTracker);
 
   if (!payload.data.isLogin) {
     throw new Error('当前未登录 Bilibili');
@@ -208,7 +216,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   };
 }
 
-async function getWbiKeys(): Promise<{ imgKey: string; subKey: string }> {
+async function getWbiKeys(requestTracker?: ApiRequestTracker): Promise<{ imgKey: string; subKey: string }> {
   if (cachedWbiKey && cachedWbiKey.expiredAt > Date.now()) {
     return {
       imgKey: cachedWbiKey.imgKey,
@@ -216,7 +224,7 @@ async function getWbiKeys(): Promise<{ imgKey: string; subKey: string }> {
     };
   }
 
-  const navPayload = await fetchApi<NavData>('/x/web-interface/nav');
+  const navPayload = await fetchApi<NavData>('/x/web-interface/nav', undefined, requestTracker);
   const imgUrl = navPayload.data.wbi_img?.img_url;
   const subUrl = navPayload.data.wbi_img?.sub_url;
 
@@ -239,11 +247,11 @@ async function getWbiKeys(): Promise<{ imgKey: string; subKey: string }> {
 /**
  * 获取当前用户创建的收藏夹列表，用于分组配置。
  */
-export async function getMyCreatedFolders(): Promise<FavoriteFolder[]> {
-  const user = await getCurrentUser();
+export async function getMyCreatedFolders(requestTracker?: ApiRequestTracker): Promise<FavoriteFolder[]> {
+  const user = await getCurrentUser(requestTracker);
   const payload = await fetchApi<FolderCreatedListData>('/x/v3/fav/folder/created/list-all', {
     up_mid: user.mid
-  });
+  }, requestTracker);
 
   return (payload.data.list ?? []).map((item) => ({
     id: item.id,
@@ -300,7 +308,8 @@ function invalidateWbiKeys(): void {
 export async function getUploaderVideos(
   mid: number,
   pn: number,
-  ps: number
+  ps: number,
+  options?: { requestTracker?: ApiRequestTracker }
 ): Promise<{
   videos: VideoItem[];
   hasMore: boolean;
@@ -310,14 +319,14 @@ export async function getUploaderVideos(
 }> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const { imgKey, subKey } = await getWbiKeys();
+      const { imgKey, subKey } = await getWbiKeys(options?.requestTracker);
       const signedParams = signWbiParams(
         { mid, pn, ps, order: 'pubdate' },
         imgKey,
         subKey
       );
 
-      const payload = await fetchApi<ArcSearchData>('/x/space/wbi/arc/search', signedParams);
+      const payload = await fetchApi<ArcSearchData>('/x/space/wbi/arc/search', signedParams, options?.requestTracker);
       const videos: VideoItem[] = (payload.data.list?.vlist ?? []).map((item) => ({
         bvid: item.bvid,
         aid: item.aid,
@@ -377,8 +386,8 @@ export interface UserCardProfile {
 /**
  * 获取作者卡片信息（头像、名称、粉丝数、关注状态）。
  */
-export async function getUserCard(mid: number): Promise<UserCardProfile> {
-  const payload = await fetchApi<WebCardData>('/x/web-interface/card', { mid });
+export async function getUserCard(mid: number, requestTracker?: ApiRequestTracker): Promise<UserCardProfile> {
+  const payload = await fetchApi<WebCardData>('/x/web-interface/card', { mid }, requestTracker);
   return {
     mid,
     name: payload.data.card?.name?.trim() || undefined,

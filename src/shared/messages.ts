@@ -14,6 +14,7 @@ import { ext } from '@/shared/platform/webext';
 
 export type MessageRequest =
   | { type: 'PING' }
+  | { type: 'REPORT_BILIBILI_TAB_OPEN' }
   | { type: 'GET_OPTIONS_DATA' }
   | { type: 'UPSERT_GROUP'; payload: { group: Omit<GroupConfig, 'createdAt' | 'updatedAt'> & Partial<Pick<GroupConfig, 'createdAt' | 'updatedAt'>> } }
   | { type: 'DELETE_GROUP'; payload: { groupId: string } }
@@ -185,6 +186,7 @@ export type SchedulerTaskReason =
   | 'author-batch-like';
 export type SchedulerTaskTrigger =
   | 'alarm-routine'
+  | 'tab-open-opportunistic'
   | 'debug-run-now'
   | 'manual-click'
   | 'manual-refresh-posts'
@@ -307,7 +309,7 @@ export interface SchedulerStatusResponse {
     success: boolean;
     timestamp: number;
     error?: string;
-    mode: 'regular' | 'burst';
+    mode: 'regular' | 'burst' | 'opportunistic';
     taskReason: SchedulerTaskReason;
     trigger: SchedulerTaskTrigger;
   }>;
@@ -315,6 +317,11 @@ export interface SchedulerStatusResponse {
 
 export interface ResponseMap {
   PING: { pong: true };
+  REPORT_BILIBILI_TAB_OPEN: {
+    accepted: boolean;
+    skipped?: boolean;
+    reason?: string;
+  };
   GET_OPTIONS_DATA: GroupOptionsData;
   UPSERT_GROUP: { groups: GroupConfig[] };
   DELETE_GROUP: { groups: GroupConfig[] };

@@ -187,7 +187,7 @@
       <div v-for="(h, i) in status.history" :key="i" class="bbe-debug-table-row" :class="{ 'bbe-debug-fail': !h.success }">
         <span>{{ h.name }}</span>
         <span>{{ formatHistoryChannel(h.channel) }}</span>
-        <span>{{ h.mode === 'burst' ? 'Burst' : '常规' }}</span>
+        <span>{{ formatHistoryMode(h.mode) }}</span>
         <span :title="`${h.trigger}${h.taskReason ? ` / ${h.taskReason}` : ''}`">{{ formatHistoryReason(h) }}</span>
         <span>{{ formatTime(h.timestamp) }}</span>
         <span>{{ h.success ? '成功' : h.error || '失败' }}</span>
@@ -339,6 +339,12 @@ function formatHistoryChannel(channel: 'author-video' | 'group-fav' | 'like-acti
   if (channel === 'group-fav') return 'group-fav';
   if (channel === 'like-action') return 'like-action';
   return 'author-video';
+}
+
+function formatHistoryMode(mode: 'regular' | 'burst' | 'opportunistic'): string {
+  if (mode === 'burst') return 'Burst';
+  if (mode === 'opportunistic') return '机会式';
+  return '常规';
 }
 
 function formatHistoryReason(item: {

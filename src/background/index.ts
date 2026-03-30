@@ -74,6 +74,7 @@ import {
   observeBurstTaskFirstResult,
   getStatus,
   runSchedulerNow,
+  runTabOpenOpportunisticRefresh,
   setupAlarm
 } from '@/background/scheduler';
 import { runWithFavRequestHeaders, runWithFollowRequestHeaders } from '@/background/request-dnr';
@@ -1508,10 +1509,16 @@ async function handleRunSchedulerNow(): Promise<ResponseMap['RUN_SCHEDULER_NOW']
   return runSchedulerNow();
 }
 
+async function handleReportBilibiliTabOpen(): Promise<ResponseMap['REPORT_BILIBILI_TAB_OPEN']> {
+  return runTabOpenOpportunisticRefresh();
+}
+
 async function routeMessage(request: MessageRequest, sender: chrome.runtime.MessageSender): Promise<MessageResponse> {
   switch (request.type) {
     case 'PING':
       return ok({ pong: true });
+    case 'REPORT_BILIBILI_TAB_OPEN':
+      return ok(await handleReportBilibiliTabOpen());
     case 'GET_OPTIONS_DATA':
       return ok(await handleGetOptionsData());
     case 'GET_AUTHOR_GROUP_MEMBERSHIP':
