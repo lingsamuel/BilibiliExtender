@@ -5,10 +5,11 @@ import {
   BG_REFRESH_MIN_BATCH_DELAY_MS,
   OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN,
   OPPORTUNISTIC_REFRESH_DEBOUNCE_MS,
-  OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS,
   OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW,
   OPPORTUNISTIC_REFRESH_REQUEST_BUDGET,
-  OPPORTUNISTIC_REFRESH_WINDOW_MS
+  OPPORTUNISTIC_REFRESH_WINDOW_MS,
+  OPPORTUNISTIC_REFRESH_AUTHOR_COOLDOWN_MS,
+  OPPORTUNISTIC_REFRESH_FOLDER_LIST_COOLDOWN_MS
 } from '@/shared/constants';
 import {
   loadAuthorVideoCacheMap,
@@ -650,7 +651,7 @@ function trimAuthorCooldownMap(
   now: number
 ): OpportunisticRefreshState['authorCooldownByMid'] {
   const next: OpportunisticRefreshState['authorCooldownByMid'] = {};
-  const minTs = now - OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS;
+  const minTs = now - OPPORTUNISTIC_REFRESH_AUTHOR_COOLDOWN_MS;
   for (const [mid, ts] of Object.entries(cooldownMap)) {
     if (ts >= minTs) {
       next[mid] = ts;
@@ -1178,7 +1179,7 @@ async function collectOpportunisticAuthorCandidate(
       cache.lastFirstPageFetchedAt || cache.firstPageFetchedAt || cache.lastFetchedAt || 0,
       Number(state.authorCooldownByMid[String(mid)]) || 0
     );
-    if (now - freshnessBase < OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS) {
+    if (now - freshnessBase < OPPORTUNISTIC_REFRESH_AUTHOR_COOLDOWN_MS) {
       continue;
     }
 
@@ -1213,7 +1214,7 @@ async function shouldSyncFolderListOpportunistically(state: OpportunisticRefresh
     return false;
   }
   const lastSyncAt = state.lastFolderListSyncAt || 0;
-  return Date.now() - lastSyncAt >= OPPORTUNISTIC_REFRESH_ENTITY_COOLDOWN_MS;
+  return Date.now() - lastSyncAt >= OPPORTUNISTIC_REFRESH_FOLDER_LIST_COOLDOWN_MS;
 }
 
 /**
