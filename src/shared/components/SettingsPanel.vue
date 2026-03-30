@@ -682,7 +682,7 @@ onMounted(() => {
 }
 
 .bbe-settings-switch.active {
-  color: #9b6c00;
+  color: #0077b6;
 }
 
 .bbe-settings-switch-track {
@@ -698,7 +698,7 @@ onMounted(() => {
 }
 
 .bbe-settings-switch.active .bbe-settings-switch-track {
-  background: #f6cf73;
+  background: #00a1d6;
 }
 
 .bbe-settings-switch-thumb {

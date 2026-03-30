@@ -1479,9 +1479,9 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-author-ignore-switch.active {
-  border-color: #f1c868;
-  background: #fff8e1;
-  color: #9b6c00;
+  border-color: #8ad4ee;
+  background: #eef9fd;
+  color: #0077b6;
 }
 
 .bbe-author-pagination {
