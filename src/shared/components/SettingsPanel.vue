@@ -16,51 +16,70 @@
 
   <section class="bbe-panel">
     <h2 class="bbe-panel-title">分组列表<span v-if="totalTrackedAuthors > 0" class="bbe-setting-hint" style="margin-left: 8px; font-size: 13px; font-weight: normal">共追踪 {{ totalTrackedAuthors }} 位作者</span></h2>
-    <div class="bbe-settings-grid bbe-settings-grid-header">
-      <div>收藏夹</div>
-      <div>别名</div>
-      <div>作者数</div>
-      <div>启用</div>
-      <div>操作</div>
-    </div>
     <div v-if="groups.length === 0" class="bbe-sub">暂无分组</div>
-    <div v-for="group in groups" :key="group.groupId" class="bbe-settings-grid bbe-settings-grid-row">
-      <div>{{ group.mediaTitle }}</div>
-      <div>
-        <input
-          v-model="group.alias"
-          class="bbe-input"
-          type="text"
-          maxlength="30"
-          placeholder="未设置时使用收藏夹名"
-          @input="scheduleGroupSave(group.groupId)"
-          @blur="flushGroupSave(group.groupId)"
-        />
-      </div>
-      <div>{{ groupAuthorCounts[group.groupId] ?? '-' }}</div>
-      <div>
-        <label>
-          <input type="checkbox" v-model="group.enabled" @change="saveGroup(group)" />
-          启用
-        </label>
-      </div>
-      <div>
-        <button
-          class="bbe-btn"
-          :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
-          @click="refreshGroupPosts(group.groupId)"
-        >
-          {{ isGroupRefreshing(group.groupId) ? '提交中...' : '刷新投稿列表' }}
-        </button>
-        <button
-          class="bbe-btn"
-          :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
-          @click="refreshGroupFav(group.groupId)"
-        >
-          刷新收藏夹
-        </button>
-        <button class="bbe-btn danger" @click="removeGroup(group.groupId)">删除</button>
-      </div>
+    <div v-else class="bbe-settings-table-wrap">
+      <table class="bbe-settings-table">
+        <thead>
+          <tr>
+            <th scope="col">收藏夹</th>
+            <th scope="col">别名</th>
+            <th scope="col" class="bbe-settings-table-count">作者数</th>
+            <th scope="col" class="bbe-settings-table-enable">启用</th>
+            <th scope="col" class="bbe-settings-table-actions">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="group in groups" :key="group.groupId">
+            <td class="bbe-settings-table-group-title">{{ group.mediaTitle }}</td>
+            <td class="bbe-settings-table-alias">
+              <input
+                v-model="group.alias"
+                class="bbe-input"
+                type="text"
+                maxlength="30"
+                placeholder="未设置时使用收藏夹名"
+                @input="scheduleGroupSave(group.groupId)"
+                @blur="flushGroupSave(group.groupId)"
+              />
+            </td>
+            <td class="bbe-settings-table-count">{{ groupAuthorCounts[group.groupId] ?? '-' }}</td>
+            <td class="bbe-settings-table-enable">
+              <button
+                type="button"
+                class="bbe-settings-switch bbe-settings-switch-compact"
+                :class="{ active: group.enabled }"
+                :aria-pressed="group.enabled"
+                :aria-label="group.enabled ? `停用分组 ${group.mediaTitle}` : `启用分组 ${group.mediaTitle}`"
+                :title="group.enabled ? '已启用' : '未启用'"
+                @click="toggleGroupEnabled(group)"
+              >
+                <span class="bbe-settings-switch-track" aria-hidden="true">
+                  <span class="bbe-settings-switch-thumb" />
+                </span>
+              </button>
+            </td>
+            <td class="bbe-settings-table-actions">
+              <div class="bbe-group-actions">
+                <button
+                  class="bbe-btn"
+                  :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
+                  @click="refreshGroupPosts(group.groupId)"
+                >
+                  {{ isGroupRefreshing(group.groupId) ? '提交中...' : '刷新投稿列表' }}
+                </button>
+                <button
+                  class="bbe-btn"
+                  :disabled="!group.enabled || isGroupRefreshing(group.groupId)"
+                  @click="refreshGroupFav(group.groupId)"
+                >
+                  刷新收藏夹
+                </button>
+                <button class="bbe-btn danger" @click="removeGroup(group.groupId)">删除</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
@@ -503,6 +522,11 @@ function isGroupRefreshing(groupId: string): boolean {
   return refreshingGroups.value.has(groupId);
 }
 
+function toggleGroupEnabled(group: GroupConfig): void {
+  group.enabled = group.enabled !== true;
+  void saveGroup(group);
+}
+
 async function submitGroupRefresh(
   groupId: string,
   type: 'REFRESH_GROUP_POSTS' | 'REFRESH_GROUP_FAV',
@@ -712,5 +736,10 @@ onMounted(() => {
 
 .bbe-settings-switch.active .bbe-settings-switch-thumb {
   transform: translateX(14px);
+}
+
+.bbe-settings-switch-compact {
+  padding: 0;
+  gap: 0;
 }
 </style>
