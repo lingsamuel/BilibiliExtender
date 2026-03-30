@@ -3,106 +3,21 @@ import DrawerApp from '@/content/components/DrawerApp.vue';
 import { startAuthorGroupManager } from '@/content/author-group-manager';
 import { EXTENSION_EVENT } from '@/shared/constants';
 import { sendMessage } from '@/shared/messages';
-import {
-  debugLog,
-  initDebugConsoleState,
-  setDebugConsoleEnabledLocally
-} from '@/shared/utils/debug-console';
+import { debugLog, initDebugConsoleState } from '@/shared/utils/debug-console';
 import '@/styles/content.css';
 
 const ROOT_ID = 'bbe-root';
 const NAV_ENTRY_ID = 'bbe-nav-entry';
-const DEBUG_CONSOLE_BRIDGE_ID = 'bbe-debug-console-bridge';
-const DEBUG_CONSOLE_BRIDGE_SOURCE = 'bbe-debug-console-bridge';
-const DEBUG_CONSOLE_BRIDGE_TYPE = 'bbe-debug-console-changed';
 let unreadCount = 0;
-
-interface DebugConsoleBridgeMessage {
-  source: string;
-  type: string;
-  enabled: boolean;
-}
 
 function logBootstrapBadge(): void {
   const version = chrome.runtime?.getManifest?.().version ?? 'dev';
-  console.log(
+  debugLog(
     '%c bilibili-extender %c v%s ',
     'background:#ff4f91;color:#ffffff;border-radius:2px 0 0 2px;padding:2px 10px;font-weight:700;',
     'background:#ffb7bf;color:#ffffff;border-radius:0 2px 2px 0;padding:2px 10px;font-weight:700;',
     version
   );
-}
-
-function buildDebugConsoleBridgeScript(): string {
-  return `(() => {
-    const source = ${JSON.stringify(DEBUG_CONSOLE_BRIDGE_SOURCE)};
-    const type = ${JSON.stringify(DEBUG_CONSOLE_BRIDGE_TYPE)};
-    const scope = window;
-    const descriptor = Object.getOwnPropertyDescriptor(scope, 'DEBUG');
-    if (descriptor && descriptor.configurable === false) {
-      return;
-    }
-
-    let current = scope.DEBUG === true;
-
-    Object.defineProperty(scope, 'DEBUG', {
-      configurable: true,
-      enumerable: true,
-      get() {
-        return current;
-      },
-      set(value) {
-        current = value === true;
-        scope.postMessage({ source, type, enabled: current }, location.origin);
-      }
-    });
-  })();`;
-}
-
-function ensureDebugConsoleBridge(): void {
-  if (document.getElementById(DEBUG_CONSOLE_BRIDGE_ID)) {
-    return;
-  }
-
-  const script = document.createElement('script');
-  script.id = DEBUG_CONSOLE_BRIDGE_ID;
-  script.textContent = buildDebugConsoleBridgeScript();
-  (document.documentElement ?? document.head ?? document.body)?.appendChild(script);
-  script.remove();
-}
-
-function isDebugConsoleBridgeMessage(data: unknown): data is DebugConsoleBridgeMessage {
-  if (!data || typeof data !== 'object') {
-    return false;
-  }
-  const candidate = data as Partial<DebugConsoleBridgeMessage>;
-  return candidate.source === DEBUG_CONSOLE_BRIDGE_SOURCE
-    && candidate.type === DEBUG_CONSOLE_BRIDGE_TYPE
-    && typeof candidate.enabled === 'boolean';
-}
-
-async function syncDebugConsoleEnabled(enabled: boolean): Promise<void> {
-  setDebugConsoleEnabledLocally(enabled);
-  try {
-    await sendMessage({
-      type: 'SET_DEBUG_CONSOLE_ENABLED',
-      payload: { enabled }
-    });
-  } catch {
-    // 后台暂不可用时静默忽略，当前页本地日志开关已即时生效。
-  }
-}
-
-function bindDebugConsoleBridge(): void {
-  window.addEventListener('message', (event: MessageEvent<unknown>) => {
-    if (event.source !== window) {
-      return;
-    }
-    if (!isDebugConsoleBridgeMessage(event.data)) {
-      return;
-    }
-    void syncDebugConsoleEnabled(event.data.enabled);
-  });
 }
 
 function formatUnreadText(count: number): string {
@@ -316,8 +231,6 @@ function bindUnreadDot(): void {
 }
 
 function bootstrap(): void {
-  bindDebugConsoleBridge();
-  ensureDebugConsoleBridge();
   void initDebugConsoleState().then(() => {
     logBootstrapBadge();
   });

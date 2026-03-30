@@ -68,11 +68,8 @@ const memoryCache: {
   authorPreferences?: AuthorPreferenceMap;
   opportunisticRefresh?: OpportunisticRefreshState;
   schedulerHistory?: SchedulerHistoryEntry[];
-  debugConsoleEnabled?: boolean;
-  hasDebugConsoleEnabled: boolean;
 } = {
-  hasLastGroupId: false,
-  hasDebugConsoleEnabled: false
+  hasLastGroupId: false
 };
 
 async function storageGet<T>(
@@ -170,25 +167,6 @@ export async function loadSettings(): Promise<ExtensionSettings> {
 
 export async function saveSettings(settings: ExtensionSettings): Promise<void> {
   await setSettings(settings);
-}
-
-export async function loadDebugConsoleEnabled(): Promise<boolean> {
-  if (memoryCache.hasDebugConsoleEnabled) {
-    return memoryCache.debugConsoleEnabled === true;
-  }
-
-  const enabled = await storageGet(ext.storage.local, STORAGE_KEYS.DEBUG_CONSOLE_ENABLED, false);
-  const normalized = enabled === true;
-  memoryCache.debugConsoleEnabled = normalized;
-  memoryCache.hasDebugConsoleEnabled = true;
-  return normalized;
-}
-
-export async function saveDebugConsoleEnabled(enabled: boolean): Promise<void> {
-  const normalized = enabled === true;
-  memoryCache.debugConsoleEnabled = normalized;
-  memoryCache.hasDebugConsoleEnabled = true;
-  await storageSet(ext.storage.local, STORAGE_KEYS.DEBUG_CONSOLE_ENABLED, normalized);
 }
 
 export async function loadRuntimeStateMap(): Promise<RuntimeStateMap> {

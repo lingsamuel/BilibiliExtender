@@ -1,5 +1,7 @@
-import { STORAGE_KEYS } from '@/shared/constants';
+import { DEFAULT_SETTINGS, STORAGE_KEYS } from '@/shared/constants';
 import { ext } from '@/shared/platform/webext';
+import type { ExtensionSettings } from '@/shared/types';
+import { normalizeExtensionSettings } from '@/shared/utils/settings';
 
 type DebugConsoleMethod = 'log' | 'info' | 'warn' | 'error';
 
@@ -8,7 +10,11 @@ let initPromise: Promise<boolean> | null = null;
 let storageListenerBound = false;
 
 function normalizeDebugConsoleEnabled(value: unknown): boolean {
-  return value === true;
+  const source = value && typeof value === 'object' ? value as Partial<ExtensionSettings> : {};
+  return normalizeExtensionSettings({
+    ...DEFAULT_SETTINGS,
+    ...source
+  }).debugMode === true;
 }
 
 function bindStorageListener(): void {
@@ -20,7 +26,7 @@ function bindStorageListener(): void {
     if (areaName !== 'local') {
       return;
     }
-    const change = changes[STORAGE_KEYS.DEBUG_CONSOLE_ENABLED];
+    const change = changes[STORAGE_KEYS.SETTINGS];
     if (!change) {
       return;
     }
@@ -30,16 +36,17 @@ function bindStorageListener(): void {
 
 /**
  * 统一维护运行时日志开关。
- * 开关通过 storage.local 在 content/background 间同步，
- * 但会在浏览器启动或扩展安装时被后台重置，避免长期保留调试输出。
+ * 直接复用设置里的 debugMode：
+ * - 开启后允许打印控制台调试日志；
+ * - content/background 通过 storage.onChanged 自动同步。
  */
 export async function initDebugConsoleState(): Promise<boolean> {
   bindStorageListener();
   if (!initPromise) {
     initPromise = ext.storage.local
-      .get(STORAGE_KEYS.DEBUG_CONSOLE_ENABLED)
+      .get(STORAGE_KEYS.SETTINGS)
       .then((result) => {
-        debugConsoleEnabled = normalizeDebugConsoleEnabled(result[STORAGE_KEYS.DEBUG_CONSOLE_ENABLED]);
+        debugConsoleEnabled = normalizeDebugConsoleEnabled(result[STORAGE_KEYS.SETTINGS]);
         return debugConsoleEnabled;
       })
       .catch(() => {
@@ -48,10 +55,6 @@ export async function initDebugConsoleState(): Promise<boolean> {
       });
   }
   return initPromise;
-}
-
-export function setDebugConsoleEnabledLocally(enabled: boolean): void {
-  debugConsoleEnabled = enabled === true;
 }
 
 function printDebugConsole(method: DebugConsoleMethod, args: unknown[]): void {

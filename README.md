@@ -48,11 +48,6 @@ Firefox 本地调试加载步骤：
 2. 点击“临时载入附加组件”
 3. 选择 `dist/firefox/manifest.json`
 
-## 调试日志
-- 默认不向控制台打印扩展内部日志。
-- 如需临时排查，请在任意已注入扩展的 Bilibili 页面控制台输入 `DEBUG=true`。
-- 关闭日志时输入 `DEBUG=false`。
-
 ## 目录结构
 ```text
 src/

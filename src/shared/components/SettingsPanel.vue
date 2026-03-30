@@ -215,7 +215,7 @@
       <div class="bbe-setting-row">
         <div>
           调试模式
-          <div class="bbe-setting-hint">开启后侧边栏显示调试入口，可查看调度器状态</div>
+          <div class="bbe-setting-hint">开启后侧边栏显示调试入口，并允许在控制台打印调试日志</div>
         </div>
         <label>
           <input v-model="settings.debugMode" type="checkbox" /> 启用
