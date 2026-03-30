@@ -26,41 +26,13 @@ interface DialogState {
 }
 
 const BUTTON_ATTR = 'data-bbe-author-group-button';
-const SHADOW_OBSERVED_ATTR = 'data-bbe-author-group-shadow-observed';
-const VIDEO_ACTION_SELECTORS = [
-  '.up-detail-top',
-  '.video-owner__info',
-  '.up-info-container',
-  '.up-info-right',
-  '.video-card-author'
-];
-const SPACE_ACTION_SELECTORS = [
-  '#h-action',
-  '.h-action',
-  '.bili-user-profile-view__info__btns',
-  '.userinfo-wrapper .opt-btns',
-  '.upinfo-detail__buttons',
-  '.bili-user-profile-view__info__body'
-];
-const CARD_ROOT_SELECTORS = [
-  '.bili-user-profile',
-  '.user-card',
-  '.bili-user-card'
-];
-const CARD_ACTION_SELECTORS = [
-  '.bili-user-profile-view__info__btns',
-  '.bili-user-profile-view__info__body',
-  '.card-content',
-  '.userinfo-wrapper',
-  '.user-card-content'
-];
+const VIDEO_ACTION_SELECTOR = '.up-detail-top';
+const SPACE_ACTION_SELECTOR = '.interactions';
 
 const membershipCache = new Map<number, MembershipState>();
 const membershipPendingMap = new Map<number, Promise<MembershipState>>();
 const buttonRegistry = new Map<number, Set<HTMLButtonElement>>();
 const buttonContextMap = new WeakMap<HTMLButtonElement, AuthorEntryContext>();
-const shadowRootObserverSet = new WeakSet<ShadowRoot>();
-
 let pageToastHost: HTMLElement | null = null;
 let dialogBackdrop: HTMLDivElement | null = null;
 let dialogRequestSeq = 0;
@@ -710,7 +682,7 @@ function scanVideoPage(root: HTMLElement): void {
   if (!/\/video\//.test(window.location.pathname)) {
     return;
   }
-  const actionRoot = queryFirst(document, VIDEO_ACTION_SELECTORS);
+  const actionRoot = document.querySelector(VIDEO_ACTION_SELECTOR);
   if (!actionRoot) {
     return;
   }
@@ -725,7 +697,7 @@ function scanSpacePage(root: HTMLElement): void {
   if (window.location.host !== 'space.bilibili.com') {
     return;
   }
-  const actionRoot = queryFirst(document, SPACE_ACTION_SELECTORS);
+  const actionRoot = document.querySelector(SPACE_ACTION_SELECTOR);
   if (!actionRoot) {
     return;
   }
@@ -736,55 +708,9 @@ function scanSpacePage(root: HTMLElement): void {
   upsertButton(root, document, actionRoot, context);
 }
 
-function scanCardRoot(root: HTMLElement, queryRoot: QueryRoot): void {
-  const actionRoot = queryFirst(queryRoot, CARD_ACTION_SELECTORS) ?? (queryRoot instanceof HTMLElement ? queryRoot : null);
-  if (!actionRoot) {
-    return;
-  }
-  const context = buildCardContext(queryRoot, actionRoot);
-  if (!context) {
-    return;
-  }
-  upsertButton(root, queryRoot, actionRoot, context);
-}
-
-function scanCardTargets(root: HTMLElement): void {
-  for (const selector of CARD_ROOT_SELECTORS) {
-    const cardRoots = document.querySelectorAll(selector);
-    for (const cardRoot of cardRoots) {
-      if (!(cardRoot instanceof HTMLElement) || !isElementVisible(cardRoot)) {
-        continue;
-      }
-      scanCardRoot(root, cardRoot);
-    }
-  }
-
-  const customHosts = document.querySelectorAll('bili-user-profile');
-  for (const host of customHosts) {
-    if (!(host instanceof HTMLElement)) {
-      continue;
-    }
-    if (host.shadowRoot && !shadowRootObserverSet.has(host.shadowRoot)) {
-      const observer = new MutationObserver(() => {
-        scheduleScan(root);
-      });
-      observer.observe(host.shadowRoot, {
-        childList: true,
-        subtree: true
-      });
-      shadowRootObserverSet.add(host.shadowRoot);
-      host.setAttribute(SHADOW_OBSERVED_ATTR, '1');
-    }
-    if (host.shadowRoot) {
-      scanCardRoot(root, host.shadowRoot);
-    }
-  }
-}
-
 function runScan(root: HTMLElement): void {
   scanVideoPage(root);
   scanSpacePage(root);
-  scanCardTargets(root);
 }
 
 function scheduleScan(root: HTMLElement): void {
