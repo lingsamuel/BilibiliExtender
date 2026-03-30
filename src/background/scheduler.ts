@@ -49,6 +49,7 @@ import {
   type ApiRequestTracker
 } from '@/shared/api/bilibili';
 import { runWithLikeRequestHeaders } from '@/background/request-dnr';
+import { debugInfo, debugWarn } from '@/shared/utils/debug-console';
 import { WbiExpiredError } from '@/shared/utils/wbi';
 
 export interface SchedulerTask {
@@ -383,7 +384,7 @@ async function ensureHistoryHydrated(): Promise<void> {
       history.splice(0, history.length, ...persisted.slice(0, MAX_HISTORY));
     }
   } catch (error) {
-    console.warn('[BBE] 读取调度历史失败:', error);
+    debugWarn('[BBE] 读取调度历史失败:', error);
   }
 }
 
@@ -394,7 +395,7 @@ function schedulePersistHistory(): void {
   historyPersistTimer = setTimeout(() => {
     historyPersistTimer = null;
     void saveSchedulerHistory(history).catch((error) => {
-      console.warn('[BBE] 保存调度历史失败:', error);
+      debugWarn('[BBE] 保存调度历史失败:', error);
     });
   }, 200);
 }
@@ -1328,7 +1329,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
   const authors = await buildAuthorListFromFav(group, feedCacheMap);
   if (authors.length === 0) {
     // 收藏夹不存在/不可访问时 getAllFavVideos 可能返回空；此时保持旧分组信息不变。
-    console.warn('[BBE] 收藏夹作者列表为空，已跳过缓存覆盖 groupId:', group.groupId);
+    debugWarn('[BBE] 收藏夹作者列表为空，已跳过缓存覆盖 groupId:', group.groupId);
     return;
   }
 
@@ -1343,7 +1344,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
       groupChanged = true;
     }
   } catch (error) {
-    console.warn('[BBE] 同步收藏夹标题失败:', error);
+    debugWarn('[BBE] 同步收藏夹标题失败:', error);
   }
 
   await saveFeedCacheMap(feedCacheMap);
@@ -1478,7 +1479,7 @@ async function runLikeActionLoop(): Promise<void> {
         ok: false,
         error: error instanceof Error ? error.message : String(error)
       });
-      console.warn('[BBE] 点赞任务执行失败 bvid:', task.bvid, error);
+      debugWarn('[BBE] 点赞任务执行失败 bvid:', task.bvid, error);
     } finally {
       likeActionState.currentTask = null;
     }
@@ -1551,7 +1552,7 @@ async function runAuthorLoop(): Promise<void> {
         trigger: task.trigger,
         error: error instanceof Error ? error.message : String(error)
       });
-      console.warn('[BBE] 作者任务刷新失败 mid:', task.mid, error);
+      debugWarn('[BBE] 作者任务刷新失败 mid:', task.mid, error);
     }
 
     authorState.currentTask = null;
@@ -1648,7 +1649,7 @@ async function runGroupFavLoop(): Promise<void> {
         trigger: task.trigger,
         error: error instanceof Error ? error.message : String(error)
       });
-      console.warn('[BBE] 收藏夹任务刷新失败 groupId:', task.groupId, error);
+      debugWarn('[BBE] 收藏夹任务刷新失败 groupId:', task.groupId, error);
     }
 
     groupFavState.currentTask = null;
@@ -1705,7 +1706,7 @@ async function flushPendingRoutineAfterBurst(): Promise<void> {
     }
     await Promise.all(jobs);
   } catch (error) {
-    console.warn('[BBE] Burst 结束后补偿调度失败:', error);
+    debugWarn('[BBE] Burst 结束后补偿调度失败:', error);
   }
 }
 
@@ -1766,7 +1767,7 @@ async function runBurstLoop(): Promise<void> {
         trigger: task.trigger,
         error: error instanceof Error ? error.message : String(error)
       });
-      console.warn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
+      debugWarn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
       notifyBurstTaskFirstResult(task, {
         ok: false,
         error: error instanceof Error ? error.message : String(error)
@@ -2083,7 +2084,7 @@ export function enqueueLikeBatch(
     const result = await waitForLikeTask(task);
     if (options?.onTaskFinished) {
       void Promise.resolve(options.onTaskFinished({ task, result })).catch((error) => {
-        console.warn('[BBE] 点赞任务进度回调失败 bvid:', task.bvid, error);
+        debugWarn('[BBE] 点赞任务进度回调失败 bvid:', task.bvid, error);
       });
     }
     return { task, result };
@@ -2154,10 +2155,10 @@ function logOpportunisticEvent(
   details?: Record<string, unknown>
 ): void {
   if (details) {
-    console.info(`[BBE][Opportunistic] ${stage}`, details);
+    debugInfo(`[BBE][Opportunistic] ${stage}`, details);
     return;
   }
-  console.info(`[BBE][Opportunistic] ${stage}`);
+  debugInfo(`[BBE][Opportunistic] ${stage}`);
 }
 
 /**
@@ -2344,7 +2345,7 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
           requests: requestMeter.count,
           error: error instanceof Error ? error.message : String(error)
         });
-        console.warn('[BBE] 机会式作者首页刷新失败 mid:', authorTask.mid, error);
+        debugWarn('[BBE] 机会式作者首页刷新失败 mid:', authorTask.mid, error);
       } finally {
         recordOpportunisticRequests(state, requestMeter.count, Date.now());
         totalIssuedRequests += requestMeter.count;
@@ -2421,7 +2422,7 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
             requests: requestMeter.count,
             error: error instanceof Error ? error.message : String(error)
           });
-          console.warn('[BBE] 机会式连续窗口补块失败 mid:', authorTask.mid, 'pn:', nextPn, error);
+          debugWarn('[BBE] 机会式连续窗口补块失败 mid:', authorTask.mid, 'pn:', nextPn, error);
           recordOpportunisticRequests(state, requestMeter.count, Date.now());
           totalIssuedRequests += requestMeter.count;
           liveBudget = Math.max(0, liveBudget - requestMeter.count);
@@ -2471,7 +2472,7 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
           requests: requestMeter.count,
           error: error instanceof Error ? error.message : String(error)
         });
-        console.warn('[BBE] 机会式收藏夹列表同步失败:', error);
+        debugWarn('[BBE] 机会式收藏夹列表同步失败:', error);
       } finally {
         recordOpportunisticRequests(state, requestMeter.count, Date.now());
         totalIssuedRequests += requestMeter.count;
@@ -2840,7 +2841,7 @@ ext.alarms.onAlarm.addListener((alarm) => {
     }
 
     triggerAuthorRoutine({ resetAlarmSchedule: false }).catch((error) => {
-      console.warn('[BBE] 作者 alarm 处理失败:', error);
+      debugWarn('[BBE] 作者 alarm 处理失败:', error);
     });
     return;
   }
@@ -2852,7 +2853,7 @@ ext.alarms.onAlarm.addListener((alarm) => {
     }
 
     triggerGroupFavRoutine({ resetAlarmSchedule: false }).catch((error) => {
-      console.warn('[BBE] 收藏夹 alarm 处理失败:', error);
+      debugWarn('[BBE] 收藏夹 alarm 处理失败:', error);
     });
   }
 });

@@ -9,6 +9,7 @@ export const AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_MIN = 1;
 
 export const STORAGE_KEYS = {
   SETTINGS: 'bbe:settings',
+  DEBUG_CONSOLE_ENABLED: 'bbe:debug-console-enabled',
   GROUPS_LOCAL: 'bbe:groups:local',
   GROUPS_SYNC: 'bbe:groups:sync',
   RUNTIME: 'bbe:runtime',

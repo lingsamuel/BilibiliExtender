@@ -494,6 +494,7 @@ import type {
   VideoItem,
   ViewMode
 } from '@/shared/types';
+import { debugError, debugWarn } from '@/shared/utils/debug-console';
 import { formatGroupSyncStatus, formatReadMarkTs } from '@/shared/utils/format';
 import { isBuiltInRecentDay, normalizeDefaultReadMarkDays, RECENT_PRESET_DAY_VALUES } from '@/shared/utils/settings';
 import { formatRelativePublishedAt, getRecentDaysBoundaryTs } from '@/shared/utils/time';
@@ -704,7 +705,7 @@ function getAuthorVideos(author: Pick<AuthorFeed, 'authorMid' | 'videos'>): Vide
   if (Array.isArray(author.videos)) {
     return author.videos;
   }
-  console.error('[BBE] 作者数据缺少 videos，已回退为空数组', {
+  debugError('[BBE] 作者数据缺少 videos，已回退为空数组', {
     authorMid: author.authorMid,
     author
   });
@@ -743,14 +744,14 @@ function normalizeFeedSnapshot(data: GroupFeedResult): GroupFeedResult {
 /**
  * 前台统一错误提示入口：只弹通知，不覆盖主内容。
  * 这样即使接口失败，也能保留当前可用缓存内容，避免“整页不可用”。
- * 同时把 toast 文本额外打到 console，便于排查那些来不及手动复制的瞬时错误。
+ * 若用户显式开启 DEBUG，也会把 toast 文本同步打印到 console，便于排查瞬时错误。
  */
 function showErrorToast(message: string): void {
   const text = message.trim();
   if (!text) {
     return;
   }
-  console.error('[BBE][Toast]', text);
+  debugError('[BBE][Toast]', text);
   const id = ++toastSeq;
   const next = [...toasts.value, { id, message: text }];
   toasts.value = next.slice(-4);
@@ -1681,7 +1682,7 @@ async function syncAuthorGroupMemberships(mids: number[]): Promise<void> {
         }
       };
     } catch (error) {
-      console.warn('[BBE] 读取作者分组状态失败 mid:', mid, error);
+      debugWarn('[BBE] 读取作者分组状态失败 mid:', mid, error);
     } finally {
       const next = { ...authorGroupMembershipPendingMap.value };
       delete next[mid];
@@ -3073,7 +3074,7 @@ function closeRefreshConfirmDialog(confirmed: boolean): void {
     void ext.storage.local.set({
       [GROUP_REFRESH_WARNING_SUPPRESSED_KEY]: true
     }).catch((error) => {
-      console.warn('[BBE] save group refresh warning preference failed:', error);
+      debugWarn('[BBE] save group refresh warning preference failed:', error);
     });
   }
 
@@ -3907,12 +3908,12 @@ onMounted(() => {
   ext.runtime.onMessage.addListener(onRuntimeMessage);
 
   void loadSummary().catch((error) => {
-    console.warn('[BBE] preload summary failed:', error);
+    debugWarn('[BBE] preload summary failed:', error);
   });
 
   summaryTimer = window.setInterval(() => {
     void loadSummary().catch((error) => {
-      console.warn('[BBE] periodic summary failed:', error);
+      debugWarn('[BBE] periodic summary failed:', error);
     });
   }, 60 * 1000);
 });

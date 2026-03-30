@@ -7,6 +7,7 @@ import {
 } from '@/shared/constants';
 import { ext, type StorageAreaLike } from '@/shared/platform/webext';
 import { normalizeExtensionSettings } from '@/shared/utils/settings';
+import { debugWarn } from '@/shared/utils/debug-console';
 import type { SchedulerTaskReason, SchedulerTaskTrigger } from '@/shared/messages';
 import type {
   AuthorPreference,
@@ -67,8 +68,11 @@ const memoryCache: {
   authorPreferences?: AuthorPreferenceMap;
   opportunisticRefresh?: OpportunisticRefreshState;
   schedulerHistory?: SchedulerHistoryEntry[];
+  debugConsoleEnabled?: boolean;
+  hasDebugConsoleEnabled: boolean;
 } = {
-  hasLastGroupId: false
+  hasLastGroupId: false,
+  hasDebugConsoleEnabled: false
 };
 
 async function storageGet<T>(
@@ -126,7 +130,7 @@ export async function loadGroups(): Promise<GroupConfig[]> {
     return groups;
   } catch (error) {
     // sync 读取失败时回退 local，避免配置不可用。
-    console.warn('[BBE] loadGroups from preferred area failed, fallback to local:', error);
+    debugWarn('[BBE] loadGroups from preferred area failed, fallback to local:', error);
     const groups = await storageGet(ext.storage.local, STORAGE_KEYS.GROUPS_LOCAL, [] as GroupConfig[]);
     memoryCache.groups = groups;
     return groups;
@@ -148,7 +152,7 @@ export async function saveGroups(groups: GroupConfig[]): Promise<void> {
       await storageSet(ext.storage.local, STORAGE_KEYS.GROUPS_LOCAL, groups);
     }
   } catch (error) {
-    console.warn('[BBE] saveGroups failed in preferred area, fallback to local:', error);
+    debugWarn('[BBE] saveGroups failed in preferred area, fallback to local:', error);
     await storageSet(ext.storage.local, STORAGE_KEYS.GROUPS_LOCAL, groups);
 
     if (settings.useStorageSync) {
@@ -166,6 +170,25 @@ export async function loadSettings(): Promise<ExtensionSettings> {
 
 export async function saveSettings(settings: ExtensionSettings): Promise<void> {
   await setSettings(settings);
+}
+
+export async function loadDebugConsoleEnabled(): Promise<boolean> {
+  if (memoryCache.hasDebugConsoleEnabled) {
+    return memoryCache.debugConsoleEnabled === true;
+  }
+
+  const enabled = await storageGet(ext.storage.local, STORAGE_KEYS.DEBUG_CONSOLE_ENABLED, false);
+  const normalized = enabled === true;
+  memoryCache.debugConsoleEnabled = normalized;
+  memoryCache.hasDebugConsoleEnabled = true;
+  return normalized;
+}
+
+export async function saveDebugConsoleEnabled(enabled: boolean): Promise<void> {
+  const normalized = enabled === true;
+  memoryCache.debugConsoleEnabled = normalized;
+  memoryCache.hasDebugConsoleEnabled = true;
+  await storageSet(ext.storage.local, STORAGE_KEYS.DEBUG_CONSOLE_ENABLED, normalized);
 }
 
 export async function loadRuntimeStateMap(): Promise<RuntimeStateMap> {

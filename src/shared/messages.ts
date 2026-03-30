@@ -15,6 +15,7 @@ import { ext } from '@/shared/platform/webext';
 export type MessageRequest =
   | { type: 'PING' }
   | { type: 'REPORT_BILIBILI_TAB_OPEN' }
+  | { type: 'SET_DEBUG_CONSOLE_ENABLED'; payload: { enabled: boolean } }
   | { type: 'GET_OPTIONS_DATA' }
   | { type: 'UPSERT_GROUP'; payload: { group: Omit<GroupConfig, 'createdAt' | 'updatedAt'> & Partial<Pick<GroupConfig, 'createdAt' | 'updatedAt'>> } }
   | { type: 'DELETE_GROUP'; payload: { groupId: string } }
@@ -322,6 +323,7 @@ export interface ResponseMap {
     skipped?: boolean;
     reason?: string;
   };
+  SET_DEBUG_CONSOLE_ENABLED: { enabled: boolean };
   GET_OPTIONS_DATA: GroupOptionsData;
   UPSERT_GROUP: { groups: GroupConfig[] };
   DELETE_GROUP: { groups: GroupConfig[] };

@@ -43,6 +43,7 @@ import {
   undoAuthorReadMark,
   setVideoReviewedOverride,
   saveAuthorVideoCacheMap,
+  saveDebugConsoleEnabled,
   saveFeedCacheMap,
   saveGroups,
   saveLastGroupId,
@@ -78,7 +79,14 @@ import {
   setupAlarm
 } from '@/background/scheduler';
 import { runWithFavRequestHeaders, runWithFollowRequestHeaders } from '@/background/request-dnr';
+import {
+  debugWarn,
+  initDebugConsoleState,
+  setDebugConsoleEnabledLocally
+} from '@/shared/utils/debug-console';
 import { normalizeExtensionSettings } from '@/shared/utils/settings';
+
+void initDebugConsoleState();
 
 function ok<T>(data: T): MessageResponse<T> {
   return { ok: true, data };
@@ -1202,7 +1210,7 @@ async function handleBatchLikeVideos(
       });
     })
     .catch((error) => {
-      console.warn('[BBE] 批量点赞完成通知失败:', error);
+      debugWarn('[BBE] 批量点赞完成通知失败:', error);
     });
 
   return {
@@ -1513,12 +1521,23 @@ async function handleReportBilibiliTabOpen(): Promise<ResponseMap['REPORT_BILIBI
   return runTabOpenOpportunisticRefresh();
 }
 
+async function handleSetDebugConsoleEnabled(
+  request: Extract<MessageRequest, { type: 'SET_DEBUG_CONSOLE_ENABLED' }>
+): Promise<ResponseMap['SET_DEBUG_CONSOLE_ENABLED']> {
+  const enabled = request.payload.enabled === true;
+  setDebugConsoleEnabledLocally(enabled);
+  await saveDebugConsoleEnabled(enabled);
+  return { enabled };
+}
+
 async function routeMessage(request: MessageRequest, sender: chrome.runtime.MessageSender): Promise<MessageResponse> {
   switch (request.type) {
     case 'PING':
       return ok({ pong: true });
     case 'REPORT_BILIBILI_TAB_OPEN':
       return ok(await handleReportBilibiliTabOpen());
+    case 'SET_DEBUG_CONSOLE_ENABLED':
+      return ok(await handleSetDebugConsoleEnabled(request));
     case 'GET_OPTIONS_DATA':
       return ok(await handleGetOptionsData());
     case 'GET_AUTHOR_GROUP_MEMBERSHIP':
@@ -1594,12 +1613,24 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
   }
 }
 
-ext.runtime.onInstalled.addListener(async () => {
-  const settings = await loadSettings();
-  const merged = normalizeExtensionSettings({ ...DEFAULT_SETTINGS, ...settings });
-  await saveSettings(merged);
-  await Promise.all([cleanOrphanClicks(), cleanOrphanReviewedOverrides()]);
-  await setupAlarm(merged);
+async function resetDebugConsoleEnabled(): Promise<void> {
+  setDebugConsoleEnabledLocally(false);
+  await saveDebugConsoleEnabled(false);
+}
+
+ext.runtime.onInstalled.addListener(() => {
+  void (async () => {
+    await resetDebugConsoleEnabled();
+    const settings = await loadSettings();
+    const merged = normalizeExtensionSettings({ ...DEFAULT_SETTINGS, ...settings });
+    await saveSettings(merged);
+    await Promise.all([cleanOrphanClicks(), cleanOrphanReviewedOverrides()]);
+    await setupAlarm(merged);
+  })();
+});
+
+ext.runtime.onStartup.addListener(() => {
+  void resetDebugConsoleEnabled();
 });
 
 ext.runtime.onMessage.addListener((request: MessageRequest, sender, sendResponse) => {
