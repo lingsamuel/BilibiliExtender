@@ -1,3 +1,4 @@
+import authorGroupButtonCssText from '@/styles/author-group-button.css?inline';
 import { sendMessage, type ResponseMap } from '@/shared/messages';
 
 type MembershipState = ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP'];
@@ -26,6 +27,8 @@ interface DialogState {
 }
 
 const BUTTON_ATTR = 'data-bbe-author-group-button';
+const BUTTON_CLASS = 'bbe-author-follow-btn';
+const BUTTON_EXTRA_CLASS = 'bbe-injected-author-group-btn';
 const VIDEO_ACTION_SELECTOR = '.up-detail-top';
 const SPACE_ACTION_SELECTOR = '.interactions';
 const CARD_ROOT_SELECTOR = '.usercard-wrap';
@@ -40,6 +43,7 @@ const membershipPendingMap = new Map<number, Promise<MembershipState>>();
 const buttonRegistry = new Map<number, Set<HTMLButtonElement>>();
 const buttonContextMap = new WeakMap<HTMLButtonElement, AuthorEntryContext>();
 const shadowRootObserverSet = new WeakSet<ShadowRoot>();
+const shadowRootStyleSet = new WeakSet<ShadowRoot>();
 let pageToastHost: HTMLElement | null = null;
 let dialogBackdrop: HTMLDivElement | null = null;
 let dialogRequestSeq = 0;
@@ -227,36 +231,17 @@ function cleanupButtonRegistry(mid: number): Set<HTMLButtonElement> {
   return next;
 }
 
-function applyAuthorGroupButtonStyle(
+function syncAuthorGroupButtonState(
   button: HTMLButtonElement,
   options: {
     grouped: boolean;
     pending: boolean;
-    source: AuthorEntrySource;
   }
 ): void {
-  const compact = options.source === 'card';
-  button.style.display = 'inline-flex';
-  button.style.alignItems = 'center';
-  button.style.justifyContent = 'center';
-  button.style.flex = '0 0 auto';
-  button.style.gap = '6px';
-  button.style.padding = compact ? '0 12px' : '0 14px';
-  button.style.height = compact ? '30px' : '32px';
-  button.style.minWidth = compact ? '88px' : '96px';
-  button.style.marginLeft = '8px';
-  button.style.borderRadius = '999px';
-  button.style.border = options.grouped ? '1px solid #f8b9cb' : '1px solid #c8d2dc';
-  button.style.background = options.grouped ? '#fff1f5' : '#ffffff';
-  button.style.color = options.grouped ? '#d94873' : '#516175';
-  button.style.fontSize = compact ? '12px' : '13px';
-  button.style.fontWeight = '600';
-  button.style.lineHeight = '1';
-  button.style.cursor = options.pending ? 'wait' : 'pointer';
-  button.style.opacity = options.pending ? '0.7' : '1';
-  button.style.boxSizing = 'border-box';
-  button.style.whiteSpace = 'nowrap';
-  button.style.pointerEvents = 'auto';
+  button.classList.add(BUTTON_CLASS, BUTTON_EXTRA_CLASS);
+  button.classList.toggle('followed', options.grouped);
+  button.classList.toggle('loading', options.pending);
+  button.disabled = options.pending;
 }
 
 function updateButtonText(button: HTMLButtonElement, label: string): void {
@@ -273,24 +258,31 @@ function syncButtonsForMembership(mid: number, membership?: MembershipState): vo
       continue;
     }
     const grouped = membership?.grouped ?? membershipCache.get(mid)?.grouped ?? false;
-    button.disabled = false;
     updateButtonText(button, grouped ? '已分组' : '添加到分组');
-    applyAuthorGroupButtonStyle(button, {
+    syncAuthorGroupButtonState(button, {
       grouped,
-      pending: false,
-      source: context.source
+      pending: false
     });
   }
 }
 
-function setButtonLoading(button: HTMLButtonElement, context: AuthorEntryContext): void {
-  button.disabled = true;
+function setButtonLoading(button: HTMLButtonElement): void {
   updateButtonText(button, '分组...');
-  applyAuthorGroupButtonStyle(button, {
+  syncAuthorGroupButtonState(button, {
     grouped: false,
-    pending: true,
-    source: context.source
+    pending: true
   });
+}
+
+function ensureShadowRootButtonStyles(shadowRoot: ShadowRoot): void {
+  if (shadowRootStyleSet.has(shadowRoot)) {
+    return;
+  }
+
+  const style = document.createElement('style');
+  style.textContent = authorGroupButtonCssText;
+  shadowRoot.appendChild(style);
+  shadowRootStyleSet.add(shadowRoot);
 }
 
 async function fetchMembership(mid: number, force = false): Promise<MembershipState> {
@@ -598,6 +590,7 @@ function createButton(root: HTMLElement, context: AuthorEntryContext): HTMLButto
   const button = document.createElement('button');
   button.type = 'button';
   button.setAttribute(BUTTON_ATTR, '1');
+  button.classList.add(BUTTON_CLASS, BUTTON_EXTRA_CLASS);
   button.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -605,7 +598,7 @@ function createButton(root: HTMLElement, context: AuthorEntryContext): HTMLButto
     void openDialog(root, latestContext);
   });
   bindButtonContext(button, context);
-  setButtonLoading(button, context);
+  setButtonLoading(button);
   return button;
 }
 
@@ -628,21 +621,19 @@ function upsertButton(root: HTMLElement, host: QueryRoot, actionRoot: HTMLElemen
   if (cached) {
     syncButtonsForMembership(context.mid, cached);
   } else {
-    setButtonLoading(button, context);
+    setButtonLoading(button);
     void fetchMembership(context.mid).catch(() => {
-      button.disabled = false;
       updateButtonText(button, '添加到分组');
-      applyAuthorGroupButtonStyle(button, {
+      syncAuthorGroupButtonState(button, {
         grouped: false,
-        pending: false,
-        source: context.source
+        pending: false
       });
     });
   }
 
   // 对于 hover 卡片的 open shadow root，外部样式无法穿透；按钮样式以 inline 为准。
   if (host instanceof ShadowRoot) {
-    button.style.pointerEvents = 'auto';
+    ensureShadowRootButtonStyles(host);
   }
 }
 

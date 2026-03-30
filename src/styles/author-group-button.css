@@ -1,0 +1,38 @@
+.bbe-author-follow-btn.bbe-injected-author-group-btn {
+  --bbe-brand-color: #00AEEC;
+  --bbe-brand-color-hover: #40C5F1;
+  border: 1px solid var(--bbe-brand-color);
+  border-radius: 6px;
+  background: var(--bbe-brand-color);
+  color: #fff;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: 8px;
+  box-sizing: border-box;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+}
+
+.bbe-author-follow-btn.bbe-injected-author-group-btn:hover {
+  border-color: var(--bbe-brand-color-hover);
+  background: var(--bbe-brand-color-hover);
+  color: #fff;
+}
+
+.bbe-author-follow-btn.bbe-injected-author-group-btn.followed {
+  border-color: #c8d1dd;
+  background: #fff;
+  color: #7a8599;
+}
+
+.bbe-author-follow-btn.bbe-injected-author-group-btn.followed:hover {
+  border-color: #b2bccb;
+  color: #5f6a7b;
+}
+
+.bbe-author-follow-btn.bbe-injected-author-group-btn.loading {
+  opacity: 0.65;
+}
