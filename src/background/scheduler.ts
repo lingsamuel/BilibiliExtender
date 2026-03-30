@@ -257,6 +257,7 @@ const globalCooldownState: GlobalCooldownState = {
 
 let pendingAuthorRoutineAfterBurst = false;
 let pendingGroupFavRoutineAfterBurst = false;
+let opportunisticRefreshRunning = false;
 
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
@@ -807,7 +808,8 @@ function hasRunningRegularTask(): boolean {
 }
 
 function hasOpportunisticConflict(): boolean {
-  return isBurstActive()
+  return opportunisticRefreshRunning
+    || isBurstActive()
     || hasRunningRegularTask()
     || authorState.queue.length > 0
     || groupFavState.queue.length > 0;
@@ -2133,6 +2135,12 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
   skipped?: boolean;
   reason?: string;
 }> {
+  if (opportunisticRefreshRunning) {
+    return buildOpportunisticSkipResponse('busy');
+  }
+
+  opportunisticRefreshRunning = true;
+  try {
   await ensureHistoryHydrated();
   const now = Date.now();
   const persistedState = await loadOpportunisticRefreshState();
@@ -2175,7 +2183,9 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
     return buildOpportunisticSkipResponse('window-ratelimited');
   }
 
+  // 先落库占位，避免多个 tab-open 信号在同一时刻并发读到“尚未触发”。
   state.lastTriggerAt = now;
+  await saveOpportunisticRefreshState(state);
   let liveBudget = remainingBudget;
   let authorCacheMap: AuthorCacheMap | null = null;
 
@@ -2321,6 +2331,9 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
     accepted: true,
     reason: '已处理标签页触发机会式刷新'
   };
+  } finally {
+    opportunisticRefreshRunning = false;
+  }
 }
 
 async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): Promise<{ queued: number; nextAlarmAt?: number }> {
