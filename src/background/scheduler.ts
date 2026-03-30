@@ -2146,6 +2146,17 @@ function buildOpportunisticSkipResponse(reason: OpportunisticSkipReason): {
   };
 }
 
+function logOpportunisticEvent(
+  stage: string,
+  details?: Record<string, unknown>
+): void {
+  if (details) {
+    console.info(`[BBE][Opportunistic] ${stage}`, details);
+    return;
+  }
+  console.info(`[BBE][Opportunistic] ${stage}`);
+}
+
 /**
  * 标签页首次打开时，尝试执行一轮低峰值机会式刷新。
  * 该通道不入常规队列，只在调度器空闲且命中预算/冷却条件时顺手做少量维护。
@@ -2156,144 +2167,157 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
   reason?: string;
 }> {
   if (opportunisticRefreshRunning) {
-    return buildOpportunisticSkipResponse('busy');
+    const response = buildOpportunisticSkipResponse('busy');
+    logOpportunisticEvent('skip', {
+      reasonCode: 'busy',
+      reason: response.reason,
+      detail: 'opportunistic-refresh-already-running'
+    });
+    return response;
   }
 
   opportunisticRefreshRunning = true;
   try {
-  await ensureHistoryHydrated();
-  const now = Date.now();
-  const persistedState = await loadOpportunisticRefreshState();
-  const state = normalizeOpportunisticState(persistedState, now);
-
-  if (hasOpportunisticConflict()) {
-    await saveOpportunisticRefreshState(state);
-    return buildOpportunisticSkipResponse('busy');
-  }
-  if (globalCooldownState.nextAllowedAt > now) {
-    await saveOpportunisticRefreshState(state);
-    return buildOpportunisticSkipResponse('global-cooldown');
-  }
-  if (state.lastTriggerAt && now - state.lastTriggerAt < OPPORTUNISTIC_REFRESH_DEBOUNCE_MS) {
-    await saveOpportunisticRefreshState(state);
-    return buildOpportunisticSkipResponse('debounced');
-  }
-
-  const windowBudget = getRemainingOpportunisticRequestBudget(state);
-  if (windowBudget <= 0) {
-    await saveOpportunisticRefreshState(state);
-    return buildOpportunisticSkipResponse('window-ratelimited');
-  }
-
-  const settings = await loadSettings();
-  const [authorCandidate, shouldSyncFolderList] = await Promise.all([
-    collectOpportunisticAuthorCandidate(settings, state),
-    shouldSyncFolderListOpportunistically(state)
-  ]);
-  const remainingBudget = Math.min(OPPORTUNISTIC_REFRESH_REQUEST_BUDGET, windowBudget);
-  const canRunAuthorHead = !!authorCandidate && remainingBudget >= 2;
-  const canRunFolderSync = shouldSyncFolderList && remainingBudget >= 2;
-
-  if (!authorCandidate && !shouldSyncFolderList) {
-    await saveOpportunisticRefreshState(state);
-    return buildOpportunisticSkipResponse('no-candidate');
-  }
-  if (!canRunAuthorHead && !canRunFolderSync) {
-    await saveOpportunisticRefreshState(state);
-    return buildOpportunisticSkipResponse('window-ratelimited');
-  }
-
-  // 先落库占位，避免多个 tab-open 信号在同一时刻并发读到“尚未触发”。
-  state.lastTriggerAt = now;
-  await saveOpportunisticRefreshState(state);
-  let liveBudget = remainingBudget;
-  let authorCacheMap: AuthorCacheMap | null = null;
-  const opportunisticThrottleState: RequestThrottleState = {
-    nextAllowedAt: 0
-  };
-
-  if (canRunAuthorHead && authorCandidate) {
-    authorCacheMap = await loadAuthorVideoCacheMap();
-    const authorTask = normalizeRegularAuthorTask(authorCandidate, createSchedulerRequestContext(), 0);
-    const requestMeter = createRequestMeter({
-      minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
-      throttleState: opportunisticThrottleState
+    await ensureHistoryHydrated();
+    const now = Date.now();
+    const persistedState = await loadOpportunisticRefreshState();
+    const state = normalizeOpportunisticState(persistedState, now);
+    logOpportunisticEvent('received-tab-open', {
+      timestamp: now,
+      lastTriggerAt: state.lastTriggerAt ?? null,
+      windowUsedRequests: state.requestTimestamps.length
     });
-    let authorHeadSucceeded = false;
-    try {
-      await runAuthorTask(authorTask, authorCacheMap, requestMeter);
-      authorHeadSucceeded = true;
-      pushHistory({
-        channel: 'author-video',
-        mid: authorTask.mid,
-        pn: authorTask.pn,
-        name: authorTask.name,
-        mode: 'opportunistic',
-        success: true,
-        timestamp: Date.now(),
-        taskReason: authorTask.reason,
-        trigger: 'tab-open-opportunistic'
+
+    if (hasOpportunisticConflict()) {
+      await saveOpportunisticRefreshState(state);
+      const response = buildOpportunisticSkipResponse('busy');
+      logOpportunisticEvent('skip', {
+        reasonCode: 'busy',
+        reason: response.reason,
+        authorQueueLength: authorState.queue.length,
+        groupQueueLength: groupFavState.queue.length,
+        burstQueueLength: burstState.queue.length,
+        authorRunning: authorState.running,
+        groupRunning: groupFavState.running,
+        burstRunning: burstState.running
       });
-    } catch (error) {
-      if (isWbiRatelimitError(error)) {
-        triggerGlobalWbiCooldown();
-      }
-      pushHistory({
-        channel: 'author-video',
-        mid: authorTask.mid,
-        pn: authorTask.pn,
-        name: authorTask.name,
-        mode: 'opportunistic',
-        success: false,
-        timestamp: Date.now(),
-        taskReason: authorTask.reason,
-        trigger: 'tab-open-opportunistic',
-        error: error instanceof Error ? error.message : String(error)
+      return response;
+    }
+    if (globalCooldownState.nextAllowedAt > now) {
+      await saveOpportunisticRefreshState(state);
+      const response = buildOpportunisticSkipResponse('global-cooldown');
+      logOpportunisticEvent('skip', {
+        reasonCode: 'global-cooldown',
+        reason: response.reason,
+        nextAllowedAt: globalCooldownState.nextAllowedAt
       });
-      console.warn('[BBE] 机会式作者首页刷新失败 mid:', authorTask.mid, error);
-    } finally {
-      recordOpportunisticRequests(state, requestMeter.count, Date.now());
-      state.authorCooldownByMid[String(authorTask.mid)] = Date.now();
-      liveBudget = Math.max(0, liveBudget - requestMeter.count);
-      await saveAuthorVideoCacheMap(authorCacheMap);
+      return response;
+    }
+    if (state.lastTriggerAt && now - state.lastTriggerAt < OPPORTUNISTIC_REFRESH_DEBOUNCE_MS) {
+      await saveOpportunisticRefreshState(state);
+      const response = buildOpportunisticSkipResponse('debounced');
+      logOpportunisticEvent('skip', {
+        reasonCode: 'debounced',
+        reason: response.reason,
+        lastTriggerAt: state.lastTriggerAt,
+        debounceMs: OPPORTUNISTIC_REFRESH_DEBOUNCE_MS
+      });
+      return response;
     }
 
-    let extraFetched = 0;
-    while (
-      authorHeadSucceeded
-      && !hasOpportunisticConflict()
-      &&
-      authorCacheMap
-      && liveBudget > 0
-      && extraFetched < OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN
-    ) {
-      const currentCache = authorCacheMap[authorTask.mid];
-      const nextPn = resolveNextPrefetchPn(currentCache, settings);
-      if (!nextPn) {
-        break;
-      }
+    const windowBudget = getRemainingOpportunisticRequestBudget(state);
+    if (windowBudget <= 0) {
+      await saveOpportunisticRefreshState(state);
+      const response = buildOpportunisticSkipResponse('window-ratelimited');
+      logOpportunisticEvent('skip', {
+        reasonCode: 'window-ratelimited',
+        reason: response.reason,
+        windowUsedRequests: state.requestTimestamps.length,
+        windowMaxRequests: OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW
+      });
+      return response;
+    }
 
+    const settings = await loadSettings();
+    const [authorCandidate, shouldSyncFolderList] = await Promise.all([
+      collectOpportunisticAuthorCandidate(settings, state),
+      shouldSyncFolderListOpportunistically(state)
+    ]);
+    const remainingBudget = Math.min(OPPORTUNISTIC_REFRESH_REQUEST_BUDGET, windowBudget);
+    const canRunAuthorHead = !!authorCandidate && remainingBudget >= 2;
+    const canRunFolderSync = shouldSyncFolderList && remainingBudget >= 2;
+
+    if (!authorCandidate && !shouldSyncFolderList) {
+      await saveOpportunisticRefreshState(state);
+      const response = buildOpportunisticSkipResponse('no-candidate');
+      logOpportunisticEvent('skip', {
+        reasonCode: 'no-candidate',
+        reason: response.reason
+      });
+      return response;
+    }
+    if (!canRunAuthorHead && !canRunFolderSync) {
+      await saveOpportunisticRefreshState(state);
+      const response = buildOpportunisticSkipResponse('window-ratelimited');
+      logOpportunisticEvent('skip', {
+        reasonCode: 'window-ratelimited',
+        reason: response.reason,
+        remainingBudget,
+        canRunAuthorHead,
+        canRunFolderSync
+      });
+      return response;
+    }
+
+    // 先落库占位，避免多个 tab-open 信号在同一时刻并发读到“尚未触发”。
+    state.lastTriggerAt = now;
+    await saveOpportunisticRefreshState(state);
+    let liveBudget = remainingBudget;
+    let totalIssuedRequests = 0;
+    let authorCacheMap: AuthorCacheMap | null = null;
+    const opportunisticThrottleState: RequestThrottleState = {
+      nextAllowedAt: 0
+    };
+
+    logOpportunisticEvent('start', {
+      remainingBudget,
+      authorCandidate: authorCandidate
+        ? {
+            mid: authorCandidate.mid,
+            pn: authorCandidate.pn,
+            ps: authorCandidate.ps,
+            reason: authorCandidate.reason
+          }
+        : null,
+      shouldSyncFolderList
+    });
+
+    if (canRunAuthorHead && authorCandidate) {
+      authorCacheMap = await loadAuthorVideoCacheMap();
+      const authorTask = normalizeRegularAuthorTask(authorCandidate, createSchedulerRequestContext(), 0);
       const requestMeter = createRequestMeter({
         minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
         throttleState: opportunisticThrottleState
       });
+      let authorHeadSucceeded = false;
       try {
-        await refreshAuthorCache(authorTask.mid, authorTask.name, authorCacheMap, settings, {
-          pn: nextPn,
-          ps: settings.authorVideosPageSize,
-          fetchCard: false,
-          requestTracker: requestMeter
-        });
+        await runAuthorTask(authorTask, authorCacheMap, requestMeter);
+        authorHeadSucceeded = true;
         pushHistory({
           channel: 'author-video',
           mid: authorTask.mid,
-          pn: nextPn,
+          pn: authorTask.pn,
           name: authorTask.name,
           mode: 'opportunistic',
           success: true,
           timestamp: Date.now(),
-          taskReason: 'extend-continuous-window',
+          taskReason: authorTask.reason,
           trigger: 'tab-open-opportunistic'
+        });
+        logOpportunisticEvent('author-head-success', {
+          mid: authorTask.mid,
+          pn: authorTask.pn,
+          requests: requestMeter.count
         });
       } catch (error) {
         if (isWbiRatelimitError(error)) {
@@ -2302,67 +2326,165 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
         pushHistory({
           channel: 'author-video',
           mid: authorTask.mid,
-          pn: nextPn,
+          pn: authorTask.pn,
           name: authorTask.name,
           mode: 'opportunistic',
           success: false,
           timestamp: Date.now(),
-          taskReason: 'extend-continuous-window',
+          taskReason: authorTask.reason,
           trigger: 'tab-open-opportunistic',
           error: error instanceof Error ? error.message : String(error)
         });
-        console.warn('[BBE] 机会式连续窗口补块失败 mid:', authorTask.mid, 'pn:', nextPn, error);
+        logOpportunisticEvent('author-head-failed', {
+          mid: authorTask.mid,
+          pn: authorTask.pn,
+          requests: requestMeter.count,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        console.warn('[BBE] 机会式作者首页刷新失败 mid:', authorTask.mid, error);
+      } finally {
         recordOpportunisticRequests(state, requestMeter.count, Date.now());
+        totalIssuedRequests += requestMeter.count;
+        state.authorCooldownByMid[String(authorTask.mid)] = Date.now();
         liveBudget = Math.max(0, liveBudget - requestMeter.count);
-        break;
+        await saveAuthorVideoCacheMap(authorCacheMap);
       }
 
-      recordOpportunisticRequests(state, requestMeter.count, Date.now());
-      liveBudget = Math.max(0, liveBudget - requestMeter.count);
-      extraFetched += 1;
-      await saveAuthorVideoCacheMap(authorCacheMap);
-    }
-  }
+      let extraFetched = 0;
+      while (
+        authorHeadSucceeded
+        && !hasOpportunisticConflict()
+        && authorCacheMap
+        && liveBudget > 0
+        && extraFetched < OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN
+      ) {
+        const currentCache = authorCacheMap[authorTask.mid];
+        const nextPn = resolveNextPrefetchPn(currentCache, settings);
+        if (!nextPn) {
+          logOpportunisticEvent('author-extend-stop', {
+            mid: authorTask.mid,
+            reason: 'no-next-prefetch-page',
+            liveBudget
+          });
+          break;
+        }
 
-  if (shouldSyncFolderList && liveBudget >= 2 && globalCooldownState.nextAllowedAt <= Date.now()) {
-    const requestMeter = createRequestMeter({
-      minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
-      throttleState: opportunisticThrottleState
+        const requestMeter = createRequestMeter({
+          minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
+          throttleState: opportunisticThrottleState
+        });
+        try {
+          await refreshAuthorCache(authorTask.mid, authorTask.name, authorCacheMap, settings, {
+            pn: nextPn,
+            ps: settings.authorVideosPageSize,
+            fetchCard: false,
+            requestTracker: requestMeter
+          });
+          pushHistory({
+            channel: 'author-video',
+            mid: authorTask.mid,
+            pn: nextPn,
+            name: authorTask.name,
+            mode: 'opportunistic',
+            success: true,
+            timestamp: Date.now(),
+            taskReason: 'extend-continuous-window',
+            trigger: 'tab-open-opportunistic'
+          });
+          logOpportunisticEvent('author-extend-success', {
+            mid: authorTask.mid,
+            pn: nextPn,
+            requests: requestMeter.count
+          });
+        } catch (error) {
+          if (isWbiRatelimitError(error)) {
+            triggerGlobalWbiCooldown();
+          }
+          pushHistory({
+            channel: 'author-video',
+            mid: authorTask.mid,
+            pn: nextPn,
+            name: authorTask.name,
+            mode: 'opportunistic',
+            success: false,
+            timestamp: Date.now(),
+            taskReason: 'extend-continuous-window',
+            trigger: 'tab-open-opportunistic',
+            error: error instanceof Error ? error.message : String(error)
+          });
+          logOpportunisticEvent('author-extend-failed', {
+            mid: authorTask.mid,
+            pn: nextPn,
+            requests: requestMeter.count,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          console.warn('[BBE] 机会式连续窗口补块失败 mid:', authorTask.mid, 'pn:', nextPn, error);
+          recordOpportunisticRequests(state, requestMeter.count, Date.now());
+          totalIssuedRequests += requestMeter.count;
+          liveBudget = Math.max(0, liveBudget - requestMeter.count);
+          break;
+        }
+
+        recordOpportunisticRequests(state, requestMeter.count, Date.now());
+        totalIssuedRequests += requestMeter.count;
+        liveBudget = Math.max(0, liveBudget - requestMeter.count);
+        extraFetched += 1;
+        await saveAuthorVideoCacheMap(authorCacheMap);
+      }
+    }
+
+    if (shouldSyncFolderList && liveBudget >= 2 && globalCooldownState.nextAllowedAt <= Date.now()) {
+      const requestMeter = createRequestMeter({
+        minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
+        throttleState: opportunisticThrottleState
+      });
+      try {
+        await syncFolderTitles(requestMeter);
+        state.lastFolderListSyncAt = Date.now();
+        pushHistory({
+          channel: 'group-fav',
+          name: 'folder-list-sync',
+          mode: 'opportunistic',
+          success: true,
+          timestamp: Date.now(),
+          taskReason: 'group-fav-refresh',
+          trigger: 'tab-open-opportunistic'
+        });
+        logOpportunisticEvent('folder-list-sync-success', {
+          requests: requestMeter.count
+        });
+      } catch (error) {
+        pushHistory({
+          channel: 'group-fav',
+          name: 'folder-list-sync',
+          mode: 'opportunistic',
+          success: false,
+          timestamp: Date.now(),
+          taskReason: 'group-fav-refresh',
+          trigger: 'tab-open-opportunistic',
+          error: error instanceof Error ? error.message : String(error)
+        });
+        logOpportunisticEvent('folder-list-sync-failed', {
+          requests: requestMeter.count,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        console.warn('[BBE] 机会式收藏夹列表同步失败:', error);
+      } finally {
+        recordOpportunisticRequests(state, requestMeter.count, Date.now());
+        totalIssuedRequests += requestMeter.count;
+      }
+    }
+
+    await saveOpportunisticRefreshState(state);
+    logOpportunisticEvent('done', {
+      totalIssuedRequests,
+      remainingBudget: liveBudget,
+      windowUsedRequests: state.requestTimestamps.length
     });
-    try {
-      await syncFolderTitles(requestMeter);
-      state.lastFolderListSyncAt = Date.now();
-      pushHistory({
-        channel: 'group-fav',
-        name: 'folder-list-sync',
-        mode: 'opportunistic',
-        success: true,
-        timestamp: Date.now(),
-        taskReason: 'group-fav-refresh',
-        trigger: 'tab-open-opportunistic'
-      });
-    } catch (error) {
-      pushHistory({
-        channel: 'group-fav',
-        name: 'folder-list-sync',
-        mode: 'opportunistic',
-        success: false,
-        timestamp: Date.now(),
-        taskReason: 'group-fav-refresh',
-        trigger: 'tab-open-opportunistic',
-        error: error instanceof Error ? error.message : String(error)
-      });
-      console.warn('[BBE] 机会式收藏夹列表同步失败:', error);
-    } finally {
-      recordOpportunisticRequests(state, requestMeter.count, Date.now());
-    }
-  }
-
-  await saveOpportunisticRefreshState(state);
-  return {
-    accepted: true,
-    reason: '已处理标签页触发机会式刷新'
-  };
+    return {
+      accepted: true,
+      reason: '已处理标签页触发机会式刷新'
+    };
   } finally {
     opportunisticRefreshRunning = false;
   }
