@@ -20,6 +20,7 @@ interface ApiResponse<T> {
 }
 
 export interface ApiRequestTracker {
+  beforeRequest?(): void | Promise<void>;
   recordRequest(): void;
 }
 
@@ -130,6 +131,7 @@ async function fetchApi<T>(
     });
   }
 
+  await requestTracker?.beforeRequest?.();
   requestTracker?.recordRequest();
   const response = await fetch(url.toString(), {
     credentials: 'include'
@@ -170,6 +172,7 @@ async function postApi<T>(
     form.set(key, String(value));
   });
 
+  await requestTracker?.beforeRequest?.();
   requestTracker?.recordRequest();
   const response = await fetch(url.toString(), {
     method: 'POST',

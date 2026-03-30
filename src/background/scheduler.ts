@@ -185,6 +185,10 @@ interface RequestMeter extends ApiRequestTracker {
   readonly count: number;
 }
 
+interface RequestThrottleState {
+  nextAllowedAt: number;
+}
+
 interface LikeTaskWaiterResult {
   ok: boolean;
   result?: LikeTaskResult;
@@ -266,11 +270,27 @@ const burstTaskFirstResultListeners = new Map<string, Array<(result: { ok: boole
 const likeTaskWaiters = new Map<string, Array<(result: LikeTaskWaiterResult) => void>>();
 void ensureHistoryHydrated();
 
-function createRequestMeter(): RequestMeter {
+function createRequestMeter(options?: {
+  minIntervalMs?: number;
+  throttleState?: RequestThrottleState;
+}): RequestMeter {
   let count = 0;
   return {
     get count() {
       return count;
+    },
+    async beforeRequest() {
+      const minIntervalMs = Math.max(0, Number(options?.minIntervalMs) || 0);
+      const throttleState = options?.throttleState;
+      if (!throttleState || minIntervalMs <= 0) {
+        return;
+      }
+
+      const waitMs = throttleState.nextAllowedAt - Date.now();
+      if (waitMs > 0) {
+        await sleep(waitMs);
+      }
+      throttleState.nextAllowedAt = Date.now() + minIntervalMs;
     },
     recordRequest() {
       count += 1;
@@ -2188,11 +2208,17 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
   await saveOpportunisticRefreshState(state);
   let liveBudget = remainingBudget;
   let authorCacheMap: AuthorCacheMap | null = null;
+  const opportunisticThrottleState: RequestThrottleState = {
+    nextAllowedAt: 0
+  };
 
   if (canRunAuthorHead && authorCandidate) {
     authorCacheMap = await loadAuthorVideoCacheMap();
     const authorTask = normalizeRegularAuthorTask(authorCandidate, createSchedulerRequestContext(), 0);
-    const requestMeter = createRequestMeter();
+    const requestMeter = createRequestMeter({
+      minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
+      throttleState: opportunisticThrottleState
+    });
     let authorHeadSucceeded = false;
     try {
       await runAuthorTask(authorTask, authorCacheMap, requestMeter);
@@ -2247,7 +2273,10 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
         break;
       }
 
-      const requestMeter = createRequestMeter();
+      const requestMeter = createRequestMeter({
+        minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
+        throttleState: opportunisticThrottleState
+      });
       try {
         await refreshAuthorCache(authorTask.mid, authorTask.name, authorCacheMap, settings, {
           pn: nextPn,
@@ -2296,7 +2325,10 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
   }
 
   if (shouldSyncFolderList && liveBudget >= 2 && globalCooldownState.nextAllowedAt <= Date.now()) {
-    const requestMeter = createRequestMeter();
+    const requestMeter = createRequestMeter({
+      minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
+      throttleState: opportunisticThrottleState
+    });
     try {
       await syncFolderTitles(requestMeter);
       state.lastFolderListSyncAt = Date.now();
