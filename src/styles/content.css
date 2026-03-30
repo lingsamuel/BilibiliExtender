@@ -305,8 +305,6 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-group-item:hover {
   border-color: #f3b3c7;
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgb(251 114 153 / 10%);
 }
 
 .bbe-author-group-item.checked {
