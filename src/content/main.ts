@@ -25,7 +25,7 @@ interface DebugConsoleBridgeMessage {
 
 function logBootstrapBadge(): void {
   const version = chrome.runtime?.getManifest?.().version ?? 'dev';
-  debugLog(
+  console.log(
     '%c bilibili-extender %c v%s ',
     'background:#ff4f91;color:#ffffff;border-radius:2px 0 0 2px;padding:2px 10px;font-weight:700;',
     'background:#ffb7bf;color:#ffffff;border-radius:0 2px 2px 0;padding:2px 10px;font-weight:700;',
