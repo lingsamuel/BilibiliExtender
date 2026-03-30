@@ -828,8 +828,10 @@ function hasRunningRegularTask(): boolean {
 }
 
 function hasOpportunisticConflict(): boolean {
-  return opportunisticRefreshRunning
-    || isBurstActive()
+  // 这里只判断“其他通道”的调度压力。
+  // 机会式刷新自身的单例执行由 runTabOpenOpportunisticRefresh 入口处单独保护，
+  // 不能把 opportunisticRefreshRunning 也算进来，否则会把自己永久判成 busy。
+  return isBurstActive()
     || hasRunningRegularTask()
     || authorState.queue.length > 0
     || groupFavState.queue.length > 0;
