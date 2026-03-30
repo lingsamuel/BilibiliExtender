@@ -1,7 +1,11 @@
 import { DEFAULT_SETTINGS, VIRTUAL_GROUP_ID } from '@/shared/constants';
 import {
+  addVideoToFavorites,
+  batchDeleteFavoriteResources,
   coinVideo,
+  getAllFavVideos,
   getMyCreatedFolders,
+  getUploaderVideos,
   getUserCard,
   modifyUserRelation
 } from '@/shared/api/bilibili';
@@ -72,7 +76,7 @@ import {
   runSchedulerNow,
   setupAlarm
 } from '@/background/scheduler';
-import { runWithFollowRequestHeaders } from '@/background/request-dnr';
+import { runWithFavRequestHeaders, runWithFollowRequestHeaders } from '@/background/request-dnr';
 import { normalizeExtensionSettings } from '@/shared/utils/settings';
 
 function ok<T>(data: T): MessageResponse<T> {
@@ -195,6 +199,183 @@ function normalizeVideoTarget(payload: { aid?: number; bvid?: string }): { aid?:
     return { bvid };
   }
   throw new Error('视频参数不完整');
+}
+
+function getGroupDisplayTitle(group: GroupConfig): string {
+  return group.alias?.trim() || group.mediaTitle || group.groupId;
+}
+
+function buildAuthorGroupMembership(
+  mid: number,
+  groups: GroupConfig[],
+  feedCacheMap: Awaited<ReturnType<typeof loadFeedCacheMap>>
+): ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP'] {
+  const items = groups.map((group) => ({
+    groupId: group.groupId,
+    title: getGroupDisplayTitle(group),
+    mediaId: group.mediaId,
+    enabled: group.enabled,
+    checked: (feedCacheMap[group.groupId]?.authorMids ?? []).includes(mid)
+  }));
+
+  return {
+    mid,
+    grouped: items.some((item) => item.checked),
+    groups: items
+  };
+}
+
+/**
+ * 直接改写分组作者缓存，让作者分组按钮与弹框状态即时收敛到用户刚完成的操作。
+ * 后续仍会补一次收藏夹刷新，请求远端真相重新校正。
+ */
+function patchAuthorGroupMembershipCache(
+  feedCacheMap: Awaited<ReturnType<typeof loadFeedCacheMap>>,
+  groupId: string,
+  mid: number,
+  checked: boolean
+): boolean {
+  const existing = feedCacheMap[groupId];
+  if (!existing) {
+    if (!checked) {
+      return false;
+    }
+
+    feedCacheMap[groupId] = {
+      groupId,
+      authorMids: [mid],
+      updatedAt: Date.now()
+    };
+    return true;
+  }
+
+  const current = Array.isArray(existing.authorMids) ? existing.authorMids : [];
+  const next = checked
+    ? current.includes(mid)
+      ? current
+      : [...current, mid]
+    : current.filter((item) => item !== mid);
+
+  if (next === current || (next.length === current.length && next.every((item, index) => item === current[index]))) {
+    return false;
+  }
+
+  feedCacheMap[groupId] = {
+    ...existing,
+    authorMids: next,
+    updatedAt: Date.now()
+  };
+  return true;
+}
+
+async function handleGetAuthorGroupMembership(
+  request: Extract<MessageRequest, { type: 'GET_AUTHOR_GROUP_MEMBERSHIP' }>
+): Promise<ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  if (!mid) {
+    throw new Error('作者参数不完整');
+  }
+
+  const [groups, feedCacheMap] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap()
+  ]);
+
+  return buildAuthorGroupMembership(mid, groups, feedCacheMap);
+}
+
+async function handleUpdateAuthorGroupMembership(
+  request: Extract<MessageRequest, { type: 'UPDATE_AUTHOR_GROUP_MEMBERSHIP' }>
+): Promise<ResponseMap['UPDATE_AUTHOR_GROUP_MEMBERSHIP']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  const groupId = request.payload.groupId?.trim() || '';
+  const action = request.payload.action === 'remove' ? 'remove' : 'add';
+  const csrf = request.payload.csrf?.trim();
+  const pageOrigin = request.payload.pageOrigin?.trim();
+  const pageReferer = request.payload.pageReferer?.trim();
+  if (!mid || !groupId || !csrf || !pageOrigin || !pageReferer) {
+    throw new Error('分组操作参数不完整');
+  }
+
+  const [groups, feedCacheMap] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap()
+  ]);
+  const group = groups.find((item) => item.groupId === groupId);
+  if (!group) {
+    throw new Error('分组不存在');
+  }
+
+  let message = '';
+  let affectedVideoCount = 0;
+  let latestVideoBvid: string | undefined;
+
+  if (action === 'add') {
+    if (request.payload.source === 'video') {
+      const target = normalizeVideoTarget(request.payload.video ?? {});
+      await runWithFavRequestHeaders(pageOrigin, pageReferer, async () => {
+        await addVideoToFavorites(target, group.mediaId, csrf);
+      });
+      affectedVideoCount = 1;
+      latestVideoBvid = target.bvid;
+      message = `已将当前视频加入「${getGroupDisplayTitle(group)}」`;
+    } else {
+      const latest = await getUploaderVideos(mid, 1, 1);
+      const latestVideo = latest.videos[0];
+      if (!latestVideo) {
+        throw new Error('该作者暂无可加入收藏夹的视频');
+      }
+      await runWithFavRequestHeaders(pageOrigin, pageReferer, async () => {
+        await addVideoToFavorites(
+          {
+            aid: latestVideo.aid,
+            bvid: latestVideo.bvid
+          },
+          group.mediaId,
+          csrf
+        );
+      });
+      affectedVideoCount = 1;
+      latestVideoBvid = latestVideo.bvid;
+      message = `已将该作者的最新视频加入「${getGroupDisplayTitle(group)}」`;
+    }
+
+    patchAuthorGroupMembershipCache(feedCacheMap, groupId, mid, true);
+  } else {
+    const favVideos = await getAllFavVideos(group.mediaId);
+    const matchedResources = favVideos
+      .filter((item) => Number(item.upper?.mid) === mid)
+      .map((item) => ({
+        id: Math.max(0, Math.floor(Number(item.id) || 0)),
+        type: 2
+      }))
+      .filter((item) => item.id > 0);
+
+    if (matchedResources.length > 0) {
+      await runWithFavRequestHeaders(pageOrigin, pageReferer, async () => {
+        await batchDeleteFavoriteResources(group.mediaId, matchedResources, csrf);
+      });
+    }
+
+    affectedVideoCount = matchedResources.length;
+    patchAuthorGroupMembershipCache(feedCacheMap, groupId, mid, false);
+    message = matchedResources.length > 0
+      ? `已从「${getGroupDisplayTitle(group)}」移除该作者的 ${matchedResources.length} 个投稿`
+      : `该作者当前没有可移除的视频，已从「${getGroupDisplayTitle(group)}」移除分组归属`;
+  }
+
+  await saveFeedCacheMap(feedCacheMap);
+  enqueuePriorityGroup([groupId], 'manual-refresh-fav', 'none');
+
+  const membership = buildAuthorGroupMembership(mid, groups, feedCacheMap);
+  return {
+    ...membership,
+    action,
+    groupId,
+    message,
+    affectedVideoCount,
+    latestVideoBvid
+  };
 }
 
 
@@ -1221,6 +1402,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok({ pong: true });
     case 'GET_OPTIONS_DATA':
       return ok(await handleGetOptionsData());
+    case 'GET_AUTHOR_GROUP_MEMBERSHIP':
+      return ok(await handleGetAuthorGroupMembership(request));
     case 'UPSERT_GROUP':
       return ok(await handleUpsertGroup(request));
     case 'DELETE_GROUP':
@@ -1233,6 +1416,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleGetGroupSummary(request));
     case 'GET_GROUP_FEED':
       return ok(await handleGetGroupFeed(request));
+    case 'UPDATE_AUTHOR_GROUP_MEMBERSHIP':
+      return ok(await handleUpdateAuthorGroupMembership(request));
     case 'MARK_GROUP_READ':
       return ok(await handleMarkGroupRead(request));
     case 'MARK_GROUP_READ_MARK':

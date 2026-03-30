@@ -19,6 +19,7 @@ export type MessageRequest =
   | { type: 'DELETE_GROUP'; payload: { groupId: string } }
   | { type: 'SAVE_SETTINGS'; payload: { settings: ExtensionSettings } }
   | { type: 'GET_GROUP_SUMMARY' }
+  | { type: 'GET_AUTHOR_GROUP_MEMBERSHIP'; payload: { mid: number } }
   | {
       type: 'GET_GROUP_FEED';
       payload: {
@@ -30,6 +31,22 @@ export type MessageRequest =
         showAllForMixed?: boolean;
         allPostsFilter?: AllPostsFilterKey;
         byAuthorSortByLatest?: boolean;
+      };
+    }
+  | {
+      type: 'UPDATE_AUTHOR_GROUP_MEMBERSHIP';
+      payload: {
+        mid: number;
+        groupId: string;
+        action: 'add' | 'remove';
+        csrf: string;
+        pageOrigin: string;
+        pageReferer: string;
+        source: 'video' | 'space' | 'card';
+        video?: {
+          aid?: number;
+          bvid?: string;
+        };
       };
     }
   | { type: 'REFRESH_GROUP_POSTS'; payload: { groupId: string } }
@@ -301,6 +318,17 @@ export interface ResponseMap {
   UPSERT_GROUP: { groups: GroupConfig[] };
   DELETE_GROUP: { groups: GroupConfig[] };
   SAVE_SETTINGS: { settings: ExtensionSettings };
+  GET_AUTHOR_GROUP_MEMBERSHIP: {
+    mid: number;
+    grouped: boolean;
+    groups: Array<{
+      groupId: string;
+      title: string;
+      mediaId: number;
+      enabled: boolean;
+      checked: boolean;
+    }>;
+  };
   GET_GROUP_SUMMARY: {
     summaries: GroupSummary[];
     hasUnread: boolean;
@@ -309,6 +337,22 @@ export interface ResponseMap {
     settings: ExtensionSettings;
   };
   GET_GROUP_FEED: GroupFeedResult & { cacheStatus: 'ready' | 'generating' };
+  UPDATE_AUTHOR_GROUP_MEMBERSHIP: {
+    mid: number;
+    grouped: boolean;
+    groups: Array<{
+      groupId: string;
+      title: string;
+      mediaId: number;
+      enabled: boolean;
+      checked: boolean;
+    }>;
+    action: 'add' | 'remove';
+    groupId: string;
+    message: string;
+    affectedVideoCount?: number;
+    latestVideoBvid?: string;
+  };
   REFRESH_GROUP_POSTS: { accepted: boolean };
   REFRESH_GROUP_FAV: { accepted: boolean };
   MARK_GROUP_READ: { groupId: string; unreadCount: number };

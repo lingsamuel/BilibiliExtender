@@ -1,5 +1,6 @@
 import { createApp } from 'vue';
 import DrawerApp from '@/content/components/DrawerApp.vue';
+import { startAuthorGroupManager } from '@/content/author-group-manager';
 import { EXTENSION_EVENT } from '@/shared/constants';
 import '@/styles/content.css';
 
@@ -233,6 +234,7 @@ function bootstrap(): void {
   const root = createRoot();
   createApp(DrawerApp).mount(root);
   startInjectNavEntry();
+  startAuthorGroupManager(root);
 }
 
 bootstrap();

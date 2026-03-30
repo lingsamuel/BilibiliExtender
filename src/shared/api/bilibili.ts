@@ -103,6 +103,11 @@ interface WebCardData {
   following?: boolean;
 }
 
+interface VideoViewData {
+  aid: number;
+  bvid: string;
+}
+
 export interface VideoActionTarget {
   aid?: number;
   bvid?: string;
@@ -443,6 +448,78 @@ export async function likeVideo(
   await postApi<Record<string, never>>('/x/web-interface/archive/like', {
     ...params,
     like: like ? 1 : 2,
+    csrf
+  });
+}
+
+/**
+ * 解析视频目标，确保获得收藏夹写接口需要的 aid / bvid。
+ */
+export async function getVideoIdentity(target: VideoActionTarget): Promise<Required<VideoActionTarget>> {
+  const aid = Math.max(0, Math.floor(Number(target.aid) || 0));
+  const bvid = target.bvid?.trim() || '';
+
+  if (aid > 0 && bvid) {
+    return { aid, bvid };
+  }
+
+  const payload = await fetchApi<VideoViewData>('/x/web-interface/view', aid > 0 ? { aid } : { bvid });
+  const resolvedAid = Math.max(0, Math.floor(Number(payload.data?.aid) || 0));
+  const resolvedBvid = payload.data?.bvid?.trim() || '';
+  if (!resolvedAid || !resolvedBvid) {
+    throw new Error('获取视频信息失败');
+  }
+
+  return {
+    aid: resolvedAid,
+    bvid: resolvedBvid
+  };
+}
+
+/**
+ * 将单个视频加入指定收藏夹。
+ */
+export async function addVideoToFavorites(
+  target: VideoActionTarget,
+  mediaId: number,
+  csrf: string
+): Promise<void> {
+  const identity = await getVideoIdentity(target);
+  await postApi<Record<string, never>>('/x/v3/fav/resource/deal', {
+    rid: identity.aid,
+    type: 2,
+    add_media_ids: mediaId,
+    del_media_ids: '',
+    platform: 'web',
+    csrf
+  });
+}
+
+/**
+ * 批量移除收藏夹中的视频资源。
+ */
+export async function batchDeleteFavoriteResources(
+  mediaId: number,
+  resources: Array<{ id: number; type?: number }>,
+  csrf: string
+): Promise<void> {
+  const formatted = resources
+    .map((item) => {
+      const id = Math.max(0, Math.floor(Number(item.id) || 0));
+      const type = Math.max(1, Math.floor(Number(item.type) || 2));
+      return id > 0 ? `${id}:${type}` : '';
+    })
+    .filter(Boolean)
+    .join(',');
+
+  if (!formatted) {
+    return;
+  }
+
+  await postApi<Record<string, never>>('/x/v3/fav/resource/batch-del', {
+    resources: formatted,
+    media_id: mediaId,
+    platform: 'web',
     csrf
   });
 }

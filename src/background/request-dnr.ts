@@ -8,7 +8,8 @@ const DNR_RESOURCE_XMLHTTPREQUEST = 'xmlhttprequest' as chrome.declarativeNetReq
 
 const RULE_IDS = {
   follow: 10_001,
-  like: 10_002
+  like: 10_002,
+  fav: 10_003
 } as const;
 
 let writeRequestChain: Promise<void> = Promise.resolve();
@@ -143,6 +144,22 @@ export async function runWithLikeRequestHeaders<T>(
       pageOrigin,
       pageReferer,
       regexFilter: '^https://api\\.bilibili\\.com/x/web-interface/archive/like(\\?.*)?$'
+    },
+    task
+  );
+}
+
+export async function runWithFavRequestHeaders<T>(
+  pageOrigin: string,
+  pageReferer: string,
+  task: () => Promise<T>
+): Promise<T> {
+  return runWithRequestHeaderRule(
+    {
+      kind: 'fav',
+      pageOrigin,
+      pageReferer,
+      regexFilter: '^https://api\\.bilibili\\.com/x/v3/fav/resource/(deal|batch-del)(\\?.*)?$'
     },
     task
   );

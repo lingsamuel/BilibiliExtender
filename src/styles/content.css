@@ -77,6 +77,18 @@ body.bbe-page-scroll-lock {
   pointer-events: none;
 }
 
+.bbe-page-toast-stack {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
 .bbe-toast {
   border-radius: 10px;
   padding: 9px 11px;
@@ -147,6 +159,196 @@ body.bbe-page-scroll-lock {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+.bbe-author-group-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(15 23 42 / 28%);
+  pointer-events: auto;
+}
+
+.bbe-author-group-dialog {
+  width: min(460px, calc(100vw - 32px));
+  border-radius: 18px;
+  border: 1px solid #e6ebf2;
+  background: linear-gradient(180deg, #ffffff 0%, #fff9fb 100%);
+  box-shadow: 0 20px 52px rgb(15 23 42 / 26%);
+  overflow: hidden;
+}
+
+.bbe-author-group-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid #eef2f6;
+}
+
+.bbe-author-group-author {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bbe-author-group-author-face {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: linear-gradient(135deg, #ffd8e5, #ffc3d6);
+  color: #b83262;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.bbe-author-group-author-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.bbe-author-group-author-meta {
+  min-width: 0;
+}
+
+.bbe-author-group-author-name {
+  color: #1f2937;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.bbe-author-group-author-subtitle {
+  margin-top: 3px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.bbe-author-group-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: #f4f6fb;
+  color: #516175;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.bbe-author-group-close:hover {
+  background: #e8edf5;
+}
+
+.bbe-author-group-body {
+  padding: 16px 18px 18px;
+}
+
+.bbe-author-group-tip {
+  margin-bottom: 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.bbe-author-group-state {
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #516175;
+  padding: 16px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.bbe-author-group-error {
+  background: #fff2f5;
+  color: #b4234f;
+}
+
+.bbe-author-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bbe-author-group-item {
+  width: 100%;
+  border: 1px solid #e5eaf1;
+  border-radius: 14px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.bbe-author-group-item:hover {
+  border-color: #f3b3c7;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgb(251 114 153 / 10%);
+}
+
+.bbe-author-group-item.checked {
+  border-color: #f3b3c7;
+  background: #fff4f8;
+}
+
+.bbe-author-group-item.pending {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.bbe-author-group-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bbe-author-group-item-title {
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.bbe-author-group-item-tag {
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #64748b;
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  flex: 0 0 auto;
+}
+
+.bbe-author-group-item-status {
+  color: #d94873;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .bbe-toolbar {
