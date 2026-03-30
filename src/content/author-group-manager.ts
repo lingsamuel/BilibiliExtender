@@ -28,11 +28,18 @@ interface DialogState {
 const BUTTON_ATTR = 'data-bbe-author-group-button';
 const VIDEO_ACTION_SELECTOR = '.up-detail-top';
 const SPACE_ACTION_SELECTOR = '.interactions';
+const CARD_ROOT_SELECTOR = '.usercard-wrap';
+const CARD_ACTION_SELECTOR = '.btn-box';
+const CARD_NAME_LINK_SELECTOR = '.user .name';
+const PROFILE_CARD_HOST_SELECTOR = 'bili-user-profile';
+const PROFILE_CARD_ACTION_SELECTOR = '#action';
+const PROFILE_CARD_AVATAR_SELECTOR = '#avatar';
 
 const membershipCache = new Map<number, MembershipState>();
 const membershipPendingMap = new Map<number, Promise<MembershipState>>();
 const buttonRegistry = new Map<number, Set<HTMLButtonElement>>();
 const buttonContextMap = new WeakMap<HTMLButtonElement, AuthorEntryContext>();
+const shadowRootObserverSet = new WeakSet<ShadowRoot>();
 let pageToastHost: HTMLElement | null = null;
 let dialogBackdrop: HTMLDivElement | null = null;
 let dialogRequestSeq = 0;
@@ -153,6 +160,13 @@ function findAuthorName(root: QueryRoot): string | undefined {
     }
   }
   return undefined;
+}
+
+function extractMidFromAnchor(anchor: Element | null): number | null {
+  if (!(anchor instanceof HTMLAnchorElement)) {
+    return null;
+  }
+  return extractMidFromUrl(anchor.href || anchor.getAttribute('href'));
 }
 
 function isElementVisible(element: Element): boolean {
@@ -678,6 +692,36 @@ function buildCardContext(root: QueryRoot, actionRoot: HTMLElement): AuthorEntry
   };
 }
 
+function buildLegacyCardContext(cardRoot: HTMLElement, actionRoot: HTMLElement): AuthorEntryContext | null {
+  const nameLink = cardRoot.querySelector(CARD_NAME_LINK_SELECTOR);
+  const mid = extractMidFromAnchor(nameLink) ?? extractMidFromElement(cardRoot) ?? extractMidFromElement(actionRoot);
+  if (!mid) {
+    return null;
+  }
+
+  return {
+    mid,
+    source: 'card',
+    name: normalizeText(nameLink?.textContent) || findAuthorName(cardRoot) || findAuthorName(actionRoot),
+    face: findAvatarUrl(cardRoot) ?? findAvatarUrl(actionRoot)
+  };
+}
+
+function buildProfileCardContext(shadowRoot: ShadowRoot, actionRoot: HTMLElement): AuthorEntryContext | null {
+  const avatarLink = shadowRoot.querySelector(PROFILE_CARD_AVATAR_SELECTOR);
+  const mid = extractMidFromAnchor(avatarLink) ?? extractMidFromElement(shadowRoot) ?? extractMidFromElement(actionRoot);
+  if (!mid) {
+    return null;
+  }
+
+  return {
+    mid,
+    source: 'card',
+    name: normalizeText(avatarLink?.textContent) || findAuthorName(shadowRoot) || findAuthorName(actionRoot),
+    face: findAvatarUrl(shadowRoot) ?? findAvatarUrl(actionRoot)
+  };
+}
+
 function scanVideoPage(root: HTMLElement): void {
   if (!/\/video\//.test(window.location.pathname)) {
     return;
@@ -708,9 +752,66 @@ function scanSpacePage(root: HTMLElement): void {
   upsertButton(root, document, actionRoot, context);
 }
 
+function scanLegacyCardTargets(root: HTMLElement): void {
+  const cardRoots = document.querySelectorAll(CARD_ROOT_SELECTOR);
+  for (const cardRoot of cardRoots) {
+    if (!(cardRoot instanceof HTMLElement) || !isElementVisible(cardRoot)) {
+      continue;
+    }
+
+    const actionRoot = cardRoot.querySelector(CARD_ACTION_SELECTOR);
+    if (!(actionRoot instanceof HTMLElement)) {
+      continue;
+    }
+
+    const context = buildLegacyCardContext(cardRoot, actionRoot);
+    if (!context) {
+      continue;
+    }
+
+    upsertButton(root, cardRoot, actionRoot, context);
+  }
+}
+
+function scanProfileCardTargets(root: HTMLElement): void {
+  const hosts = document.querySelectorAll(PROFILE_CARD_HOST_SELECTOR);
+  for (const host of hosts) {
+    if (!(host instanceof HTMLElement) || !host.shadowRoot) {
+      continue;
+    }
+
+    const shadowRoot = host.shadowRoot;
+    if (!shadowRootObserverSet.has(shadowRoot)) {
+      const observer = new MutationObserver(() => {
+        scheduleScan(root);
+      });
+      observer.observe(shadowRoot, {
+        childList: true,
+        subtree: true,
+        attributes: true
+      });
+      shadowRootObserverSet.add(shadowRoot);
+    }
+
+    const actionRoot = shadowRoot.querySelector(PROFILE_CARD_ACTION_SELECTOR);
+    if (!(actionRoot instanceof HTMLElement) || !isElementVisible(actionRoot)) {
+      continue;
+    }
+
+    const context = buildProfileCardContext(shadowRoot, actionRoot);
+    if (!context) {
+      continue;
+    }
+
+    upsertButton(root, shadowRoot, actionRoot, context);
+  }
+}
+
 function runScan(root: HTMLElement): void {
   scanVideoPage(root);
   scanSpacePage(root);
+  scanLegacyCardTargets(root);
+  scanProfileCardTargets(root);
 }
 
 function scheduleScan(root: HTMLElement): void {
