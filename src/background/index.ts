@@ -297,9 +297,11 @@ async function handleUpdateAuthorGroupMembership(
     throw new Error('分组操作参数不完整');
   }
 
-  const [groups, feedCacheMap] = await Promise.all([
+  const [groups, feedCacheMap, settings, authorCacheMap] = await Promise.all([
     loadGroups(),
-    loadFeedCacheMap()
+    loadFeedCacheMap(),
+    loadSettings(),
+    getAuthorCacheSnapshot()
   ]);
   const group = groups.find((item) => item.groupId === groupId);
   if (!group) {
@@ -309,6 +311,7 @@ async function handleUpdateAuthorGroupMembership(
   let message = '';
   let affectedVideoCount = 0;
   let latestVideoBvid: string | undefined;
+  let preferredAuthorName: string | undefined;
 
   if (action === 'add') {
     if (request.payload.source === 'video') {
@@ -337,6 +340,7 @@ async function handleUpdateAuthorGroupMembership(
       });
       affectedVideoCount = 1;
       latestVideoBvid = latestVideo.bvid;
+      preferredAuthorName = latestVideo.authorName?.trim() || undefined;
       message = `已将该作者的最新视频加入「${getGroupDisplayTitle(group)}」`;
     }
 
@@ -366,6 +370,24 @@ async function handleUpdateAuthorGroupMembership(
 
   await saveFeedCacheMap(feedCacheMap);
   enqueuePriorityGroup([groupId], 'manual-refresh-fav', 'none');
+
+  if (action === 'add') {
+    const missingAuthorTasks = splitMissingAuthorTasks([mid], authorCacheMap, settings.authorVideosPageSize);
+    if (preferredAuthorName) {
+      missingAuthorTasks.burst.forEach((task) => {
+        task.name = preferredAuthorName;
+      });
+      missingAuthorTasks.priority.forEach((task) => {
+        task.name = preferredAuthorName;
+      });
+    }
+
+    if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
+      const requestContext = createSchedulerRequestContext();
+      enqueueBurst(missingAuthorTasks.burst, requestContext);
+      enqueuePriority(missingAuthorTasks.priority, requestContext);
+    }
+  }
 
   const membership = buildAuthorGroupMembership(mid, groups, feedCacheMap);
   return {
