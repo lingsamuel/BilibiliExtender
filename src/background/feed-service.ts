@@ -1226,6 +1226,53 @@ function sortAuthorsByLatestPubdate(videosByAuthor: AuthorFeed[]): AuthorFeed[] 
     .map((item) => item.author);
 }
 
+function normalizeManualAuthorOrder(authorMids: number[] | undefined): number[] {
+  if (!Array.isArray(authorMids)) {
+    return [];
+  }
+
+  const deduped: number[] = [];
+  const seen = new Set<number>();
+  for (const rawMid of authorMids) {
+    const mid = Math.max(1, Number(rawMid) || 0);
+    if (!mid || seen.has(mid)) {
+      continue;
+    }
+    seen.add(mid);
+    deduped.push(mid);
+  }
+  return deduped;
+}
+
+function composeManualAuthorOrder(baseAuthorMids: number[], manualOrderMids: number[] | undefined): number[] {
+  const normalizedManualOrder = normalizeManualAuthorOrder(manualOrderMids);
+  if (normalizedManualOrder.length === 0) {
+    return [...baseAuthorMids];
+  }
+
+  const currentAuthorSet = new Set(baseAuthorMids);
+  const ordered: number[] = [];
+  const seen = new Set<number>();
+
+  for (const mid of normalizedManualOrder) {
+    if (!currentAuthorSet.has(mid) || seen.has(mid)) {
+      continue;
+    }
+    seen.add(mid);
+    ordered.push(mid);
+  }
+
+  for (const mid of baseAuthorMids) {
+    if (seen.has(mid)) {
+      continue;
+    }
+    seen.add(mid);
+    ordered.push(mid);
+  }
+
+  return ordered;
+}
+
 export interface MixedUsedPageItem {
   mid: number;
   usedMaxPn: number;
@@ -1272,7 +1319,7 @@ export function toFeedResult(
     throw new Error(`分组缓存不存在: ${getGroupTitle(group)}`);
   }
 
-  const authorMids = feedCache.authorMids;
+  const authorMids = composeManualAuthorOrder(feedCache.authorMids, runtime.manualAuthorOrderMids);
   const authorNames = getAuthorNames(authorMids, authorCacheMap);
   const authorMetaMap = new Map<number, { name: string; face?: string; follower?: number; following?: boolean }>();
   for (const mid of authorMids) {

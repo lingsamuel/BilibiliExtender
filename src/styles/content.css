@@ -623,6 +623,14 @@ body.bbe-page-scroll-lock {
   text-align: left;
 }
 
+.bbe-by-author-nav-item.reorderable {
+  cursor: grab;
+}
+
+.bbe-by-author-nav-item.reorderable:active {
+  cursor: grabbing;
+}
+
 .bbe-by-author-nav-item:last-child {
   border-bottom: 0;
 }
@@ -635,6 +643,18 @@ body.bbe-page-scroll-lock {
 .bbe-by-author-nav-item.active {
   color: #00a1d6;
   background: #ecf9ff;
+}
+
+.bbe-by-author-nav-item.is-dragging {
+  opacity: 0.45;
+}
+
+.bbe-by-author-nav-item.is-drag-over-before {
+  box-shadow: inset 0 2px 0 var(--bbe-theme-color);
+}
+
+.bbe-by-author-nav-item.is-drag-over-after {
+  box-shadow: inset 0 -2px 0 var(--bbe-theme-color);
 }
 
 .bbe-by-author-nav-item:focus-visible {

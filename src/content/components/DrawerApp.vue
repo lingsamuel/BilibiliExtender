@@ -247,9 +247,20 @@
                 :ref="(el) => bindByAuthorNavItem(item.authorMid, el)"
                 type="button"
                 class="bbe-by-author-nav-item"
-                :class="{ active: item.authorMid === byAuthorActiveMid }"
+                :class="{
+                  active: item.authorMid === byAuthorActiveMid,
+                  reorderable: canReorderByAuthorNav,
+                  'is-dragging': item.authorMid === byAuthorDraggingMid,
+                  'is-drag-over-before': isByAuthorDragOver(item.authorMid, 'before'),
+                  'is-drag-over-after': isByAuthorDragOver(item.authorMid, 'after')
+                }"
                 :title="`跳转到${item.authorName}`"
-                @click.stop="scrollToAuthor(item.authorMid)"
+                :draggable="canReorderByAuthorNav"
+                @click.stop="onByAuthorNavItemClick(item.authorMid)"
+                @dragstart="onByAuthorNavDragStart(item.authorMid, $event)"
+                @dragover="onByAuthorNavDragOver(item.authorMid, $event)"
+                @drop="onByAuthorNavDrop(item.authorMid, $event)"
+                @dragend="onByAuthorNavDragEnd"
               >
                 <img v-if="item.authorFace" class="bbe-avatar-sm" :src="item.authorFace" alt="" />
                 <span class="bbe-by-author-nav-name">{{ item.authorName }}</span>
@@ -624,6 +635,9 @@ const byAuthorNavItemElements = new Map<number, HTMLElement>();
 const byAuthorSectionsRef = ref<HTMLElement | null>(null);
 const byAuthorActiveMid = ref<number | null>(null);
 const byAuthorStickyTitleMap = ref<Record<number, boolean>>({});
+const byAuthorDraggingMid = ref<number | null>(null);
+const byAuthorDragOverState = ref<{ mid: number; position: 'before' | 'after' } | null>(null);
+let suppressByAuthorNavClickUntil = 0;
 const isSettingsView = computed(() => activeEntryId.value === ENTRY_ID.SETTINGS);
 const isDebugView = computed(() => activeEntryId.value === ENTRY_ID.DEBUG);
 
@@ -973,32 +987,7 @@ const byAuthorFeeds = computed<AuthorFeed[]>(() => {
   if (!feed.value) {
     return [];
   }
-  const rawAuthors = feed.value.videosByAuthor;
-  if (!byAuthorSortByLatest.value) {
-    return rawAuthors;
-  }
-  return rawAuthors
-    .map((author, index) => ({
-      author,
-      index,
-      latestPubdate: resolveAuthorLatestPubdate(author)
-    }))
-    .sort((a, b) => {
-      if (a.latestPubdate === null && b.latestPubdate === null) {
-        return a.index - b.index;
-      }
-      if (a.latestPubdate === null) {
-        return 1;
-      }
-      if (b.latestPubdate === null) {
-        return -1;
-      }
-      if (a.latestPubdate !== b.latestPubdate) {
-        return b.latestPubdate - a.latestPubdate;
-      }
-      return a.index - b.index;
-    })
-    .map((item) => item.author);
+  return feed.value.videosByAuthor;
 });
 
 /**
@@ -1373,6 +1362,164 @@ const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
 });
 
 const hasByAuthorNav = computed(() => byAuthorNavItems.value.length > 0);
+const canReorderByAuthorNav = computed(() => mode.value !== 'mixed' && !byAuthorSortByLatest.value && byAuthorNavItems.value.length > 1);
+
+function isByAuthorDragOver(authorMid: number, position: 'before' | 'after'): boolean {
+  return byAuthorDragOverState.value?.mid === authorMid && byAuthorDragOverState.value.position === position;
+}
+
+function clearByAuthorDragState(): void {
+  byAuthorDraggingMid.value = null;
+  byAuthorDragOverState.value = null;
+}
+
+function getByAuthorDragPosition(event: DragEvent): 'before' | 'after' {
+  const currentTarget = event.currentTarget;
+  if (!(currentTarget instanceof HTMLElement)) {
+    return 'after';
+  }
+  const rect = currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+}
+
+function moveAuthorMidInOrder(
+  authorMids: number[],
+  draggingMid: number,
+  targetMid: number,
+  position: 'before' | 'after'
+): number[] {
+  if (draggingMid === targetMid) {
+    return authorMids;
+  }
+
+  const next = [...authorMids];
+  const fromIndex = next.indexOf(draggingMid);
+  const targetIndex = next.indexOf(targetMid);
+  if (fromIndex < 0 || targetIndex < 0) {
+    return authorMids;
+  }
+
+  next.splice(fromIndex, 1);
+  const nextTargetIndex = next.indexOf(targetMid);
+  const insertIndex = position === 'after' ? nextTargetIndex + 1 : nextTargetIndex;
+  next.splice(Math.max(0, insertIndex), 0, draggingMid);
+  return next;
+}
+
+function replaceFeedAuthorOrder(authorMids: number[]): void {
+  if (!feed.value) {
+    return;
+  }
+
+  const authorMap = new Map(feed.value.videosByAuthor.map((author) => [author.authorMid, author]));
+  const reordered = authorMids
+    .map((mid) => authorMap.get(mid))
+    .filter((author): author is AuthorFeed => Boolean(author));
+
+  if (reordered.length !== feed.value.videosByAuthor.length) {
+    return;
+  }
+
+  feed.value = {
+    ...feed.value,
+    videosByAuthor: reordered
+  };
+}
+
+async function persistManualAuthorOrder(authorMids: number[]): Promise<void> {
+  if (!activeGroupId.value) {
+    return;
+  }
+
+  const resp = await sendMessage({
+    type: 'SET_GROUP_MANUAL_AUTHOR_ORDER',
+    payload: {
+      groupId: activeGroupId.value,
+      authorMids
+    }
+  });
+  if (!resp.ok || !resp.data) {
+    throw new Error(resp.error ?? '保存作者排序失败');
+  }
+}
+
+function onByAuthorNavItemClick(authorMid: number): void {
+  if (Date.now() < suppressByAuthorNavClickUntil) {
+    return;
+  }
+  scrollToAuthor(authorMid);
+}
+
+function onByAuthorNavDragStart(authorMid: number, event: DragEvent): void {
+  if (!canReorderByAuthorNav.value) {
+    event.preventDefault();
+    return;
+  }
+
+  byAuthorDraggingMid.value = authorMid;
+  byAuthorDragOverState.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(authorMid));
+  }
+}
+
+function onByAuthorNavDragOver(authorMid: number, event: DragEvent): void {
+  if (!canReorderByAuthorNav.value || byAuthorDraggingMid.value === null) {
+    return;
+  }
+  event.preventDefault();
+  byAuthorDragOverState.value = {
+    mid: authorMid,
+    position: getByAuthorDragPosition(event)
+  };
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move';
+  }
+}
+
+async function onByAuthorNavDrop(authorMid: number, event: DragEvent): Promise<void> {
+  if (!canReorderByAuthorNav.value) {
+    return;
+  }
+  event.preventDefault();
+
+  const draggingMid = byAuthorDraggingMid.value;
+  if (draggingMid === null || !feed.value) {
+    clearByAuthorDragState();
+    return;
+  }
+
+  const position = getByAuthorDragPosition(event);
+  const currentOrder = byAuthorFeeds.value.map((author) => author.authorMid);
+  const nextOrder = moveAuthorMidInOrder(currentOrder, draggingMid, authorMid, position);
+  clearByAuthorDragState();
+  suppressByAuthorNavClickUntil = Date.now() + 120;
+
+  if (nextOrder.length !== currentOrder.length || nextOrder.every((mid, index) => mid === currentOrder[index])) {
+    return;
+  }
+
+  const previousVideosByAuthor = feed.value.videosByAuthor;
+  replaceFeedAuthorOrder(nextOrder);
+
+  try {
+    await persistManualAuthorOrder(nextOrder);
+  } catch (error) {
+    feed.value = feed.value
+      ? {
+        ...feed.value,
+        videosByAuthor: previousVideosByAuthor
+      }
+      : null;
+    showErrorToast(error instanceof Error ? error.message : '保存作者排序失败');
+  }
+}
+
+function onByAuthorNavDragEnd(): void {
+  clearByAuthorDragState();
+  suppressByAuthorNavClickUntil = Date.now() + 120;
+}
 
 function isFollowPending(mid: number): boolean {
   return followPendingMap.value[mid] === true;
@@ -2060,6 +2207,7 @@ function resetMixedTimelineState(): void {
 function resetByAuthorNavState(): void {
   byAuthorActiveMid.value = null;
   byAuthorStickyTitleMap.value = {};
+  clearByAuthorDragState();
 }
 
 function resetAuthorPaginationState(): void {
@@ -3403,7 +3551,7 @@ function scrollToAuthor(authorMid: number): void {
   }
 
   const mainEl = container.closest('.bbe-main');
-  const toolbarEl = mainEl?.querySelector('.bbe-toolbar');
+  const toolbarEl = mainEl ? mainEl.querySelector('.bbe-toolbar') : null;
   const anchorEl = sectionEl.querySelector('.bbe-author-scroll-anchor');
   if (!(anchorEl instanceof HTMLElement)) {
     return;
@@ -3627,6 +3775,10 @@ watch(byAuthorActiveMid, (mid) => {
     return;
   }
   navItemEl.scrollIntoView({ block: 'nearest' });
+});
+
+watch([mode, byAuthorSortByLatest, activeGroupId], () => {
+  clearByAuthorDragState();
 });
 
 onMounted(() => {

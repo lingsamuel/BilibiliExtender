@@ -49,6 +49,8 @@ export interface GroupRuntimeState {
   savedAllPostsFilter?: AllPostsFilterKey;
   // 记忆“近期投稿/全部投稿”按作者视图是否按最新更新时间倒序。
   savedByAuthorSortByLatest?: boolean;
+  // 记忆按作者视图的手动排序结果；仅在未勾选“按更新时间倒序”时生效。
+  manualAuthorOrderMids?: number[];
 }
 
 export interface GroupSyncStatus {

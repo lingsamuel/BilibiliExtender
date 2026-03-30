@@ -517,6 +517,95 @@ async function handleSetGroupExcludeUnread(
   return { group: nextGroup };
 }
 
+function normalizeManualAuthorOrder(authorMids: number[]): number[] {
+  const result: number[] = [];
+  const seen = new Set<number>();
+  for (const rawMid of authorMids) {
+    const mid = Math.max(1, Number(rawMid) || 0);
+    if (!mid || seen.has(mid)) {
+      continue;
+    }
+    seen.add(mid);
+    result.push(mid);
+  }
+  return result;
+}
+
+function mergeVisibleManualOrder(
+  previousOrder: number[] | undefined,
+  nextVisibleOrder: number[]
+): number[] {
+  const normalizedNextVisibleOrder = normalizeManualAuthorOrder(nextVisibleOrder);
+  const normalizedPreviousOrder = normalizeManualAuthorOrder(previousOrder ?? []);
+  if (normalizedPreviousOrder.length === 0) {
+    return normalizedNextVisibleOrder;
+  }
+
+  const nextVisibleSet = new Set(normalizedNextVisibleOrder);
+  const merged: number[] = [];
+  let visibleCursor = 0;
+
+  for (const mid of normalizedPreviousOrder) {
+    if (!nextVisibleSet.has(mid)) {
+      merged.push(mid);
+      continue;
+    }
+
+    const replacement = normalizedNextVisibleOrder[visibleCursor];
+    if (replacement) {
+      merged.push(replacement);
+      visibleCursor += 1;
+    }
+  }
+
+  while (visibleCursor < normalizedNextVisibleOrder.length) {
+    merged.push(normalizedNextVisibleOrder[visibleCursor]);
+    visibleCursor += 1;
+  }
+
+  return normalizeManualAuthorOrder(merged);
+}
+
+async function handleSetGroupManualAuthorOrder(
+  request: Extract<MessageRequest, { type: 'SET_GROUP_MANUAL_AUTHOR_ORDER' }>
+): Promise<ResponseMap['SET_GROUP_MANUAL_AUTHOR_ORDER']> {
+  const groupId = request.payload.groupId;
+  if (!groupId) {
+    throw new Error('分组参数不合法');
+  }
+
+  const [groups, settings, runtimeMap] = await Promise.all([
+    loadGroups(),
+    loadSettings(),
+    loadRuntimeStateMap()
+  ]);
+
+  if (groupId === ALL_GROUP_ID) {
+    if (!settings.enableAllGroup) {
+      throw new Error('“全部”分组已关闭');
+    }
+  } else {
+    const group = groups.find((item) => item.groupId === groupId && item.enabled);
+    if (!group) {
+      throw new Error('分组不存在或已禁用');
+    }
+  }
+
+  const runtime = runtimeMap[groupId] ?? {
+    groupId,
+    unreadCount: 0,
+    mixedTargetCount: settings.timelineMixedMaxCount
+  };
+  runtime.manualAuthorOrderMids = mergeVisibleManualOrder(runtime.manualAuthorOrderMids, request.payload.authorMids);
+  runtimeMap[groupId] = runtime;
+  await saveRuntimeStateMap(runtimeMap);
+
+  return {
+    groupId,
+    authorMids: [...runtime.manualAuthorOrderMids]
+  };
+}
+
 async function handleSaveSettings(
   request: Extract<MessageRequest, { type: 'SAVE_SETTINGS' }>
 ): Promise<ResponseMap['SAVE_SETTINGS']> {
@@ -573,6 +662,7 @@ async function handleGetGroupSummary(
       groupId: ALL_GROUP_ID,
       title: '全部',
       unreadCount: totalUnreadCount,
+      excludeFromUnreadCount: false,
       syncStatus: buildGroupSyncStatus(allAuthorMids, authorCacheMap, settings),
       lastRefreshAt: allRuntime?.lastRefreshAt,
       enabled: true,
@@ -1432,6 +1522,8 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleDeleteGroup(request));
     case 'SET_GROUP_EXCLUDE_UNREAD':
       return ok(await handleSetGroupExcludeUnread(request));
+    case 'SET_GROUP_MANUAL_AUTHOR_ORDER':
+      return ok(await handleSetGroupManualAuthorOrder(request));
     case 'SAVE_SETTINGS':
       return ok(await handleSaveSettings(request));
     case 'GET_GROUP_SUMMARY':
