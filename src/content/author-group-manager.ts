@@ -370,7 +370,8 @@ function ensureDialog(root: HTMLElement): void {
 
   dialogBackdrop = document.createElement('div');
   dialogBackdrop.className = 'bbe-author-group-backdrop';
-  dialogBackdrop.hidden = true;
+  dialogBackdrop.style.display = 'none';
+  dialogBackdrop.setAttribute('aria-hidden', 'true');
   dialogBackdrop.innerHTML = `
     <section class="bbe-author-group-dialog" role="dialog" aria-modal="true" aria-labelledby="bbe-author-group-dialog-title">
       <div class="bbe-author-group-dialog-head">
@@ -425,7 +426,8 @@ function renderDialog(): void {
     return;
   }
 
-  dialogBackdrop.hidden = !dialogState.visible;
+  dialogBackdrop.style.display = dialogState.visible ? 'flex' : 'none';
+  dialogBackdrop.setAttribute('aria-hidden', dialogState.visible ? 'false' : 'true');
   const dialog = dialogBackdrop.querySelector('.bbe-author-group-dialog');
   const faceEl = dialogBackdrop.querySelector('.bbe-author-group-author-face');
   const nameEl = dialogBackdrop.querySelector('.bbe-author-group-author-name');
@@ -505,6 +507,8 @@ function closeDialog(): void {
   dialogState.loading = false;
   dialogState.error = '';
   dialogState.pendingGroupIds.clear();
+  dialogState.context = null;
+  dialogState.membership = null;
   renderDialog();
 }
 
