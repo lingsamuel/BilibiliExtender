@@ -42,7 +42,7 @@ export type MessageRequest =
         csrf: string;
         pageOrigin: string;
         pageReferer: string;
-        source: 'video' | 'space' | 'card';
+        source: 'video' | 'space' | 'card' | 'drawer';
         video?: {
           aid?: number;
           bvid?: string;

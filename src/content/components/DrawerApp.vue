@@ -318,6 +318,18 @@
                         </button>
                         <button
                           type="button"
+                          class="bbe-author-follow-btn bbe-injected-author-group-btn"
+                          :class="{
+                            followed: isAuthorGrouped(author.authorMid),
+                            loading: isAuthorGroupMembershipPending(author.authorMid)
+                          }"
+                          :disabled="isAuthorGroupMembershipPending(author.authorMid)"
+                          @click="openAuthorGroupDialog(author)"
+                        >
+                          {{ getAuthorGroupButtonText(author.authorMid) }}
+                        </button>
+                        <button
+                          type="button"
                           class="bbe-author-like-btn"
                           :class="{ loading: isAuthorLikePending(author.authorMid) }"
                           :disabled="isAuthorLikePending(author.authorMid)"
@@ -607,6 +619,8 @@ const reviewedOverrideMap = ref<Record<string, boolean>>({});
 const likedStateMap = ref<Record<string, VideoLikeState>>({});
 const followPendingMap = ref<Record<number, boolean>>({});
 const authorLikePendingMap = ref<Record<number, boolean>>({});
+const authorGroupMembershipMap = ref<Record<number, { grouped: boolean; count: number }>>({});
+const authorGroupMembershipPendingMap = ref<Record<number, boolean>>({});
 const byAuthorPageMap = ref<Record<number, number>>({});
 const byAuthorPageJumpInputMap = ref<Record<number, string>>({});
 const byAuthorPageLoadingMap = ref<Record<number, boolean>>({});
@@ -1529,6 +1543,25 @@ function isAuthorLikePending(mid: number): boolean {
   return authorLikePendingMap.value[mid] === true;
 }
 
+function isAuthorGroupMembershipPending(mid: number): boolean {
+  return authorGroupMembershipPendingMap.value[mid] === true;
+}
+
+function isAuthorGrouped(mid: number): boolean {
+  return authorGroupMembershipMap.value[mid]?.grouped === true;
+}
+
+function getAuthorGroupButtonText(mid: number): string {
+  const state = authorGroupMembershipMap.value[mid];
+  if (state?.grouped) {
+    return state.count > 0 ? `已分组(${state.count})` : '已分组';
+  }
+  if (isAuthorGroupMembershipPending(mid)) {
+    return '分组...';
+  }
+  return '添加到分组';
+}
+
 function clearAuthorLikePending(mid: number): void {
   if (!(mid in authorLikePendingMap.value)) {
     return;
@@ -1613,6 +1646,59 @@ function getFollowButtonText(author: AuthorFeed): string {
 
 function getAuthorIgnoreUnreadButtonText(author: AuthorFeed): string {
   return author.ignoreUnreadCount ? '不计算未读' : '不计算未读';
+}
+
+async function syncAuthorGroupMemberships(mids: number[]): Promise<void> {
+  const uniqueMids = Array.from(new Set(
+    mids
+      .map((mid) => Math.max(1, Number(mid) || 0))
+      .filter((mid) => mid > 0)
+  ));
+  const targetMids = uniqueMids.filter((mid) => !authorGroupMembershipMap.value[mid] && !authorGroupMembershipPendingMap.value[mid]);
+  if (targetMids.length === 0) {
+    return;
+  }
+
+  authorGroupMembershipPendingMap.value = {
+    ...authorGroupMembershipPendingMap.value,
+    ...Object.fromEntries(targetMids.map((mid) => [mid, true]))
+  };
+
+  await Promise.all(targetMids.map(async (mid) => {
+    try {
+      const resp = await sendMessage({
+        type: 'GET_AUTHOR_GROUP_MEMBERSHIP',
+        payload: { mid }
+      });
+      if (!resp.ok || !resp.data) {
+        throw new Error(resp.error || '读取作者分组状态失败');
+      }
+      authorGroupMembershipMap.value = {
+        ...authorGroupMembershipMap.value,
+        [mid]: {
+          grouped: resp.data.grouped,
+          count: resp.data.groups.filter((group) => group.checked).length
+        }
+      };
+    } catch (error) {
+      console.warn('[BBE] 读取作者分组状态失败 mid:', mid, error);
+    } finally {
+      const next = { ...authorGroupMembershipPendingMap.value };
+      delete next[mid];
+      authorGroupMembershipPendingMap.value = next;
+    }
+  }));
+}
+
+function openAuthorGroupDialog(author: AuthorFeed): void {
+  window.dispatchEvent(new CustomEvent(EXTENSION_EVENT.OPEN_AUTHOR_GROUP_DIALOG, {
+    detail: {
+      mid: author.authorMid,
+      source: 'drawer',
+      name: author.authorName,
+      face: author.authorFace
+    }
+  }));
 }
 
 function getCsrfFromCookie(): string | null {
@@ -3695,6 +3781,24 @@ function handleBatchLikeStatusMessage(message: BatchLikeStatusMessage): void {
   }
 }
 
+function onAuthorGroupMembershipChanged(event: Event): void {
+  const detail = (event as CustomEvent<{ mid?: number; grouped?: boolean; count?: number }>).detail;
+  const mid = Math.max(1, Number(detail?.mid) || 0);
+  if (!mid) {
+    return;
+  }
+  authorGroupMembershipMap.value = {
+    ...authorGroupMembershipMap.value,
+    [mid]: {
+      grouped: detail?.grouped === true,
+      count: Math.max(0, Number(detail?.count) || 0)
+    }
+  };
+  const nextPending = { ...authorGroupMembershipPendingMap.value };
+  delete nextPending[mid];
+  authorGroupMembershipPendingMap.value = nextPending;
+}
+
 function onRuntimeMessage(message: unknown): void {
   if (!message || typeof message !== 'object') {
     return;
@@ -3781,11 +3885,23 @@ watch([mode, byAuthorSortByLatest, activeGroupId], () => {
   clearByAuthorDragState();
 });
 
+watch(
+  [visible, byAuthorFeeds],
+  ([nextVisible, nextAuthors]) => {
+    if (!nextVisible || mode.value === 'mixed') {
+      return;
+    }
+    void syncAuthorGroupMemberships(nextAuthors.map((author) => author.authorMid));
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
   loadDrawerWidth();
   void loadGroupRefreshWarningPreference();
   window.addEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.addEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
+  window.addEventListener(EXTENSION_EVENT.AUTHOR_GROUP_MEMBERSHIP_CHANGED, onAuthorGroupMembershipChanged);
   window.addEventListener('resize', onWindowResize);
   document.addEventListener('visibilitychange', onDocumentVisibilityChange);
   ext.runtime.onMessage.addListener(onRuntimeMessage);
@@ -3806,6 +3922,7 @@ onUnmounted(() => {
   setPageScrollLock(false);
   window.removeEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.removeEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);
+  window.removeEventListener(EXTENSION_EVENT.AUTHOR_GROUP_MEMBERSHIP_CHANGED, onAuthorGroupMembershipChanged);
   window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   ext.runtime.onMessage.removeListener(onRuntimeMessage);

@@ -1,9 +1,9 @@
 import authorGroupButtonCssText from '@/styles/author-group-button.css?inline';
+import { EXTENSION_EVENT } from '@/shared/constants';
 import { sendMessage, type ResponseMap } from '@/shared/messages';
 
 type MembershipState = ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP'];
-type MembershipUpdateState = ResponseMap['UPDATE_AUTHOR_GROUP_MEMBERSHIP'];
-type AuthorEntrySource = 'video' | 'space' | 'card';
+type AuthorEntrySource = 'video' | 'space' | 'card' | 'drawer';
 type QueryRoot = Document | ShadowRoot | HTMLElement;
 
 interface AuthorEntryContext {
@@ -59,6 +59,28 @@ const dialogState: DialogState = {
   error: '',
   pendingGroupIds: new Set<string>()
 };
+
+function getCheckedGroupCount(membership: Pick<MembershipState, 'groups'> | null | undefined): number {
+  return membership?.groups.filter((group) => group.checked).length ?? 0;
+}
+
+function getAuthorGroupButtonLabel(membership: Pick<MembershipState, 'grouped' | 'groups'> | null | undefined): string {
+  if (!membership?.grouped) {
+    return '添加到分组';
+  }
+  const count = getCheckedGroupCount(membership);
+  return count > 0 ? `已分组(${count})` : '已分组';
+}
+
+function dispatchMembershipChanged(mid: number, membership: MembershipState): void {
+  window.dispatchEvent(new CustomEvent(EXTENSION_EVENT.AUTHOR_GROUP_MEMBERSHIP_CHANGED, {
+    detail: {
+      mid,
+      grouped: membership.grouped,
+      count: getCheckedGroupCount(membership)
+    }
+  }));
+}
 
 function normalizeText(text: string | null | undefined): string {
   return (text ?? '').replace(/\s+/g, ' ').trim();
@@ -253,12 +275,8 @@ function updateButtonText(button: HTMLButtonElement, label: string): void {
 function syncButtonsForMembership(mid: number, membership?: MembershipState): void {
   const buttons = cleanupButtonRegistry(mid);
   for (const button of buttons) {
-    const context = buttonContextMap.get(button);
-    if (!context) {
-      continue;
-    }
     const grouped = membership?.grouped ?? membershipCache.get(mid)?.grouped ?? false;
-    updateButtonText(button, grouped ? '已分组' : '添加到分组');
+    updateButtonText(button, getAuthorGroupButtonLabel(membership ?? membershipCache.get(mid) ?? null));
     syncAuthorGroupButtonState(button, {
       grouped,
       pending: false
@@ -306,6 +324,7 @@ async function fetchMembership(mid: number, force = false): Promise<MembershipSt
     }
 
     membershipCache.set(mid, resp.data);
+    dispatchMembershipChanged(mid, resp.data);
     syncButtonsForMembership(mid, resp.data);
     return resp.data;
   })();
@@ -564,6 +583,7 @@ async function onGroupItemClick(root: HTMLElement, groupId: string): Promise<voi
       groups: resp.data.groups
     });
     dialogState.membership = membershipCache.get(context.mid) as MembershipState;
+    dispatchMembershipChanged(context.mid, dialogState.membership);
     syncButtonsForMembership(context.mid, dialogState.membership);
     pushToast(root, resp.data.message);
   } catch (error) {
@@ -843,6 +863,14 @@ function patchHistory(root: HTMLElement): void {
 export function startAuthorGroupManager(root: HTMLElement): void {
   ensureDialog(root);
   runScan(root);
+
+  window.addEventListener(EXTENSION_EVENT.OPEN_AUTHOR_GROUP_DIALOG, (event) => {
+    const detail = (event as CustomEvent<AuthorEntryContext | null | undefined>).detail;
+    if (!detail?.mid) {
+      return;
+    }
+    void openDialog(root, detail);
+  });
 
   const observer = new MutationObserver(() => {
     scheduleScan(root);
