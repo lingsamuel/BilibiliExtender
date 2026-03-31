@@ -1341,7 +1341,7 @@ async function refreshAuthorCurrentPage(author: AuthorFeed): Promise<void> {
   const targetPage = mode.value === 'overview' ? getAuthorCurrentPage(author) : 1;
   const ensureContinuousFromHead = mode.value === 'byAuthor';
   const submitToastText = ensureContinuousFromHead
-    ? '正在刷新该作者首页，并尝试续接连续缓存'
+    ? '正在刷新'
     : `正在刷新第 ${targetPage} 页`;
 
   await submitAuthorPageRequest(author, targetPage, {
