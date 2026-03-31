@@ -1264,11 +1264,13 @@ async function runAuthorTask(
 ): Promise<void> {
   const settings = await loadSettings();
   const previousContinuous = (authorCacheMap[task.mid]?.continuousVideos ?? []).slice();
-  const fetchCard = task.reason !== 'request-author-page' && task.reason !== 'refresh-author-current-page';
+  // 作者级“刷新当前页”属于用户主动触发的单次刷新，
+  // 这里保留 Card 同步，避免局部页块重建后把头像等作者展示信息冲掉。
+  const fetchCard = task.reason !== 'request-author-page';
   let latestCache = await refreshAuthorCache(task.mid, task.name, authorCacheMap, settings, {
     pn: task.pn,
     ps: task.ps,
-    // 用户主动翻页/作者级局部刷新只需要页数据，不要顺带请求 Card API。
+    // 纯翻页请求只需要页数据；作者级手动刷新仍然会同步 Card。
     fetchCard,
     requestTracker
   });

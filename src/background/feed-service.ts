@@ -598,13 +598,32 @@ export function getAuthorPageCount(
   return getAuthorMaxPage(cache, ps);
 }
 
+function getCachedAuthorMeta(
+  cache: AuthorVideoCache | undefined
+): { name: string; face?: string } | undefined {
+  if (!cache) {
+    return undefined;
+  }
+
+  const name = cache.name?.trim() || '';
+  if (!name && !cache.face) {
+    return undefined;
+  }
+
+  return {
+    name,
+    face: cache.face
+  };
+}
+
 export function getCachedAuthorPageSnapshot(
   cache: AuthorVideoCache | undefined,
   pn: number,
   ps: number
 ): { videos: VideoItem[]; fetchedAt?: number } {
+  const meta = getCachedAuthorMeta(cache);
   return {
-    videos: getCachedAuthorPageVideos(cache, pn, ps),
+    videos: getCachedAuthorPageVideos(cache, pn, ps).map((video) => injectAuthorMetaIntoVideo(video, meta)),
     fetchedAt: getCachedAuthorPageFetchedAt(cache, pn, ps)
   };
 }
