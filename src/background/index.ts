@@ -3,6 +3,7 @@ import {
   addVideoToFavorites,
   batchDeleteFavoriteResources,
   coinVideo,
+  createFavoriteFolder,
   getAllFavVideos,
   getMyCreatedFolders,
   getUploaderVideos,
@@ -232,6 +233,106 @@ function buildAuthorGroupMembership(
   };
 }
 
+function buildAvailableFolders(
+  groups: GroupConfig[],
+  folders: Awaited<ReturnType<typeof getMyCreatedFolders>>
+): Awaited<ReturnType<typeof getMyCreatedFolders>> {
+  const usedMediaIds = new Set(groups.map((group) => group.mediaId));
+  return folders.filter((folder) => !usedMediaIds.has(folder.id));
+}
+
+function buildAuthorGroupDialogData(
+  mid: number,
+  groups: GroupConfig[],
+  feedCacheMap: Awaited<ReturnType<typeof loadFeedCacheMap>>,
+  folders: Awaited<ReturnType<typeof getMyCreatedFolders>>
+): ResponseMap['GET_AUTHOR_GROUP_DIALOG_DATA'] {
+  const membership = buildAuthorGroupMembership(mid, groups, feedCacheMap);
+  return {
+    ...membership,
+    availableFolders: buildAvailableFolders(groups, folders)
+  };
+}
+
+function createGroupConfigFromFolder(folder: { id: number; title: string }): GroupConfig {
+  return {
+    groupId: crypto.randomUUID(),
+    mediaId: folder.id,
+    mediaTitle: folder.title,
+    enabled: true,
+    excludeFromUnreadCount: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+}
+
+/**
+ * 统一维护分组创建/更新规则，避免设置页与作者弹框走出两套冲突校验和刷新语义。
+ */
+async function upsertGroupConfig(
+  groupInput: GroupConfig
+): Promise<{
+    groups: GroupConfig[];
+    runtimeMap: Awaited<ReturnType<typeof loadRuntimeStateMap>>;
+    feedCacheMap: Awaited<ReturnType<typeof loadFeedCacheMap>>;
+    group: GroupConfig;
+    created: boolean;
+  }> {
+  const [groups, runtimeMap, feedCacheMap] = await Promise.all([
+    loadGroups(),
+    loadRuntimeStateMap(),
+    loadFeedCacheMap()
+  ]);
+
+  const incoming = normalizeGroupInput(groupInput);
+
+  const mediaConflict = groups.find(
+    (item) => item.mediaId === incoming.mediaId && item.groupId !== incoming.groupId
+  );
+
+  if (mediaConflict) {
+    throw new Error('该收藏夹已被其他分组使用');
+  }
+
+  const index = groups.findIndex((item) => item.groupId === incoming.groupId);
+  let nextGroup = incoming;
+
+  if (index >= 0) {
+    const previous = groups[index];
+    nextGroup = {
+      ...previous,
+      ...incoming,
+      createdAt: previous.createdAt,
+      updatedAt: Date.now()
+    };
+    groups[index] = nextGroup;
+
+    if (previous.mediaId !== incoming.mediaId) {
+      removeGroupState(previous.groupId, runtimeMap, feedCacheMap);
+    }
+  } else {
+    groups.push(nextGroup);
+  }
+
+  await Promise.all([
+    saveGroups(groups),
+    saveRuntimeStateMap(runtimeMap),
+    saveFeedCacheMap(feedCacheMap)
+  ]);
+
+  if (index < 0) {
+    enqueuePriorityGroup([nextGroup.groupId], 'group-created-auto-refresh');
+  }
+
+  return {
+    groups,
+    runtimeMap,
+    feedCacheMap,
+    group: nextGroup,
+    created: index < 0
+  };
+}
+
 /**
  * 直接改写分组作者缓存，让作者分组按钮与弹框状态即时收敛到用户刚完成的操作。
  * 后续仍会补一次收藏夹刷新，请求远端真相重新校正。
@@ -289,6 +390,23 @@ async function handleGetAuthorGroupMembership(
   ]);
 
   return buildAuthorGroupMembership(mid, groups, feedCacheMap);
+}
+
+async function handleGetAuthorGroupDialogData(
+  request: Extract<MessageRequest, { type: 'GET_AUTHOR_GROUP_DIALOG_DATA' }>
+): Promise<ResponseMap['GET_AUTHOR_GROUP_DIALOG_DATA']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  if (!mid) {
+    throw new Error('作者参数不完整');
+  }
+
+  const [groups, feedCacheMap, folders] = await Promise.all([
+    loadGroups(),
+    loadFeedCacheMap(),
+    getMyCreatedFolders()
+  ]);
+
+  return buildAuthorGroupDialogData(mid, groups, feedCacheMap, folders);
 }
 
 async function handleUpdateAuthorGroupMembership(
@@ -435,52 +553,66 @@ async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> 
 async function handleUpsertGroup(
   request: Extract<MessageRequest, { type: 'UPSERT_GROUP' }>
 ): Promise<ResponseMap['UPSERT_GROUP']> {
-  const [groups, runtimeMap, feedCacheMap] = await Promise.all([
-    loadGroups(),
-    loadRuntimeStateMap(),
-    loadFeedCacheMap()
-  ]);
-
-  const incoming = normalizeGroupInput(request.payload.group as GroupConfig);
-
-  const mediaConflict = groups.find(
-    (item) => item.mediaId === incoming.mediaId && item.groupId !== incoming.groupId
-  );
-
-  if (mediaConflict) {
-    throw new Error('该收藏夹已被其他分组使用');
-  }
-
-  const index = groups.findIndex((item) => item.groupId === incoming.groupId);
-
-  if (index >= 0) {
-    const previous = groups[index];
-    groups[index] = {
-      ...previous,
-      ...incoming,
-      createdAt: previous.createdAt,
-      updatedAt: Date.now()
-    };
-
-    if (previous.mediaId !== incoming.mediaId) {
-      removeGroupState(previous.groupId, runtimeMap, feedCacheMap);
-    }
-  } else {
-    groups.push(incoming);
-  }
-
-  await Promise.all([
-    saveGroups(groups),
-    saveRuntimeStateMap(runtimeMap),
-    saveFeedCacheMap(feedCacheMap)
-  ]);
-
-  // 新增分组后立即触发一次该分组刷新，确保尽快生成首份缓存。
-  if (index < 0) {
-    enqueuePriorityGroup([incoming.groupId], 'group-created-auto-refresh');
-  }
-
+  const { groups } = await upsertGroupConfig(request.payload.group as GroupConfig);
   return { groups };
+}
+
+async function handleCreateAuthorGroupFromFolder(
+  request: Extract<MessageRequest, { type: 'CREATE_AUTHOR_GROUP_FROM_FOLDER' }>
+): Promise<ResponseMap['CREATE_AUTHOR_GROUP_FROM_FOLDER']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  const mediaId = Math.max(1, Number(request.payload.mediaId) || 0);
+  if (!mid || !mediaId) {
+    throw new Error('创建分组参数不完整');
+  }
+
+  const folders = await getMyCreatedFolders();
+  const folder = folders.find((item) => item.id === mediaId);
+  if (!folder) {
+    throw new Error('收藏夹不存在或不可用');
+  }
+
+  const { groups, feedCacheMap, group } = await upsertGroupConfig(createGroupConfigFromFolder(folder));
+  const dialogData = buildAuthorGroupDialogData(mid, groups, feedCacheMap, folders);
+
+  return {
+    ...dialogData,
+    groupId: group.groupId,
+    mediaId: group.mediaId,
+    message: `已将收藏夹「${folder.title}」创建为分组`
+  };
+}
+
+async function handleCreateFolderAndAuthorGroup(
+  request: Extract<MessageRequest, { type: 'CREATE_FOLDER_AND_AUTHOR_GROUP' }>
+): Promise<ResponseMap['CREATE_FOLDER_AND_AUTHOR_GROUP']> {
+  const mid = Math.max(1, Number(request.payload.mid) || 0);
+  const title = request.payload.title?.trim() || '';
+  const csrf = request.payload.csrf?.trim();
+  const pageOrigin = request.payload.pageOrigin?.trim();
+  const pageReferer = request.payload.pageReferer?.trim();
+  if (!mid || !title || !csrf || !pageOrigin || !pageReferer) {
+    throw new Error('新建收藏夹参数不完整');
+  }
+
+  const createdFolder = await runWithFavRequestHeaders(pageOrigin, pageReferer, async () => (
+    createFavoriteFolder(title, csrf)
+  ));
+
+  try {
+    const { groups, feedCacheMap, group } = await upsertGroupConfig(createGroupConfigFromFolder(createdFolder));
+    const latestFolders = await getMyCreatedFolders();
+    const dialogData = buildAuthorGroupDialogData(mid, groups, feedCacheMap, latestFolders);
+    return {
+      ...dialogData,
+      groupId: group.groupId,
+      mediaId: group.mediaId,
+      message: `已创建私密收藏夹并生成分组「${createdFolder.title}」`
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : '创建分组失败';
+    throw new Error(`收藏夹已创建成功，但创建插件分组失败：${reason}`);
+  }
 }
 
 async function handleDeleteGroup(
@@ -1529,8 +1661,14 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
       return ok(await handleGetOptionsData());
     case 'GET_AUTHOR_GROUP_MEMBERSHIP':
       return ok(await handleGetAuthorGroupMembership(request));
+    case 'GET_AUTHOR_GROUP_DIALOG_DATA':
+      return ok(await handleGetAuthorGroupDialogData(request));
     case 'UPSERT_GROUP':
       return ok(await handleUpsertGroup(request));
+    case 'CREATE_AUTHOR_GROUP_FROM_FOLDER':
+      return ok(await handleCreateAuthorGroupFromFolder(request));
+    case 'CREATE_FOLDER_AND_AUTHOR_GROUP':
+      return ok(await handleCreateFolderAndAuthorGroup(request));
     case 'DELETE_GROUP':
       return ok(await handleDeleteGroup(request));
     case 'SET_GROUP_EXCLUDE_UNREAD':

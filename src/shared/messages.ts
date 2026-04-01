@@ -2,6 +2,7 @@ import type {
   AllPostsFilterKey,
   AuthorPreference,
   ExtensionSettings,
+  FavoriteFolder,
   GroupConfig,
   GroupFeedResult,
   GroupReadMark,
@@ -21,6 +22,7 @@ export type MessageRequest =
   | { type: 'SAVE_SETTINGS'; payload: { settings: ExtensionSettings } }
   | { type: 'GET_GROUP_SUMMARY' }
   | { type: 'GET_AUTHOR_GROUP_MEMBERSHIP'; payload: { mid: number } }
+  | { type: 'GET_AUTHOR_GROUP_DIALOG_DATA'; payload: { mid: number } }
   | {
       type: 'GET_GROUP_FEED';
       payload: {
@@ -48,6 +50,23 @@ export type MessageRequest =
           aid?: number;
           bvid?: string;
         };
+      };
+    }
+  | {
+      type: 'CREATE_AUTHOR_GROUP_FROM_FOLDER';
+      payload: {
+        mid: number;
+        mediaId: number;
+      };
+    }
+  | {
+      type: 'CREATE_FOLDER_AND_AUTHOR_GROUP';
+      payload: {
+        mid: number;
+        title: string;
+        csrf: string;
+        pageOrigin: string;
+        pageReferer: string;
       };
     }
   | { type: 'REFRESH_GROUP_POSTS'; payload: { groupId: string } }
@@ -165,6 +184,21 @@ export interface BatchLikeStatusPayload {
 export interface BatchLikeStatusMessage {
   type: 'BATCH_LIKE_STATUS';
   payload: BatchLikeStatusPayload;
+}
+
+export interface AuthorGroupMembershipItem {
+  groupId: string;
+  title: string;
+  mediaId: number;
+  enabled: boolean;
+  checked: boolean;
+}
+
+export interface AuthorGroupDialogData {
+  mid: number;
+  grouped: boolean;
+  groups: AuthorGroupMembershipItem[];
+  availableFolders: FavoriteFolder[];
 }
 
 export type RuntimeMessage =
@@ -329,14 +363,9 @@ export interface ResponseMap {
   GET_AUTHOR_GROUP_MEMBERSHIP: {
     mid: number;
     grouped: boolean;
-    groups: Array<{
-      groupId: string;
-      title: string;
-      mediaId: number;
-      enabled: boolean;
-      checked: boolean;
-    }>;
+    groups: AuthorGroupMembershipItem[];
   };
+  GET_AUTHOR_GROUP_DIALOG_DATA: AuthorGroupDialogData;
   GET_GROUP_SUMMARY: {
     summaries: GroupSummary[];
     hasUnread: boolean;
@@ -348,18 +377,22 @@ export interface ResponseMap {
   UPDATE_AUTHOR_GROUP_MEMBERSHIP: {
     mid: number;
     grouped: boolean;
-    groups: Array<{
-      groupId: string;
-      title: string;
-      mediaId: number;
-      enabled: boolean;
-      checked: boolean;
-    }>;
+    groups: AuthorGroupMembershipItem[];
     action: 'add' | 'remove';
     groupId: string;
     message: string;
     affectedVideoCount?: number;
     latestVideoBvid?: string;
+  };
+  CREATE_AUTHOR_GROUP_FROM_FOLDER: AuthorGroupDialogData & {
+    groupId: string;
+    mediaId: number;
+    message: string;
+  };
+  CREATE_FOLDER_AND_AUTHOR_GROUP: AuthorGroupDialogData & {
+    groupId: string;
+    mediaId: number;
+    message: string;
   };
   REFRESH_GROUP_POSTS: { accepted: boolean };
   REFRESH_GROUP_FAV: { accepted: boolean };

@@ -56,6 +56,12 @@ interface FolderCreatedListData {
   list: FolderItem[];
 }
 
+interface CreatedFolderData {
+  id: number;
+  title: string;
+  media_count: number;
+}
+
 interface FavMediaItem {
   bvid: string;
   id: number;
@@ -261,6 +267,31 @@ export async function getMyCreatedFolders(requestTracker?: ApiRequestTracker): P
     title: item.title,
     mediaCount: item.media_count
   }));
+}
+
+/**
+ * 新建收藏夹；当前作者分组弹框内创建分组时固定创建为私密收藏夹。
+ */
+export async function createFavoriteFolder(
+  title: string,
+  csrf: string
+): Promise<FavoriteFolder> {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) {
+    throw new Error('收藏夹标题不能为空');
+  }
+
+  const payload = await postApi<CreatedFolderData>('/x/v3/fav/folder/add', {
+    title: trimmedTitle,
+    privacy: 1,
+    csrf
+  });
+
+  return {
+    id: Math.max(0, Math.floor(Number(payload.data.id) || 0)),
+    title: payload.data.title?.trim() || trimmedTitle,
+    mediaCount: Math.max(0, Math.floor(Number(payload.data.media_count) || 0))
+  };
 }
 
 /**

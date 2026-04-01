@@ -3,6 +3,7 @@ import { EXTENSION_EVENT } from '@/shared/constants';
 import { sendMessage, type ResponseMap } from '@/shared/messages';
 
 type MembershipState = ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP'];
+type DialogData = ResponseMap['GET_AUTHOR_GROUP_DIALOG_DATA'];
 type AuthorEntrySource = 'video' | 'space' | 'card' | 'drawer';
 type QueryRoot = Document | ShadowRoot | HTMLElement;
 
@@ -22,8 +23,12 @@ interface DialogState {
   loading: boolean;
   context: AuthorEntryContext | null;
   membership: MembershipState | null;
+  availableFolders: DialogData['availableFolders'];
   error: string;
   pendingGroupIds: Set<string>;
+  pendingFolderIds: Set<number>;
+  creatingFolder: boolean;
+  newFolderTitle: string;
 }
 
 const BUTTON_ATTR = 'data-bbe-author-group-button';
@@ -56,8 +61,12 @@ const dialogState: DialogState = {
   loading: false,
   context: null,
   membership: null,
+  availableFolders: [],
   error: '',
-  pendingGroupIds: new Set<string>()
+  pendingGroupIds: new Set<string>(),
+  pendingFolderIds: new Set<number>(),
+  creatingFolder: false,
+  newFolderTitle: ''
 };
 
 function getCheckedGroupCount(membership: Pick<MembershipState, 'groups'> | null | undefined): number {
@@ -82,6 +91,12 @@ function dispatchMembershipChanged(mid: number, membership: MembershipState): vo
   }));
 }
 
+function syncMembershipCache(mid: number, membership: MembershipState): void {
+  membershipCache.set(mid, membership);
+  dispatchMembershipChanged(mid, membership);
+  syncButtonsForMembership(mid, membership);
+}
+
 function normalizeText(text: string | null | undefined): string {
   return (text ?? '').replace(/\s+/g, ' ').trim();
 }
@@ -93,6 +108,18 @@ function escapeHtml(text: string | undefined): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function getCsrfToken(): string | null {
+  const match = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/);
+  if (!match || !match[1]) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
 }
 
 function extractMidFromUrl(url: string | null | undefined): number | null {
@@ -323,9 +350,7 @@ async function fetchMembership(mid: number, force = false): Promise<MembershipSt
       throw new Error(resp.error || '读取作者分组状态失败');
     }
 
-    membershipCache.set(mid, resp.data);
-    dispatchMembershipChanged(mid, resp.data);
-    syncButtonsForMembership(mid, resp.data);
+    syncMembershipCache(mid, resp.data);
     return resp.data;
   })();
 
@@ -335,6 +360,36 @@ async function fetchMembership(mid: number, force = false): Promise<MembershipSt
   } finally {
     membershipPendingMap.delete(mid);
   }
+}
+
+async function fetchDialogData(mid: number): Promise<DialogData> {
+  const resp = await sendMessage({
+    type: 'GET_AUTHOR_GROUP_DIALOG_DATA',
+    payload: { mid }
+  });
+
+  if (!resp.ok || !resp.data) {
+    throw new Error(resp.error || '读取作者分组弹框数据失败');
+  }
+
+  syncMembershipCache(mid, {
+    mid: resp.data.mid,
+    grouped: resp.data.grouped,
+    groups: resp.data.groups
+  });
+
+  return resp.data;
+}
+
+function applyDialogData(data: DialogData): void {
+  const membership: MembershipState = {
+    mid: data.mid,
+    grouped: data.grouped,
+    groups: data.groups
+  };
+  syncMembershipCache(data.mid, membership);
+  dialogState.membership = membership;
+  dialogState.availableFolders = data.availableFolders;
 }
 
 function pushToast(root: HTMLElement, message: string): void {
@@ -403,10 +458,33 @@ function ensureDialog(root: HTMLElement): void {
     }
 
     const groupButton = target.closest<HTMLButtonElement>('[data-bbe-author-group-id]');
-    if (!groupButton) {
+    if (groupButton) {
+      void onGroupItemClick(root, groupButton.dataset.bbeAuthorGroupId || '');
       return;
     }
-    void onGroupItemClick(root, groupButton.dataset.bbeAuthorGroupId || '');
+
+    const folderButton = target.closest<HTMLButtonElement>('[data-bbe-author-group-folder-id]');
+    if (!folderButton) {
+      return;
+    }
+    void onCreateGroupFromFolderClick(root, Number(folderButton.dataset.bbeAuthorGroupFolderId));
+  });
+
+  dialogBackdrop.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.dataset.bbeAuthorGroupCreateInput !== '1') {
+      return;
+    }
+    dialogState.newFolderTitle = target.value;
+  });
+
+  dialogBackdrop.addEventListener('submit', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLFormElement) || !target.classList.contains('bbe-author-group-create-form')) {
+      return;
+    }
+    event.preventDefault();
+    void onCreateFolderSubmit(root);
   });
 
   root.appendChild(dialogBackdrop);
@@ -453,7 +531,7 @@ function renderDialog(): void {
   }
 
   if (dialogState.loading) {
-    bodyEl.innerHTML = '<div class="bbe-author-group-state">正在加载分组...</div>';
+    bodyEl.innerHTML = '<div class="bbe-author-group-state">正在加载分组与收藏夹...</div>';
     return;
   }
 
@@ -463,38 +541,91 @@ function renderDialog(): void {
   }
 
   const membership = dialogState.membership;
-  if (!membership || membership.groups.length === 0) {
-    bodyEl.innerHTML = '<div class="bbe-author-group-state">还没有配置分组，请先到插件设置中创建分组。</div>';
-    return;
-  }
+  const availableFolders = dialogState.availableFolders;
+  const hasGroups = (membership?.groups.length ?? 0) > 0;
+  const hasAvailableFolders = availableFolders.length > 0;
+  const hasNewFolderTitle = dialogState.newFolderTitle.trim().length > 0;
 
   bodyEl.innerHTML = `
     <div class="bbe-author-group-tip">
-      点击分组即可切换当前作者的归属。已选中表示该作者当前已经属于该分组。
+      点击已有分组即可切换当前作者的归属。你也可以直接从收藏夹创建分组，或新建私密收藏夹并创建分组；这些创建操作都不会自动把当前作者加入新分组。
     </div>
-    <div class="bbe-author-group-list">
-      ${membership.groups.map((group) => {
-        const pending = dialogState.pendingGroupIds.has(group.groupId);
-        const statusText = pending
-          ? '处理中...'
-          : group.checked
-            ? '已在分组中'
-            : '添加到分组';
-        return `
-          <button
-            type="button"
-            class="bbe-author-group-item${group.checked ? ' checked' : ''}${pending ? ' pending' : ''}"
-            data-bbe-author-group-id="${escapeHtml(group.groupId)}"
-            ${pending ? 'disabled' : ''}
-          >
-            <span class="bbe-author-group-item-main">
-              <span class="bbe-author-group-item-title">${escapeHtml(group.title)}</span>
-              ${group.enabled ? '' : '<span class="bbe-author-group-item-tag">已停用</span>'}
-            </span>
-            <span class="bbe-author-group-item-status">${escapeHtml(statusText)}</span>
-          </button>
-        `;
-      }).join('')}
+    <div class="bbe-author-group-section">
+      <div class="bbe-author-group-section-title">已有插件分组</div>
+      ${hasGroups ? `
+        <div class="bbe-author-group-list">
+          ${membership!.groups.map((group) => {
+            const pending = dialogState.pendingGroupIds.has(group.groupId);
+            const statusText = pending
+              ? '处理中...'
+              : group.checked
+                ? '已在分组中'
+                : '添加到分组';
+            return `
+              <button
+                type="button"
+                class="bbe-author-group-item${group.checked ? ' checked' : ''}${pending ? ' pending' : ''}"
+                data-bbe-author-group-id="${escapeHtml(group.groupId)}"
+                ${pending ? 'disabled' : ''}
+              >
+                <span class="bbe-author-group-item-main">
+                  <span class="bbe-author-group-item-title">${escapeHtml(group.title)}</span>
+                  ${group.enabled ? '' : '<span class="bbe-author-group-item-tag">已停用</span>'}
+                </span>
+                <span class="bbe-author-group-item-status">${escapeHtml(statusText)}</span>
+              </button>
+            `;
+          }).join('')}
+        </div>
+      ` : '<div class="bbe-author-group-state">还没有插件分组，可以直接从下方收藏夹创建。</div>'}
+    </div>
+    <div class="bbe-author-group-section">
+      <div class="bbe-author-group-section-title">从已有收藏夹创建分组</div>
+      ${hasAvailableFolders ? `
+        <div class="bbe-author-group-list">
+          ${availableFolders.map((folder) => {
+            const pending = dialogState.pendingFolderIds.has(folder.id);
+            return `
+              <button
+                type="button"
+                class="bbe-author-group-item${pending ? ' pending' : ''}"
+                data-bbe-author-group-folder-id="${folder.id}"
+                ${pending || dialogState.creatingFolder ? 'disabled' : ''}
+              >
+                <span class="bbe-author-group-item-main">
+                  <span class="bbe-author-group-item-title">${escapeHtml(folder.title)}</span>
+                  <span class="bbe-author-group-item-tag">${folder.mediaCount} 个内容</span>
+                </span>
+                <span class="bbe-author-group-item-status">${pending ? '创建中...' : '创建为分组'}</span>
+              </button>
+            `;
+          }).join('')}
+        </div>
+      ` : '<div class="bbe-author-group-state">没有可直接创建为分组的收藏夹。</div>'}
+    </div>
+    <div class="bbe-author-group-section">
+      <div class="bbe-author-group-section-title">新建私密收藏夹并创建分组</div>
+      <form class="bbe-author-group-create-form">
+        <input
+          type="text"
+          class="bbe-author-group-create-input"
+          data-bbe-author-group-create-input="1"
+          maxlength="80"
+          placeholder="输入收藏夹标题"
+          value="${escapeHtml(dialogState.newFolderTitle)}"
+          ${dialogState.creatingFolder ? 'disabled' : ''}
+        />
+        <button
+          type="submit"
+          class="bbe-author-group-create-submit${dialogState.creatingFolder ? ' pending' : ''}"
+          ${dialogState.creatingFolder || !hasNewFolderTitle ? 'disabled' : ''}
+        >
+          ${dialogState.creatingFolder ? '创建中...' : '创建并生成分组'}
+        </button>
+      </form>
+      <div class="bbe-author-group-tip bbe-author-group-tip-inline">
+        新建的收藏夹默认私密，创建成功后只会新增分组，不会自动把当前作者加入进去。
+      </div>
     </div>
   `;
 }
@@ -504,8 +635,12 @@ function closeDialog(): void {
   dialogState.loading = false;
   dialogState.error = '';
   dialogState.pendingGroupIds.clear();
+  dialogState.pendingFolderIds.clear();
+  dialogState.creatingFolder = false;
+  dialogState.newFolderTitle = '';
   dialogState.context = null;
   dialogState.membership = null;
+  dialogState.availableFolders = [];
   renderDialog();
 }
 
@@ -515,16 +650,20 @@ async function openDialog(root: HTMLElement, context: AuthorEntryContext): Promi
   dialogState.error = '';
   dialogState.context = context;
   dialogState.pendingGroupIds.clear();
+  dialogState.pendingFolderIds.clear();
+  dialogState.creatingFolder = false;
+  dialogState.newFolderTitle = '';
   dialogState.membership = membershipCache.get(context.mid) ?? null;
+  dialogState.availableFolders = [];
   renderDialog();
 
   const requestId = ++dialogRequestSeq;
   try {
-    const membership = await fetchMembership(context.mid, true);
+    const dialogData = await fetchDialogData(context.mid);
     if (requestId !== dialogRequestSeq || dialogState.context?.mid !== context.mid) {
       return;
     }
-    dialogState.membership = membership;
+    applyDialogData(dialogData);
     dialogState.loading = false;
     renderDialog();
   } catch (error) {
@@ -549,7 +688,7 @@ async function onGroupItemClick(root: HTMLElement, groupId: string): Promise<voi
     return;
   }
 
-  const csrf = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/)?.[1];
+  const csrf = getCsrfToken();
   if (!csrf) {
     pushToast(root, '缺少 bili_jct，无法操作分组');
     return;
@@ -577,19 +716,92 @@ async function onGroupItemClick(root: HTMLElement, groupId: string): Promise<voi
       throw new Error(resp.error || '分组操作失败');
     }
 
-    membershipCache.set(context.mid, {
+    syncMembershipCache(context.mid, {
       mid: resp.data.mid,
       grouped: resp.data.grouped,
       groups: resp.data.groups
     });
     dialogState.membership = membershipCache.get(context.mid) as MembershipState;
-    dispatchMembershipChanged(context.mid, dialogState.membership);
-    syncButtonsForMembership(context.mid, dialogState.membership);
     pushToast(root, resp.data.message);
   } catch (error) {
     pushToast(root, error instanceof Error ? error.message : '分组操作失败');
   } finally {
     dialogState.pendingGroupIds.delete(groupId);
+    renderDialog();
+  }
+}
+
+async function onCreateGroupFromFolderClick(root: HTMLElement, mediaId: number): Promise<void> {
+  const context = dialogState.context;
+  if (!context || !mediaId || dialogState.pendingFolderIds.has(mediaId) || dialogState.creatingFolder) {
+    return;
+  }
+
+  dialogState.pendingFolderIds.add(mediaId);
+  renderDialog();
+
+  try {
+    const resp = await sendMessage({
+      type: 'CREATE_AUTHOR_GROUP_FROM_FOLDER',
+      payload: {
+        mid: context.mid,
+        mediaId
+      }
+    });
+
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error || '创建分组失败');
+    }
+
+    applyDialogData(resp.data);
+    pushToast(root, resp.data.message);
+  } catch (error) {
+    pushToast(root, error instanceof Error ? error.message : '创建分组失败');
+  } finally {
+    dialogState.pendingFolderIds.delete(mediaId);
+    renderDialog();
+  }
+}
+
+async function onCreateFolderSubmit(root: HTMLElement): Promise<void> {
+  const context = dialogState.context;
+  const title = dialogState.newFolderTitle.trim();
+  if (!context || !title || dialogState.creatingFolder) {
+    return;
+  }
+
+  const csrf = getCsrfToken();
+  if (!csrf) {
+    pushToast(root, '缺少 bili_jct，无法创建收藏夹');
+    return;
+  }
+
+  dialogState.creatingFolder = true;
+  renderDialog();
+
+  try {
+    const resp = await sendMessage({
+      type: 'CREATE_FOLDER_AND_AUTHOR_GROUP',
+      payload: {
+        mid: context.mid,
+        title,
+        csrf,
+        pageOrigin: window.location.origin,
+        pageReferer: window.location.href
+      }
+    });
+
+    if (!resp.ok || !resp.data) {
+      throw new Error(resp.error || '创建收藏夹失败');
+    }
+
+    applyDialogData(resp.data);
+    dialogState.newFolderTitle = '';
+    pushToast(root, resp.data.message);
+  } catch (error) {
+    pushToast(root, error instanceof Error ? error.message : '创建收藏夹失败');
+  } finally {
+    dialogState.creatingFolder = false;
     renderDialog();
   }
 }
@@ -738,7 +950,7 @@ function scanVideoPage(root: HTMLElement): void {
     return;
   }
   const actionRoot = document.querySelector(VIDEO_ACTION_SELECTOR);
-  if (!actionRoot) {
+  if (!(actionRoot instanceof HTMLElement)) {
     return;
   }
   const context = buildVideoContext(actionRoot);
@@ -753,7 +965,7 @@ function scanSpacePage(root: HTMLElement): void {
     return;
   }
   const actionRoot = document.querySelector(SPACE_ACTION_SELECTOR);
-  if (!actionRoot) {
+  if (!(actionRoot instanceof HTMLElement)) {
     return;
   }
   const context = buildSpaceContext(actionRoot);

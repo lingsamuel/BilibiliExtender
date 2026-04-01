@@ -159,7 +159,7 @@ export async function runWithFavRequestHeaders<T>(
       kind: 'fav',
       pageOrigin,
       pageReferer,
-      regexFilter: '^https://api\\.bilibili\\.com/x/v3/fav/resource/(deal|batch-del)(\\?.*)?$'
+      regexFilter: '^https://api\\.bilibili\\.com/x/v3/fav/(resource/(deal|batch-del)|folder/add)(\\?.*)?$'
     },
     task
   );

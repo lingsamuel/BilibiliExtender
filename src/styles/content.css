@@ -259,13 +259,32 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-group-body {
   padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .bbe-author-group-tip {
-  margin-bottom: 12px;
   color: #64748b;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.bbe-author-group-tip-inline {
+  margin-top: 10px;
+}
+
+.bbe-author-group-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bbe-author-group-section-title {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
 .bbe-author-group-state {
@@ -349,6 +368,60 @@ body.bbe-page-scroll-lock {
   line-height: 1.4;
   white-space: nowrap;
   flex: 0 0 auto;
+}
+
+.bbe-author-group-create-form {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.bbe-author-group-create-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #d7deea;
+  border-radius: 12px;
+  background: #fff;
+  color: #1f2937;
+  padding: 11px 13px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.bbe-author-group-create-input:focus {
+  outline: none;
+  border-color: #f3b3c7;
+  box-shadow: 0 0 0 3px rgb(243 179 199 / 20%);
+}
+
+.bbe-author-group-create-input:disabled {
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.bbe-author-group-create-submit {
+  border: 0;
+  border-radius: 12px;
+  background: #f05d8d;
+  color: #fff;
+  padding: 11px 15px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.16s ease, opacity 0.16s ease;
+}
+
+.bbe-author-group-create-submit:hover {
+  background: #e4477c;
+}
+
+.bbe-author-group-create-submit:disabled,
+.bbe-author-group-create-submit.pending {
+  background: #f6a9c0;
+  cursor: not-allowed;
 }
 
 .bbe-toolbar {
