@@ -26,7 +26,7 @@ function buildManifest(baseManifest, target) {
     },
     browser_specific_settings: {
       gecko: {
-        id: 'bilibili-extender@lingsamuel.com',
+        id: 'bilibili-extender@lingsamuel',
         // Firefox 140+ 才提供内建的数据收集同意流程；当前仓库未实现旧版本回退弹窗。
         strict_min_version: '140.0',
         data_collection_permissions: {
