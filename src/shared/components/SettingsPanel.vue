@@ -302,7 +302,7 @@ const folderSnapshotHint = computed(() => {
   if (!folderSnapshot.value) {
     return '当前还没有收藏夹列表缓存；首次使用时会自动初始化一次，之后默认只读取缓存。';
   }
-  return `当前显示缓存快照，${formatRelativeMinutes(folderSnapshot.value.fetchedAt)}。`;
+  return `${formatRelativeMinutes(folderSnapshot.value.fetchedAt)}。`;
 });
 
 function setNotice(msg: string): void {

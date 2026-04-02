@@ -177,7 +177,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-group-dialog {
   width: min(460px, calc(100vw - 32px));
-  max-height: min(720px, calc(100dvh - 40px));
+  max-height: min(640px, calc(100dvh - 40px));
   border-radius: 18px;
   border: 1px solid #e6ebf2;
   background: linear-gradient(180deg, #ffffff 0%, #fff9fb 100%);
@@ -344,7 +344,6 @@ body.bbe-page-scroll-lock {
 }
 
 .bbe-author-group-item.pending {
-  cursor: wait;
   opacity: 0.72;
 }
 

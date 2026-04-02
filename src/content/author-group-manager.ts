@@ -611,7 +611,7 @@ function renderDialog(): void {
   const hasAvailableFolders = availableFolders.length > 0;
   const hasNewFolderTitle = dialogState.newFolderTitle.trim().length > 0;
   const folderSnapshotText = dialogState.folderSnapshot
-    ? `当前显示缓存快照，${formatRelativeMinutes(dialogState.folderSnapshot.fetchedAt)}`
+    ? `${formatRelativeMinutes(dialogState.folderSnapshot.fetchedAt)}`
     : '当前还没有收藏夹列表缓存，请先手动刷新';
   const addButton = dialogBackdrop.querySelector('.bbe-author-group-add');
   if (addButton instanceof HTMLButtonElement) {
