@@ -347,7 +347,7 @@ async function upsertGroupConfig(
 
 /**
  * 直接改写分组作者缓存，让作者分组按钮与弹框状态即时收敛到用户刚完成的操作。
- * 后续仍会补一次收藏夹刷新，请求远端真相重新校正。
+ * 该链路不再自动补收藏夹刷新，远端校正交由后台定时调度或用户手动刷新承担。
  */
 function patchAuthorGroupMembershipCache(
   feedCacheMap: Awaited<ReturnType<typeof loadFeedCacheMap>>,
@@ -506,7 +506,6 @@ async function handleUpdateAuthorGroupMembership(
   }
 
   await saveFeedCacheMap(feedCacheMap);
-  enqueuePriorityGroup([groupId], 'manual-refresh-fav', 'none');
 
   if (action === 'add') {
     const missingAuthorTasks = splitMissingAuthorTasks([mid], authorCacheMap, settings.authorVideosPageSize);
