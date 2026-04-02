@@ -1,60 +1,45 @@
-# Firefox 本地调试支持 Spec
+# Firefox 支持与 AMO 提交 Spec
 
 ## 1. 背景与目标
 
 ### 1.1 背景
 
-当前项目明确面向 Chrome/Edge，代码中直接调用 `chrome.*`，并且仅提供单一 `manifest.json`。  
-要在 Firefox 本地调试中可用，需要补齐浏览器 API 兼容层与构建产物分流。
+当前项目已经支持 Firefox 本地调试，但原始目标只覆盖“可临时加载”，没有覆盖 AMO 提交所需的 Firefox manifest 元数据。  
+在准备提交 Firefox 官方商店时，需要在 Firefox 构建产物中补齐扩展 ID、数据收集声明与最低版本约束。
 
 ### 1.2 目标
 
 在不改变核心业务功能（分组、缓存、调度、UI 交互）的前提下，实现：
 
 1. 可在 Firefox `about:debugging` 中加载构建产物进行本地调试。
-2. 代码层提供统一浏览器 API 入口，避免业务模块直接依赖 `chrome.*`。
+2. Firefox 构建产物具备 AMO 提交所需的基础 manifest 字段。
 3. 保持 Chrome/Edge 现有行为不回退。
 
 ### 1.3 非目标
 
-1. 不包含 AMO 发布流程。
-2. 不包含扩展签名流程。
-3. 本轮不强制配置 `browser_specific_settings.gecko.id`。
-4. 不额外新增浏览器特化功能。
+1. 不包含 AMO 发布后台中的截图、分类、详情页文案、多语言运营资料填写。
+2. 不包含扩展签名流程本身。
+3. 不额外新增浏览器特化功能。
 
 ## 2. 需求范围
 
 ### 2.1 功能范围
 
-1. API 适配层：统一封装运行时、存储与调度相关 API。
-2. Manifest 分流：Chromium 与 Firefox 生成各自可加载 manifest。
-3. 构建命令：支持一键构建两套产物，便于本地调试。
+1. Manifest 分流：Chromium 与 Firefox 生成各自可加载 manifest。
+2. Firefox manifest 补充 AMO 提交所需字段。
+3. 构建命令继续支持一键生成两套产物。
 
 ### 2.2 兼容口径
 
-1. 以“本地调试可用”为验收标准。
-2. `storage.sync` 在 Firefox 本地调试场景采用“可用则用，不可用自动回退 local”策略。
-3. 不要求本轮保证 AMO 审核规则全量满足。
+1. Chromium 产物维持现有 MV3 行为。
+2. Firefox 产物继续支持本地调试加载。
+3. 以“可提交 AMO 基础审核”为目标，但不覆盖商店后台所有运营资料填写。
 
 ## 3. 设计方案
 
-## 3.1 API 适配层
+### 3.1 Manifest 与构建分流
 
-新增平台模块（暂定 `src/shared/platform/webext.ts`）：
-
-1. 暴露统一 `ext` 对象，作为业务模块调用入口。
-2. 运行时自动选择可用命名空间（`browser` 或 `chrome`）。
-3. 仅在该模块内处理浏览器差异，业务代码不直接访问全局 `chrome`。
-
-业务代码改造规则：
-
-1. `src/shared/messages.ts`、`src/shared/storage/repository.ts`、`src/background/*` 等涉及扩展 API 的模块统一改用 `ext`。
-2. 关键行为（消息收发、`alarms`、`storage`）保留原有语义与错误处理。
-3. 对复杂差异点保留中文注释，说明兼容原因与降级策略。
-
-## 3.2 Manifest 与构建分流
-
-构建阶段生成两套产物：
+构建阶段继续生成两套产物：
 
 1. `dist/chromium/manifest.json`
 2. `dist/firefox/manifest.json`
@@ -62,63 +47,47 @@
 其中：
 
 1. Chromium 清单维持现有 MV3 行为与字段。
-2. Firefox 清单增加兼容后台字段（`background.scripts`）以满足 Firefox 本地调试加载。
-3. 本轮不写入 `browser_specific_settings.gecko.id`（因仅本地调试）。
+2. Firefox 清单保留兼容后台字段（`background.scripts`），满足 Firefox 本地调试加载。
+3. Firefox 清单补充 `browser_specific_settings.gecko.id`，满足 MV3 扩展在 AMO 签名时必须提供扩展 ID 的要求。
+4. Firefox 清单补充 `browser_specific_settings.gecko.data_collection_permissions`，声明扩展运行所需的站点内容与站点交互数据传输。
+5. 由于当前仓库未实现旧版 Firefox 的自定义数据收集同意流程，`strict_min_version` 提升到支持内建同意提示的版本。
 
-> 说明：Firefox 对 MV3 `background.service_worker` 支持与 Chromium 存在差异，需通过 manifest 字段兼容处理。
+> 说明：AMO 相关字段仅写入 Firefox 产物，不污染 Chromium 清单。
 
-## 3.3 构建与脚本
+### 3.2 字段口径
 
-新增（或调整）脚本：
+1. `gecko.id` 使用固定值，保证后续升级与 `storage.sync` 能力识别稳定。
+2. `data_collection_permissions.required` 按当前实现声明：
+   - `websiteContent`：扩展会读取并传递站点内容上下文与请求上下文，用于 Bilibili 接口调用。
+   - `websiteActivity`：扩展会代表用户执行关注、收藏夹、点赞、投币等站点交互请求。
+3. `strict_min_version` 设为 `140.0`，避免在未提供内建数据同意提示的旧版 Firefox 中安装后行为不符合商店要求。
 
-1. `npm run build:chromium`：生成 Chromium 可加载产物。
-2. `npm run build:firefox`：生成 Firefox 可加载产物。
-3. `npm run build`：顺序执行上述两套构建。
+## 4. 风险与缓解
 
-额外约束：
-
-1. 保持 content script 的 IIFE 构建策略不变。
-2. 保持版本号在 `package.json` 与 manifest 中一致（按仓库规范 bump patch）。
-
-## 4. 影响分析
-
-## 4.1 对现有功能影响
-
-1. 业务逻辑不变，仅替换底层 API 调用入口。
-2. 后台调度与缓存策略不变。
-3. UI 与交互不变。
-
-## 4.2 风险与缓解
-
-1. 风险：Firefox 背景脚本加载机制与 Chromium 不一致。  
-   缓解：采用清单分流，并在本地调试执行完整联调。
+1. 风险：Firefox AMO 的数据收集分类与扩展真实行为不一致，可能导致审核打回。  
+   缓解：按当前实现声明必需的 `websiteContent` 与 `websiteActivity`，后续若数据范围变化需同步复核。
 2. 风险：`storage.sync` 在未配置固定 ID 时能力受限。  
-   缓解：沿用现有 local 回退策略，确保主流程可用。
-3. 风险：API 入口替换可能引入回归。  
-   缓解：构建后执行关键路径手测（分组读取、刷新、调度、已阅标记）。
+   缓解：补充固定 `gecko.id`，并继续保留 local 回退策略。
+3. 风险：Firefox 背景脚本加载机制与 Chromium 不一致。  
+   缓解：继续沿用 Firefox 专用清单分流，构建后执行完整构建验证。
 
 ## 5. 验收标准
 
 1. `npm run build` 可成功完成 Chromium + Firefox 两套构建。
 2. Chromium 产物可正常加载并维持当前功能。
 3. Firefox 产物可在 `about:debugging` 本地加载。
-4. 在 Firefox 中可完成最小闭环：
-   - 打开抽屉
-   - 读取分组
-   - 手动刷新
-   - 展示时间流/按作者
-5. 代码中不再出现业务模块直接调用全局 `chrome.*`（允许适配层内部使用）。
+4. Firefox 产物包含可用于 AMO 提交的 `gecko.id`、`data_collection_permissions` 与 `strict_min_version`。
 
 ## 6. 实施步骤
 
-1. 新增平台 API 适配层并接入存储/消息/调度模块。
-2. 增加 manifest 模板或构建后清单生成脚本，输出 Chromium/Firefox 两套 manifest。
-3. 调整 `package.json` 构建脚本，支持双目标构建。
-4. 更新 `README.md` 的加载说明（补充 Firefox 本地调试步骤）。
-5. 执行 `npm run build` 验证。
+1. 调整 Firefox manifest 生成脚本，补充 AMO 所需字段。
+2. 同步更新 README 与 Firefox 说明文档。
+3. bump patch 版本号。
+4. 执行 `npm run build` 验证。
 
 ## 7. 参考资料
 
 1. MDN `background`：https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/background
 2. MDN `browser_specific_settings`：https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/browser_specific_settings
-3. MDN `storage.sync`：https://developer.mozilla.org/en-US/Add-ons/WebExtensions/API/storage/sync
+3. Extension Workshop `Extensions and the Add-on ID`：https://extensionworkshop.com/documentation/develop/extensions-and-the-add-on-id/
+4. Extension Workshop `Firefox built-in consent for data collection and transmission`：https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/

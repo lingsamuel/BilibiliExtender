@@ -1,6 +1,6 @@
 # 惊蛰：哔哩哔哩关注功能扩展
 
-一个面向 Chrome/Edge，并支持 Firefox 本地调试的 Bilibili 扩展：
+一个面向 Chrome/Edge，并支持 Firefox 本地调试与 AMO 提交的 Bilibili 扩展：
 - 用用户当前登录态请求 Bilibili 接口
 - 将“我创建的收藏夹”映射为分组
 - 在站点 Header 注入“分组动态”入口
@@ -36,7 +36,7 @@ npm run build
 
 构建后会输出两套产物：
 - `dist/chromium`：Chrome/Edge
-- `dist/firefox`：Firefox（本地调试）
+- `dist/firefox`：Firefox（本地调试 / AMO 提交）
 
 Chrome/Edge 加载步骤：
 1. 打开 Chrome/Edge 扩展管理页
@@ -47,6 +47,11 @@ Firefox 本地调试加载步骤：
 1. 打开 `about:debugging#/runtime/this-firefox`
 2. 点击“临时载入附加组件”
 3. 选择 `dist/firefox/manifest.json`
+
+Firefox 提交说明：
+- Firefox 构建产物会自动补充固定 `gecko.id`，用于 MV3 扩展签名与 `storage.sync` 能力识别。
+- Firefox 构建产物会自动补充 `data_collection_permissions`，声明扩展运行所需的站点内容与站点交互数据传输。
+- 由于当前仓库未实现旧版 Firefox 的自定义数据收集同意流程，Firefox 清单最低版本设为 `140.0`。
 
 ## 目录结构
 ```text

@@ -23,6 +23,16 @@ function buildManifest(baseManifest, target) {
     background: {
       scripts: [backgroundScript],
       type: 'module'
+    },
+    browser_specific_settings: {
+      gecko: {
+        id: 'bilibili-extender@lingsamuel.github.io',
+        // Firefox 140+ 才提供内建的数据收集同意流程；当前仓库未实现旧版本回退弹窗。
+        strict_min_version: '140.0',
+        data_collection_permissions: {
+          required: ['websiteContent', 'websiteActivity']
+        }
+      }
     }
   };
 }
