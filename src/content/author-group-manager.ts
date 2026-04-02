@@ -24,6 +24,9 @@ interface DialogState {
   context: AuthorEntryContext | null;
   membership: MembershipState | null;
   availableFolders: DialogData['availableFolders'];
+  createPanelVisible: boolean;
+  selectedFolderId: string;
+  createFolderFormVisible: boolean;
   error: string;
   pendingGroupIds: Set<string>;
   pendingFolderIds: Set<number>;
@@ -62,6 +65,9 @@ const dialogState: DialogState = {
   context: null,
   membership: null,
   availableFolders: [],
+  createPanelVisible: false,
+  selectedFolderId: '',
+  createFolderFormVisible: false,
   error: '',
   pendingGroupIds: new Set<string>(),
   pendingFolderIds: new Set<number>(),
@@ -434,7 +440,10 @@ function ensureDialog(root: HTMLElement): void {
             <div class="bbe-author-group-author-subtitle"></div>
           </div>
         </div>
-        <button type="button" class="bbe-author-group-close" aria-label="关闭">×</button>
+        <div class="bbe-author-group-dialog-actions">
+          <button type="button" class="bbe-author-group-add" data-bbe-author-group-toggle-create="1">+ 添加分组</button>
+          <button type="button" class="bbe-author-group-close" aria-label="关闭">×</button>
+        </div>
       </div>
       <div class="bbe-author-group-body"></div>
     </section>
@@ -457,17 +466,35 @@ function ensureDialog(root: HTMLElement): void {
       return;
     }
 
+    if (target.closest('[data-bbe-author-group-toggle-create="1"]')) {
+      dialogState.createPanelVisible = !dialogState.createPanelVisible;
+      if (!dialogState.createPanelVisible) {
+        dialogState.createFolderFormVisible = false;
+        dialogState.newFolderTitle = '';
+      }
+      renderDialog();
+      return;
+    }
+
+    if (target.closest('[data-bbe-author-group-toggle-new-folder="1"]')) {
+      dialogState.createFolderFormVisible = !dialogState.createFolderFormVisible;
+      if (!dialogState.createFolderFormVisible) {
+        dialogState.newFolderTitle = '';
+      }
+      renderDialog();
+      return;
+    }
+
+    if (target.closest('[data-bbe-author-group-create-existing="1"]')) {
+      void onCreateSelectedFolderGroup(root);
+      return;
+    }
+
     const groupButton = target.closest<HTMLButtonElement>('[data-bbe-author-group-id]');
     if (groupButton) {
       void onGroupItemClick(root, groupButton.dataset.bbeAuthorGroupId || '');
       return;
     }
-
-    const folderButton = target.closest<HTMLButtonElement>('[data-bbe-author-group-folder-id]');
-    if (!folderButton) {
-      return;
-    }
-    void onCreateGroupFromFolderClick(root, Number(folderButton.dataset.bbeAuthorGroupFolderId));
   });
 
   dialogBackdrop.addEventListener('input', (event) => {
@@ -476,6 +503,14 @@ function ensureDialog(root: HTMLElement): void {
       return;
     }
     dialogState.newFolderTitle = target.value;
+  });
+
+  dialogBackdrop.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement) || target.dataset.bbeAuthorGroupFolderSelect !== '1') {
+      return;
+    }
+    dialogState.selectedFolderId = target.value;
   });
 
   dialogBackdrop.addEventListener('submit', (event) => {
@@ -545,88 +580,92 @@ function renderDialog(): void {
   const hasGroups = (membership?.groups.length ?? 0) > 0;
   const hasAvailableFolders = availableFolders.length > 0;
   const hasNewFolderTitle = dialogState.newFolderTitle.trim().length > 0;
+  const addButton = dialogBackdrop.querySelector('.bbe-author-group-add');
+  if (addButton instanceof HTMLButtonElement) {
+    addButton.classList.toggle('active', dialogState.createPanelVisible);
+  }
 
   bodyEl.innerHTML = `
-    <div class="bbe-author-group-tip">
-      点击已有分组即可切换当前作者的归属。你也可以直接从收藏夹创建分组，或新建私密收藏夹并创建分组；这些创建操作都不会自动把当前作者加入新分组。
-    </div>
-    <div class="bbe-author-group-section">
-      <div class="bbe-author-group-section-title">已有插件分组</div>
-      ${hasGroups ? `
-        <div class="bbe-author-group-list">
-          ${membership!.groups.map((group) => {
-            const pending = dialogState.pendingGroupIds.has(group.groupId);
-            const statusText = pending
-              ? '处理中...'
-              : group.checked
-                ? '已在分组中'
-                : '添加到分组';
-            return `
-              <button
-                type="button"
-                class="bbe-author-group-item${group.checked ? ' checked' : ''}${pending ? ' pending' : ''}"
-                data-bbe-author-group-id="${escapeHtml(group.groupId)}"
-                ${pending ? 'disabled' : ''}
-              >
-                <span class="bbe-author-group-item-main">
-                  <span class="bbe-author-group-item-title">${escapeHtml(group.title)}</span>
-                  ${group.enabled ? '' : '<span class="bbe-author-group-item-tag">已停用</span>'}
-                </span>
-                <span class="bbe-author-group-item-status">${escapeHtml(statusText)}</span>
-              </button>
-            `;
-          }).join('')}
+    ${dialogState.createPanelVisible ? `
+      <div class="bbe-author-group-create-panel">
+        <div class="bbe-author-group-create-row">
+          <select
+            class="bbe-author-group-create-select"
+            data-bbe-author-group-folder-select="1"
+            ${!hasAvailableFolders || dialogState.creatingFolder ? 'disabled' : ''}
+          >
+            <option value="">请选择收藏夹</option>
+            ${availableFolders.map((folder) => `
+              <option value="${folder.id}" ${String(folder.id) === dialogState.selectedFolderId ? 'selected' : ''}>
+                ${escapeHtml(folder.title)}（${folder.mediaCount}）
+              </option>
+            `).join('')}
+          </select>
+          <button
+            type="button"
+            class="bbe-author-group-create-submit"
+            data-bbe-author-group-create-existing="1"
+            ${!dialogState.selectedFolderId || !hasAvailableFolders || dialogState.creatingFolder ? 'disabled' : ''}
+          >
+            创建分组
+          </button>
         </div>
-      ` : '<div class="bbe-author-group-state">还没有插件分组，可以直接从下方收藏夹创建。</div>'}
-    </div>
-    <div class="bbe-author-group-section">
-      <div class="bbe-author-group-section-title">从已有收藏夹创建分组</div>
-      ${hasAvailableFolders ? `
-        <div class="bbe-author-group-list">
-          ${availableFolders.map((folder) => {
-            const pending = dialogState.pendingFolderIds.has(folder.id);
-            return `
-              <button
-                type="button"
-                class="bbe-author-group-item${pending ? ' pending' : ''}"
-                data-bbe-author-group-folder-id="${folder.id}"
-                ${pending || dialogState.creatingFolder ? 'disabled' : ''}
-              >
-                <span class="bbe-author-group-item-main">
-                  <span class="bbe-author-group-item-title">${escapeHtml(folder.title)}</span>
-                  <span class="bbe-author-group-item-tag">${folder.mediaCount} 个内容</span>
-                </span>
-                <span class="bbe-author-group-item-status">${pending ? '创建中...' : '创建为分组'}</span>
-              </button>
-            `;
-          }).join('')}
+        <div class="bbe-author-group-create-actions">
+          <button type="button" class="bbe-author-group-link-btn" data-bbe-author-group-toggle-new-folder="1">
+            ${dialogState.createFolderFormVisible ? '收起新建收藏夹' : '+ 新建收藏夹'}
+          </button>
+          ${hasAvailableFolders ? '' : '<span class="bbe-author-group-create-empty">没有可用的未绑定收藏夹</span>'}
         </div>
-      ` : '<div class="bbe-author-group-state">没有可直接创建为分组的收藏夹。</div>'}
-    </div>
-    <div class="bbe-author-group-section">
-      <div class="bbe-author-group-section-title">新建私密收藏夹并创建分组</div>
-      <form class="bbe-author-group-create-form">
-        <input
-          type="text"
-          class="bbe-author-group-create-input"
-          data-bbe-author-group-create-input="1"
-          maxlength="80"
-          placeholder="输入收藏夹标题"
-          value="${escapeHtml(dialogState.newFolderTitle)}"
-          ${dialogState.creatingFolder ? 'disabled' : ''}
-        />
-        <button
-          type="submit"
-          class="bbe-author-group-create-submit${dialogState.creatingFolder ? ' pending' : ''}"
-          ${dialogState.creatingFolder || !hasNewFolderTitle ? 'disabled' : ''}
-        >
-          ${dialogState.creatingFolder ? '创建中...' : '创建并生成分组'}
-        </button>
-      </form>
-      <div class="bbe-author-group-tip bbe-author-group-tip-inline">
-        新建的收藏夹默认私密，创建成功后只会新增分组，不会自动把当前作者加入进去。
+        ${dialogState.createFolderFormVisible ? `
+          <form class="bbe-author-group-create-form">
+            <input
+              type="text"
+              class="bbe-author-group-create-input"
+              data-bbe-author-group-create-input="1"
+              maxlength="80"
+              placeholder="输入新收藏夹标题"
+              value="${escapeHtml(dialogState.newFolderTitle)}"
+              ${dialogState.creatingFolder ? 'disabled' : ''}
+            />
+            <button
+              type="submit"
+              class="bbe-author-group-create-submit${dialogState.creatingFolder ? ' pending' : ''}"
+              ${dialogState.creatingFolder || !hasNewFolderTitle ? 'disabled' : ''}
+            >
+              ${dialogState.creatingFolder ? '创建中...' : '新建并创建分组'}
+            </button>
+          </form>
+        ` : ''}
       </div>
-    </div>
+    ` : ''}
+    ${hasGroups ? `
+      <div class="bbe-author-group-list">
+        ${membership!.groups.map((group) => {
+          const pending = dialogState.pendingGroupIds.has(group.groupId);
+          const indicatorClass = pending
+            ? ' pending'
+            : group.checked
+              ? ' checked'
+              : '';
+          return `
+            <button
+              type="button"
+              class="bbe-author-group-item${group.checked ? ' checked' : ''}${pending ? ' pending' : ''}"
+              data-bbe-author-group-id="${escapeHtml(group.groupId)}"
+              ${pending ? 'disabled' : ''}
+            >
+              <span class="bbe-author-group-item-main">
+                <span class="bbe-author-group-item-title">${escapeHtml(group.title)}</span>
+                ${group.enabled ? '' : '<span class="bbe-author-group-item-tag">已停用</span>'}
+              </span>
+              <span class="bbe-author-group-item-indicator${indicatorClass}" aria-hidden="true">
+                <span class="bbe-author-group-item-check">✓</span>
+              </span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    ` : '<div class="bbe-author-group-state">还没有插件分组，点击右上角“添加分组”开始创建。</div>'}
   `;
 }
 
@@ -636,6 +675,9 @@ function closeDialog(): void {
   dialogState.error = '';
   dialogState.pendingGroupIds.clear();
   dialogState.pendingFolderIds.clear();
+  dialogState.createPanelVisible = false;
+  dialogState.selectedFolderId = '';
+  dialogState.createFolderFormVisible = false;
   dialogState.creatingFolder = false;
   dialogState.newFolderTitle = '';
   dialogState.context = null;
@@ -651,6 +693,9 @@ async function openDialog(root: HTMLElement, context: AuthorEntryContext): Promi
   dialogState.context = context;
   dialogState.pendingGroupIds.clear();
   dialogState.pendingFolderIds.clear();
+  dialogState.createPanelVisible = false;
+  dialogState.selectedFolderId = '';
+  dialogState.createFolderFormVisible = false;
   dialogState.creatingFolder = false;
   dialogState.newFolderTitle = '';
   dialogState.membership = membershipCache.get(context.mid) ?? null;
@@ -754,6 +799,10 @@ async function onCreateGroupFromFolderClick(root: HTMLElement, mediaId: number):
     }
 
     applyDialogData(resp.data);
+    dialogState.selectedFolderId = '';
+    dialogState.createPanelVisible = false;
+    dialogState.createFolderFormVisible = false;
+    dialogState.newFolderTitle = '';
     pushToast(root, resp.data.message);
   } catch (error) {
     pushToast(root, error instanceof Error ? error.message : '创建分组失败');
@@ -761,6 +810,16 @@ async function onCreateGroupFromFolderClick(root: HTMLElement, mediaId: number):
     dialogState.pendingFolderIds.delete(mediaId);
     renderDialog();
   }
+}
+
+async function onCreateSelectedFolderGroup(root: HTMLElement): Promise<void> {
+  const mediaId = Math.max(1, Number(dialogState.selectedFolderId) || 0);
+  if (!mediaId) {
+    pushToast(root, '请先选择收藏夹');
+    return;
+  }
+
+  await onCreateGroupFromFolderClick(root, mediaId);
 }
 
 async function onCreateFolderSubmit(root: HTMLElement): Promise<void> {
@@ -796,6 +855,9 @@ async function onCreateFolderSubmit(root: HTMLElement): Promise<void> {
     }
 
     applyDialogData(resp.data);
+    dialogState.selectedFolderId = '';
+    dialogState.createPanelVisible = false;
+    dialogState.createFolderFormVisible = false;
     dialogState.newFolderTitle = '';
     pushToast(root, resp.data.message);
   } catch (error) {
