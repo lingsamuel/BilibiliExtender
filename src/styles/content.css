@@ -177,11 +177,14 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-group-dialog {
   width: min(460px, calc(100vw - 32px));
+  max-height: min(720px, calc(100dvh - 40px));
   border-radius: 18px;
   border: 1px solid #e6ebf2;
   background: linear-gradient(180deg, #ffffff 0%, #fff9fb 100%);
   box-shadow: 0 20px 52px rgb(15 23 42 / 26%);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .bbe-author-group-dialog-head {
@@ -191,6 +194,7 @@ body.bbe-page-scroll-lock {
   gap: 16px;
   padding: 18px 18px 14px;
   border-bottom: 1px solid #eef2f6;
+  flex: 0 0 auto;
 }
 
 .bbe-author-group-dialog-actions {
@@ -288,6 +292,11 @@ body.bbe-page-scroll-lock {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .bbe-author-group-state {
