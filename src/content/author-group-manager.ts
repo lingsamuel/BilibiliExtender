@@ -398,6 +398,22 @@ function applyDialogData(data: DialogData): void {
   dialogState.availableFolders = data.availableFolders;
 }
 
+function syncCreatePanelInteractiveState(): void {
+  if (!dialogBackdrop) {
+    return;
+  }
+
+  const createExistingButton = dialogBackdrop.querySelector<HTMLButtonElement>('[data-bbe-author-group-create-existing="1"]');
+  if (createExistingButton) {
+    createExistingButton.disabled = !dialogState.selectedFolderId || dialogState.creatingFolder;
+  }
+
+  const createFolderSubmit = dialogBackdrop.querySelector<HTMLButtonElement>('.bbe-author-group-create-form .bbe-author-group-create-submit');
+  if (createFolderSubmit) {
+    createFolderSubmit.disabled = dialogState.creatingFolder || dialogState.newFolderTitle.trim().length === 0;
+  }
+}
+
 function pushToast(root: HTMLElement, message: string): void {
   if (!pageToastHost) {
     pageToastHost = document.createElement('div');
@@ -503,6 +519,7 @@ function ensureDialog(root: HTMLElement): void {
       return;
     }
     dialogState.newFolderTitle = target.value;
+    syncCreatePanelInteractiveState();
   });
 
   dialogBackdrop.addEventListener('change', (event) => {
@@ -511,6 +528,7 @@ function ensureDialog(root: HTMLElement): void {
       return;
     }
     dialogState.selectedFolderId = target.value;
+    syncCreatePanelInteractiveState();
   });
 
   dialogBackdrop.addEventListener('submit', (event) => {
