@@ -5,6 +5,7 @@
 - 将“我创建的收藏夹”映射为分组
 - 在站点 Header 注入“分组动态”入口
 - 按分组展示收藏夹内作者的投稿更新
+- 支持默认分支 push 后自动打包并发布 GitHub Release
 
 ## 当前功能
 - 站点注入入口：`www.bilibili.com`、`space.bilibili.com`、`search.bilibili.com`
@@ -37,6 +38,12 @@ npm run build
 构建后会输出两套产物：
 - `dist/chromium`：Chrome/Edge
 - `dist/firefox`：Firefox（本地调试 / AMO 提交）
+- `dist/bilibili-extender-chromium-v<version>.zip`：Chromium 发布包
+- `dist/bilibili-extender-firefox-v<version>.zip`：Firefox 发布包
+
+zip 包说明：
+- 压缩包根层直接包含扩展文件本身。
+- 解压后不会出现额外的 `chromium/` 或 `firefox/` 顶层目录。
 
 Chrome/Edge 加载步骤：
 1. 打开 Chrome/Edge 扩展管理页
@@ -53,6 +60,17 @@ Firefox 提交说明：
 - Firefox 构建产物会自动补充 `data_collection_permissions`，声明扩展运行所需的站点内容与站点交互数据传输。
 - 由于当前仓库未实现旧版 Firefox 的自定义数据收集同意流程，Firefox 清单最低版本设为 `140.0`。
 
+## 自动发布
+
+仓库已配置 GitHub Actions 自动发布：
+- 仅默认分支 `push` 时触发。
+- 工作流会执行 `npm ci` 与 `npm run build`，然后读取 `package.json` 的版本号创建 `v<version>` GitHub Release。
+- Release 会上传 Chromium 与 Firefox 两个 zip 产物。
+
+发布约束：
+- 每次希望创建新的 Release，必须先 bump 版本号再 push。
+- 如果默认分支重复 push 同一个版本号，因 `v<version>` 已存在，工作流会直接失败，不会覆盖已有 Release。
+
 ## 目录结构
 ```text
 src/
@@ -61,6 +79,7 @@ src/
   options/      # 设置页
   shared/       # 类型、消息协议、存储封装、API 与工具函数
 docs/
+  build-release-spec.md
   grouped-feed-extension-spec.md
   firefox-support-spec.md
 ```
