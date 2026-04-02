@@ -1,6 +1,7 @@
 import authorGroupButtonCssText from '@/styles/author-group-button.css?inline';
 import { EXTENSION_EVENT } from '@/shared/constants';
 import { sendMessage, type ResponseMap } from '@/shared/messages';
+import { formatRelativeMinutes } from '@/shared/utils/format';
 
 type MembershipState = ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP'];
 type DialogData = ResponseMap['GET_AUTHOR_GROUP_DIALOG_DATA'];
@@ -23,6 +24,7 @@ interface DialogState {
   loading: boolean;
   context: AuthorEntryContext | null;
   membership: MembershipState | null;
+  folderSnapshot: DialogData['folderSnapshot'];
   availableFolders: DialogData['availableFolders'];
   createPanelVisible: boolean;
   selectedFolderId: string;
@@ -64,6 +66,7 @@ const dialogState: DialogState = {
   loading: false,
   context: null,
   membership: null,
+  folderSnapshot: undefined,
   availableFolders: [],
   createPanelVisible: false,
   selectedFolderId: '',
@@ -368,10 +371,13 @@ async function fetchMembership(mid: number, force = false): Promise<MembershipSt
   }
 }
 
-async function fetchDialogData(mid: number): Promise<DialogData> {
+async function fetchDialogData(mid: number, refreshFolders = false): Promise<DialogData> {
   const resp = await sendMessage({
     type: 'GET_AUTHOR_GROUP_DIALOG_DATA',
-    payload: { mid }
+    payload: {
+      mid,
+      refreshFolders: refreshFolders === true
+    }
   });
 
   if (!resp.ok || !resp.data) {
@@ -395,6 +401,7 @@ function applyDialogData(data: DialogData): void {
   };
   syncMembershipCache(data.mid, membership);
   dialogState.membership = membership;
+  dialogState.folderSnapshot = data.folderSnapshot;
   dialogState.availableFolders = data.availableFolders;
 }
 
@@ -506,6 +513,11 @@ function ensureDialog(root: HTMLElement): void {
       return;
     }
 
+    if (target.closest('[data-bbe-author-group-refresh-folders="1"]')) {
+      void refreshDialogFolders();
+      return;
+    }
+
     const groupButton = target.closest<HTMLButtonElement>('[data-bbe-author-group-id]');
     if (groupButton) {
       void onGroupItemClick(root, groupButton.dataset.bbeAuthorGroupId || '');
@@ -598,6 +610,9 @@ function renderDialog(): void {
   const hasGroups = (membership?.groups.length ?? 0) > 0;
   const hasAvailableFolders = availableFolders.length > 0;
   const hasNewFolderTitle = dialogState.newFolderTitle.trim().length > 0;
+  const folderSnapshotText = dialogState.folderSnapshot
+    ? `当前显示缓存快照，${formatRelativeMinutes(dialogState.folderSnapshot.fetchedAt)}`
+    : '当前还没有收藏夹列表缓存，请先手动刷新';
   const addButton = dialogBackdrop.querySelector('.bbe-author-group-add');
   if (addButton instanceof HTMLButtonElement) {
     addButton.classList.toggle('active', dialogState.createPanelVisible);
@@ -628,11 +643,22 @@ function renderDialog(): void {
             创建分组
           </button>
         </div>
+        <div class="bbe-author-group-create-meta">${escapeHtml(folderSnapshotText)}</div>
         <div class="bbe-author-group-create-actions">
+          <button
+            type="button"
+            class="bbe-author-group-link-btn"
+            data-bbe-author-group-refresh-folders="1"
+            ${dialogState.loading || dialogState.creatingFolder ? 'disabled' : ''}
+          >
+            刷新收藏夹列表
+          </button>
           <button type="button" class="bbe-author-group-link-btn" data-bbe-author-group-toggle-new-folder="1">
             ${dialogState.createFolderFormVisible ? '收起新建收藏夹' : '+ 新建收藏夹'}
           </button>
-          ${hasAvailableFolders ? '' : '<span class="bbe-author-group-create-empty">没有可用的未绑定收藏夹</span>'}
+          ${hasAvailableFolders ? '' : `<span class="bbe-author-group-create-empty">${
+            dialogState.folderSnapshot ? '没有可用的未绑定收藏夹' : '尚未加载收藏夹列表'
+          }</span>`}
         </div>
         ${dialogState.createFolderFormVisible ? `
           <form class="bbe-author-group-create-form">
@@ -700,6 +726,7 @@ function closeDialog(): void {
   dialogState.newFolderTitle = '';
   dialogState.context = null;
   dialogState.membership = null;
+  dialogState.folderSnapshot = undefined;
   dialogState.availableFolders = [];
   renderDialog();
 }
@@ -717,6 +744,7 @@ async function openDialog(root: HTMLElement, context: AuthorEntryContext): Promi
   dialogState.creatingFolder = false;
   dialogState.newFolderTitle = '';
   dialogState.membership = membershipCache.get(context.mid) ?? null;
+  dialogState.folderSnapshot = undefined;
   dialogState.availableFolders = [];
   renderDialog();
 
@@ -735,6 +763,35 @@ async function openDialog(root: HTMLElement, context: AuthorEntryContext): Promi
     }
     dialogState.loading = false;
     dialogState.error = error instanceof Error ? error.message : '读取作者分组状态失败';
+    renderDialog();
+  }
+}
+
+async function refreshDialogFolders(): Promise<void> {
+  const context = dialogState.context;
+  if (!context || dialogState.loading) {
+    return;
+  }
+
+  dialogState.loading = true;
+  dialogState.error = '';
+  renderDialog();
+
+  const requestId = ++dialogRequestSeq;
+  try {
+    const dialogData = await fetchDialogData(context.mid, true);
+    if (requestId !== dialogRequestSeq || dialogState.context?.mid !== context.mid) {
+      return;
+    }
+    applyDialogData(dialogData);
+    dialogState.loading = false;
+    renderDialog();
+  } catch (error) {
+    if (requestId !== dialogRequestSeq || dialogState.context?.mid !== context.mid) {
+      return;
+    }
+    dialogState.loading = false;
+    dialogState.error = error instanceof Error ? error.message : '刷新收藏夹列表失败';
     renderDialog();
   }
 }

@@ -170,6 +170,17 @@ export interface CurrentUser {
   uname: string;
 }
 
+export interface CurrentUserSnapshot extends CurrentUser {
+  fetchedAt: number;
+}
+
+export interface FavoriteFolderSnapshot {
+  ownerMid: number;
+  ownerName: string;
+  folders: FavoriteFolder[];
+  fetchedAt: number;
+}
+
 // 按作者缓存视频数据，跨分组共享
 export interface AuthorVideoCache {
   mid: number;
@@ -230,6 +241,7 @@ export interface GroupOptionsData {
   groups: GroupConfig[];
   settings: ExtensionSettings;
   folders: FavoriteFolder[];
+  folderSnapshot?: FavoriteFolderSnapshot;
   groupAuthorCounts: Record<string, number>;
   totalTrackedAuthors: number;
 }

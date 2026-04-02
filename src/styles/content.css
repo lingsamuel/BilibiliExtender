@@ -455,6 +455,12 @@ body.bbe-page-scroll-lock {
   gap: 10px;
 }
 
+.bbe-author-group-create-meta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .bbe-author-group-link-btn {
   border: 0;
   background: transparent;
@@ -467,6 +473,11 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-group-link-btn:hover {
   color: #be315f;
+}
+
+.bbe-author-group-link-btn:disabled {
+  color: #cbd5e1;
+  cursor: not-allowed;
 }
 
 .bbe-author-group-create-empty {

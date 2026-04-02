@@ -5,7 +5,6 @@ import {
   coinVideo,
   createFavoriteFolder,
   getAllFavVideos,
-  getMyCreatedFolders,
   getUploaderVideos,
   getUserCard,
   modifyUserRelation
@@ -51,7 +50,7 @@ import {
   saveSettings,
   undoLatestGroupReadMark
 } from '@/shared/storage/repository';
-import type { GroupConfig, GroupReadMark } from '@/shared/types';
+import type { FavoriteFolder, FavoriteFolderSnapshot, GroupConfig, GroupReadMark } from '@/shared/types';
 import {
   buildGroupSyncStatus,
   getAuthorPageCount,
@@ -78,6 +77,11 @@ import {
   runTabOpenOpportunisticRefresh,
   setupAlarm
 } from '@/background/scheduler';
+import {
+  forceRefreshFavoriteFolderSnapshot,
+  mergeCreatedFavoriteFolderIntoSnapshot,
+  readFavoriteFolderSnapshot
+} from '@/background/favorite-folder-snapshot';
 import { runWithFavRequestHeaders, runWithFollowRequestHeaders } from '@/background/request-dnr';
 import {
   debugWarn,
@@ -235,8 +239,8 @@ function buildAuthorGroupMembership(
 
 function buildAvailableFolders(
   groups: GroupConfig[],
-  folders: Awaited<ReturnType<typeof getMyCreatedFolders>>
-): Awaited<ReturnType<typeof getMyCreatedFolders>> {
+  folders: FavoriteFolder[]
+): FavoriteFolder[] {
   const usedMediaIds = new Set(groups.map((group) => group.mediaId));
   return folders.filter((folder) => !usedMediaIds.has(folder.id));
 }
@@ -245,13 +249,21 @@ function buildAuthorGroupDialogData(
   mid: number,
   groups: GroupConfig[],
   feedCacheMap: Awaited<ReturnType<typeof loadFeedCacheMap>>,
-  folders: Awaited<ReturnType<typeof getMyCreatedFolders>>
+  folderSnapshot: FavoriteFolderSnapshot | null
 ): ResponseMap['GET_AUTHOR_GROUP_DIALOG_DATA'] {
   const membership = buildAuthorGroupMembership(mid, groups, feedCacheMap);
   return {
     ...membership,
-    availableFolders: buildAvailableFolders(groups, folders)
+    availableFolders: buildAvailableFolders(groups, folderSnapshot?.folders ?? []),
+    folderSnapshot: folderSnapshot ?? undefined
   };
+}
+
+async function resolveFavoriteFolderSnapshot(forceRefresh: boolean): Promise<FavoriteFolderSnapshot | null> {
+  if (forceRefresh) {
+    return forceRefreshFavoriteFolderSnapshot();
+  }
+  return readFavoriteFolderSnapshot();
 }
 
 function createGroupConfigFromFolder(folder: { id: number; title: string }): GroupConfig {
@@ -400,13 +412,13 @@ async function handleGetAuthorGroupDialogData(
     throw new Error('作者参数不完整');
   }
 
-  const [groups, feedCacheMap, folders] = await Promise.all([
+  const [groups, feedCacheMap, folderSnapshot] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
-    getMyCreatedFolders()
+    resolveFavoriteFolderSnapshot(request.payload.refreshFolders === true)
   ]);
 
-  return buildAuthorGroupDialogData(mid, groups, feedCacheMap, folders);
+  return buildAuthorGroupDialogData(mid, groups, feedCacheMap, folderSnapshot);
 }
 
 async function handleUpdateAuthorGroupMembership(
@@ -526,11 +538,13 @@ async function handleUpdateAuthorGroupMembership(
 }
 
 
-async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> {
-  const [groups, settings, folders, feedCacheMap] = await Promise.all([
+async function handleGetOptionsData(
+  request: Extract<MessageRequest, { type: 'GET_OPTIONS_DATA' }>
+): Promise<ResponseMap['GET_OPTIONS_DATA']> {
+  const [groups, settings, folderSnapshot, feedCacheMap] = await Promise.all([
     loadGroups(),
     loadSettings(),
-    getMyCreatedFolders(),
+    resolveFavoriteFolderSnapshot(request.payload?.refreshFolders === true),
     loadFeedCacheMap()
   ]);
 
@@ -547,7 +561,14 @@ async function handleGetOptionsData(): Promise<ResponseMap['GET_OPTIONS_DATA']> 
     }
   }
 
-  return { groups, settings, folders, groupAuthorCounts, totalTrackedAuthors: allMids.size };
+  return {
+    groups,
+    settings,
+    folders: folderSnapshot?.folders ?? [],
+    folderSnapshot: folderSnapshot ?? undefined,
+    groupAuthorCounts,
+    totalTrackedAuthors: allMids.size
+  };
 }
 
 async function handleUpsertGroup(
@@ -566,14 +587,14 @@ async function handleCreateAuthorGroupFromFolder(
     throw new Error('创建分组参数不完整');
   }
 
-  const folders = await getMyCreatedFolders();
-  const folder = folders.find((item) => item.id === mediaId);
+  const folderSnapshot = await readFavoriteFolderSnapshot();
+  const folder = folderSnapshot?.folders.find((item) => item.id === mediaId);
   if (!folder) {
     throw new Error('收藏夹不存在或不可用');
   }
 
   const { groups, feedCacheMap, group } = await upsertGroupConfig(createGroupConfigFromFolder(folder));
-  const dialogData = buildAuthorGroupDialogData(mid, groups, feedCacheMap, folders);
+  const dialogData = buildAuthorGroupDialogData(mid, groups, feedCacheMap, folderSnapshot);
 
   return {
     ...dialogData,
@@ -601,8 +622,8 @@ async function handleCreateFolderAndAuthorGroup(
 
   try {
     const { groups, feedCacheMap, group } = await upsertGroupConfig(createGroupConfigFromFolder(createdFolder));
-    const latestFolders = await getMyCreatedFolders();
-    const dialogData = buildAuthorGroupDialogData(mid, groups, feedCacheMap, latestFolders);
+    const folderSnapshot = await mergeCreatedFavoriteFolderIntoSnapshot(createdFolder);
+    const dialogData = buildAuthorGroupDialogData(mid, groups, feedCacheMap, folderSnapshot);
     return {
       ...dialogData,
       groupId: group.groupId,
@@ -1658,7 +1679,7 @@ async function routeMessage(request: MessageRequest, sender: chrome.runtime.Mess
     case 'REPORT_BILIBILI_TAB_OPEN':
       return ok(await handleReportBilibiliTabOpen());
     case 'GET_OPTIONS_DATA':
-      return ok(await handleGetOptionsData());
+      return ok(await handleGetOptionsData(request));
     case 'GET_AUTHOR_GROUP_MEMBERSHIP':
       return ok(await handleGetAuthorGroupMembership(request));
     case 'GET_AUTHOR_GROUP_DIALOG_DATA':

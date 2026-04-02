@@ -9,9 +9,12 @@
         </option>
       </select>
       <button class="bbe-btn primary" @click="createGroup">创建分组</button>
-      <button class="bbe-btn" @click="reloadOptionsData">刷新收藏夹列表</button>
+      <button class="bbe-btn" :disabled="isRefreshingFolders" @click="reloadOptionsData">
+        {{ isRefreshingFolders ? '刷新中...' : '刷新收藏夹列表' }}
+      </button>
     </div>
     <p class="bbe-setting-hint">仅显示"你创建的收藏夹"，每个收藏夹只能绑定一个分组。</p>
+    <p class="bbe-setting-hint">{{ folderSnapshotHint }}</p>
   </section>
 
   <section class="bbe-panel">
@@ -236,9 +239,10 @@ import {
   AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
   AUTHOR_VIDEOS_PAGE_SIZE_MAX
 } from '@/shared/constants';
-import { sendMessage } from '@/shared/messages';
+import { sendMessage, type ResponseMap } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
-import type { ExtensionSettings, FavoriteFolder, GroupConfig } from '@/shared/types';
+import type { ExtensionSettings, FavoriteFolder, FavoriteFolderSnapshot, GroupConfig } from '@/shared/types';
+import { formatRelativeMinutes } from '@/shared/utils/format';
 import { normalizeExtensionSettings } from '@/shared/utils/settings';
 
 const emit = defineEmits<{
@@ -252,6 +256,7 @@ const GROUP_ALIAS_AUTO_SAVE_DELAY_MS = 400;
 const ADVANCED_SETTINGS_VISIBILITY_KEY = 'settingsPanel.showAdvancedSettings';
 
 const folders = ref<FavoriteFolder[]>([]);
+const folderSnapshot = ref<FavoriteFolderSnapshot | null>(null);
 const groups = ref<GroupConfig[]>([]);
 // 保存各分组的原始快照，用于脏检查
 const groupSnapshots = ref<Record<string, { alias?: string; enabled: boolean; excludeFromUnreadCount: boolean }>>({})
@@ -277,6 +282,7 @@ const errorMsg = ref('');
 const groupAuthorCounts = ref<Record<string, number>>({});
 const totalTrackedAuthors = ref(0);
 const refreshingGroups = ref<Set<string>>(new Set());
+const isRefreshingFolders = ref(false);
 const settingsSnapshot = ref('');
 const showAdvancedSettings = ref(false);
 const groupSaveTimers = new Map<string, number>();
@@ -290,6 +296,13 @@ let isApplyingAdvancedSettingsVisibility = false;
 const availableFolders = computed(() => {
   const usedIds = new Set(groups.value.map((item) => item.mediaId));
   return folders.value.filter((folder) => !usedIds.has(folder.id));
+});
+
+const folderSnapshotHint = computed(() => {
+  if (!folderSnapshot.value) {
+    return '当前还没有收藏夹列表缓存；首次使用时会自动初始化一次，之后默认只读取缓存。';
+  }
+  return `当前显示缓存快照，${formatRelativeMinutes(folderSnapshot.value.fetchedAt)}。`;
 });
 
 function setNotice(msg: string): void {
@@ -358,21 +371,53 @@ function toggleAdvancedSettings(): void {
   showAdvancedSettings.value = !showAdvancedSettings.value;
 }
 
-async function reloadOptionsData(): Promise<void> {
+function applyOptionsData(data: ResponseMap['GET_OPTIONS_DATA']): void {
+  folders.value = data.folders;
+  folderSnapshot.value = data.folderSnapshot ?? null;
+  groups.value = data.groups;
+  snapshotGroups();
+  applySettingsSnapshot(data.settings);
+  groupAuthorCounts.value = data.groupAuthorCounts;
+  totalTrackedAuthors.value = data.totalTrackedAuthors;
+}
+
+async function loadOptionsData(options?: {
+  refreshFolders?: boolean;
+  showNotice?: boolean;
+  successMessage?: string;
+}): Promise<FavoriteFolderSnapshot | null> {
   try {
-    const resp = await sendMessage({ type: 'GET_OPTIONS_DATA' });
+    const resp = await sendMessage({
+      type: 'GET_OPTIONS_DATA',
+      payload: options?.refreshFolders ? { refreshFolders: true } : undefined
+    });
     if (!resp.ok || !resp.data) {
       throw new Error(resp.error ?? '读取设置数据失败');
     }
-    folders.value = resp.data.folders;
-    groups.value = resp.data.groups;
-    snapshotGroups();
-    applySettingsSnapshot(resp.data.settings);
-    groupAuthorCounts.value = resp.data.groupAuthorCounts;
-    totalTrackedAuthors.value = resp.data.totalTrackedAuthors;
-    setNotice('已加载最新数据');
+    applyOptionsData(resp.data);
+    if (options?.showNotice) {
+      setNotice(options.successMessage ?? '已加载最新数据');
+    }
+    return resp.data.folderSnapshot ?? null;
   } catch (error) {
     setError(error instanceof Error ? error.message : '加载失败，请检查登录状态');
+    return null;
+  }
+}
+
+async function reloadOptionsData(): Promise<void> {
+  if (isRefreshingFolders.value) {
+    return;
+  }
+  isRefreshingFolders.value = true;
+  try {
+    await loadOptionsData({
+      refreshFolders: true,
+      showNotice: true,
+      successMessage: '已刷新收藏夹列表'
+    });
+  } finally {
+    isRefreshingFolders.value = false;
   }
 }
 
@@ -662,8 +707,18 @@ onBeforeUnmount(() => {
 });
 
 onMounted(() => {
-  void loadAdvancedSettingsVisibility();
-  void reloadOptionsData();
+  void (async () => {
+    await loadAdvancedSettingsVisibility();
+    const snapshot = await loadOptionsData();
+    if (!snapshot) {
+      isRefreshingFolders.value = true;
+      try {
+        await loadOptionsData({ refreshFolders: true });
+      } finally {
+        isRefreshingFolders.value = false;
+      }
+    }
+  })();
 });
 </script>
 

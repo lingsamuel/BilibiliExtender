@@ -3,6 +3,7 @@ import type {
   AuthorPreference,
   ExtensionSettings,
   FavoriteFolder,
+  FavoriteFolderSnapshot,
   GroupConfig,
   GroupFeedResult,
   GroupReadMark,
@@ -16,13 +17,13 @@ import { ext } from '@/shared/platform/webext';
 export type MessageRequest =
   | { type: 'PING' }
   | { type: 'REPORT_BILIBILI_TAB_OPEN' }
-  | { type: 'GET_OPTIONS_DATA' }
+  | { type: 'GET_OPTIONS_DATA'; payload?: { refreshFolders?: boolean } }
   | { type: 'UPSERT_GROUP'; payload: { group: Omit<GroupConfig, 'createdAt' | 'updatedAt'> & Partial<Pick<GroupConfig, 'createdAt' | 'updatedAt'>> } }
   | { type: 'DELETE_GROUP'; payload: { groupId: string } }
   | { type: 'SAVE_SETTINGS'; payload: { settings: ExtensionSettings } }
   | { type: 'GET_GROUP_SUMMARY' }
   | { type: 'GET_AUTHOR_GROUP_MEMBERSHIP'; payload: { mid: number } }
-  | { type: 'GET_AUTHOR_GROUP_DIALOG_DATA'; payload: { mid: number } }
+  | { type: 'GET_AUTHOR_GROUP_DIALOG_DATA'; payload: { mid: number; refreshFolders?: boolean } }
   | {
       type: 'GET_GROUP_FEED';
       payload: {
@@ -199,6 +200,7 @@ export interface AuthorGroupDialogData {
   grouped: boolean;
   groups: AuthorGroupMembershipItem[];
   availableFolders: FavoriteFolder[];
+  folderSnapshot?: FavoriteFolderSnapshot;
 }
 
 export type RuntimeMessage =

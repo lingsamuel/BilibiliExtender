@@ -9,6 +9,8 @@ export const AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_MIN = 1;
 
 export const STORAGE_KEYS = {
   SETTINGS: 'bbe:settings',
+  CURRENT_USER_SNAPSHOT: 'bbe:current-user-snapshot',
+  FAVORITE_FOLDER_SNAPSHOT: 'bbe:favorite-folder-snapshot',
   GROUPS_LOCAL: 'bbe:groups:local',
   GROUPS_SYNC: 'bbe:groups:sync',
   RUNTIME: 'bbe:runtime',

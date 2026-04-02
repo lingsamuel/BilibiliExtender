@@ -12,7 +12,9 @@ import type { SchedulerTaskReason, SchedulerTaskTrigger } from '@/shared/message
 import type {
   AuthorPreference,
   AuthorVideoCache,
+  CurrentUserSnapshot,
   ExtensionSettings,
+  FavoriteFolderSnapshot,
   GroupConfig,
   GroupFeedCache,
   GroupReadMark,
@@ -55,6 +57,8 @@ type SchedulerHistoryEntry = {
  */
 const memoryCache: {
   settings?: ExtensionSettings;
+  currentUserSnapshot?: CurrentUserSnapshot | null;
+  favoriteFolderSnapshot?: FavoriteFolderSnapshot | null;
   groups?: GroupConfig[];
   runtime?: RuntimeStateMap;
   feed?: FeedCacheMap;
@@ -71,6 +75,53 @@ const memoryCache: {
 } = {
   hasLastGroupId: false
 };
+
+function normalizeCurrentUserSnapshot(source: unknown): CurrentUserSnapshot | null {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  const candidate = source as Partial<CurrentUserSnapshot>;
+  const mid = Math.max(1, Math.floor(Number(candidate.mid) || 0));
+  const uname = candidate.uname?.trim() || '';
+  const fetchedAt = Math.max(0, Math.floor(Number(candidate.fetchedAt) || 0));
+  if (!mid || !uname || !fetchedAt) {
+    return null;
+  }
+  return {
+    mid,
+    uname,
+    fetchedAt
+  };
+}
+
+function normalizeFavoriteFolderSnapshot(source: unknown): FavoriteFolderSnapshot | null {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  const candidate = source as Partial<FavoriteFolderSnapshot>;
+  const ownerMid = Math.max(1, Math.floor(Number(candidate.ownerMid) || 0));
+  const ownerName = candidate.ownerName?.trim() || '';
+  const fetchedAt = Math.max(0, Math.floor(Number(candidate.fetchedAt) || 0));
+  const rawFolders = Array.isArray(candidate.folders) ? candidate.folders : [];
+  if (!ownerMid || !ownerName || !fetchedAt) {
+    return null;
+  }
+
+  const folders = rawFolders
+    .map((folder) => ({
+      id: Math.max(1, Math.floor(Number(folder?.id) || 0)),
+      title: String(folder?.title ?? '').trim(),
+      mediaCount: Math.max(0, Math.floor(Number(folder?.mediaCount) || 0))
+    }))
+    .filter((folder) => folder.id > 0 && folder.title);
+
+  return {
+    ownerMid,
+    ownerName,
+    folders,
+    fetchedAt
+  };
+}
 
 async function storageGet<T>(
   area: StorageAreaLike,
@@ -103,6 +154,40 @@ async function setSettings(settings: ExtensionSettings): Promise<void> {
   const normalized = normalizeExtensionSettings(settings);
   memoryCache.settings = normalized;
   await storageSet(ext.storage.local, STORAGE_KEYS.SETTINGS, normalized);
+}
+
+export async function loadCurrentUserSnapshot(): Promise<CurrentUserSnapshot | null> {
+  if (memoryCache.currentUserSnapshot !== undefined) {
+    return memoryCache.currentUserSnapshot;
+  }
+
+  const raw = await storageGet(ext.storage.local, STORAGE_KEYS.CURRENT_USER_SNAPSHOT, null as CurrentUserSnapshot | null);
+  const normalized = normalizeCurrentUserSnapshot(raw);
+  memoryCache.currentUserSnapshot = normalized;
+  return normalized;
+}
+
+export async function saveCurrentUserSnapshot(snapshot: CurrentUserSnapshot | null): Promise<void> {
+  const normalized = normalizeCurrentUserSnapshot(snapshot);
+  memoryCache.currentUserSnapshot = normalized;
+  await storageSet(ext.storage.local, STORAGE_KEYS.CURRENT_USER_SNAPSHOT, normalized);
+}
+
+export async function loadFavoriteFolderSnapshot(): Promise<FavoriteFolderSnapshot | null> {
+  if (memoryCache.favoriteFolderSnapshot !== undefined) {
+    return memoryCache.favoriteFolderSnapshot;
+  }
+
+  const raw = await storageGet(ext.storage.local, STORAGE_KEYS.FAVORITE_FOLDER_SNAPSHOT, null as FavoriteFolderSnapshot | null);
+  const normalized = normalizeFavoriteFolderSnapshot(raw);
+  memoryCache.favoriteFolderSnapshot = normalized;
+  return normalized;
+}
+
+export async function saveFavoriteFolderSnapshot(snapshot: FavoriteFolderSnapshot | null): Promise<void> {
+  const normalized = normalizeFavoriteFolderSnapshot(snapshot);
+  memoryCache.favoriteFolderSnapshot = normalized;
+  await storageSet(ext.storage.local, STORAGE_KEYS.FAVORITE_FOLDER_SNAPSHOT, normalized);
 }
 
 async function getGroupsStorageArea(): Promise<StorageAreaLike> {

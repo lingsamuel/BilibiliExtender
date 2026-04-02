@@ -256,10 +256,12 @@ async function getWbiKeys(requestTracker?: ApiRequestTracker): Promise<{ imgKey:
 /**
  * 获取当前用户创建的收藏夹列表，用于分组配置。
  */
-export async function getMyCreatedFolders(requestTracker?: ApiRequestTracker): Promise<FavoriteFolder[]> {
-  const user = await getCurrentUser(requestTracker);
+export async function getCreatedFoldersByMid(
+  mid: number,
+  requestTracker?: ApiRequestTracker
+): Promise<FavoriteFolder[]> {
   const payload = await fetchApi<FolderCreatedListData>('/x/v3/fav/folder/created/list-all', {
-    up_mid: user.mid
+    up_mid: mid
   }, requestTracker);
 
   return (payload.data.list ?? []).map((item) => ({
@@ -267,6 +269,14 @@ export async function getMyCreatedFolders(requestTracker?: ApiRequestTracker): P
     title: item.title,
     mediaCount: item.media_count
   }));
+}
+
+/**
+ * 获取当前用户创建的收藏夹列表，用于分组配置。
+ */
+export async function getMyCreatedFolders(requestTracker?: ApiRequestTracker): Promise<FavoriteFolder[]> {
+  const user = await getCurrentUser(requestTracker);
+  return getCreatedFoldersByMid(user.mid, requestTracker);
 }
 
 /**

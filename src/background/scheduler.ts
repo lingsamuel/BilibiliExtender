@@ -8,8 +8,7 @@ import {
   OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW,
   OPPORTUNISTIC_REFRESH_REQUEST_BUDGET,
   OPPORTUNISTIC_REFRESH_WINDOW_MS,
-  OPPORTUNISTIC_REFRESH_AUTHOR_COOLDOWN_MS,
-  OPPORTUNISTIC_REFRESH_FOLDER_LIST_COOLDOWN_MS
+  OPPORTUNISTIC_REFRESH_AUTHOR_COOLDOWN_MS
 } from '@/shared/constants';
 import {
   loadAuthorVideoCacheMap,
@@ -25,7 +24,7 @@ import {
   saveSchedulerHistory
 } from '@/shared/storage/repository';
 import { ext } from '@/shared/platform/webext';
-import type { ExtensionSettings, GroupConfig } from '@/shared/types';
+import type { ExtensionSettings, FavoriteFolderSnapshot, GroupConfig } from '@/shared/types';
 import type {
   SchedulerAuthorTaskReason,
   SchedulerStatusResponse,
@@ -44,11 +43,11 @@ import {
 } from '@/background/feed-service';
 import {
   BilibiliApiError,
-  getMyCreatedFolders,
   likeVideo,
   type ApiRequestTracker
 } from '@/shared/api/bilibili';
 import { runWithLikeRequestHeaders } from '@/background/request-dnr';
+import { forceRefreshFavoriteFolderSnapshot } from '@/background/favorite-folder-snapshot';
 import { debugInfo, debugWarn } from '@/shared/utils/debug-console';
 import { WbiExpiredError } from '@/shared/utils/wbi';
 
@@ -1209,54 +1208,6 @@ async function collectOpportunisticAuthorCandidate(
   };
 }
 
-async function shouldSyncFolderListOpportunistically(state: OpportunisticRefreshState): Promise<boolean> {
-  const groups = await loadGroups();
-  if (!groups.some((group) => group.enabled)) {
-    return false;
-  }
-  const lastSyncAt = state.lastFolderListSyncAt || 0;
-  return Date.now() - lastSyncAt >= OPPORTUNISTIC_REFRESH_FOLDER_LIST_COOLDOWN_MS;
-}
-
-/**
- * 机会式收藏夹列表同步只做低成本的标题校正，不触发每个分组的收藏夹全量内容拉取。
- */
-async function syncFolderTitles(
-  requestTracker: ApiRequestTracker
-): Promise<{ changed: boolean; enabledGroupCount: number }> {
-  const groups = await loadGroups();
-  const enabledGroups = groups.filter((group) => group.enabled);
-  if (enabledGroups.length === 0) {
-    return { changed: false, enabledGroupCount: 0 };
-  }
-
-  const folders = await getMyCreatedFolders(requestTracker);
-  const folderTitleMap = new Map<number, string>();
-  for (const folder of folders) {
-    folderTitleMap.set(folder.id, folder.title);
-  }
-
-  let changed = false;
-  for (const group of enabledGroups) {
-    const nextTitle = folderTitleMap.get(group.mediaId);
-    if (!nextTitle || nextTitle === group.mediaTitle) {
-      continue;
-    }
-    group.mediaTitle = nextTitle;
-    group.updatedAt = Date.now();
-    changed = true;
-  }
-
-  if (changed) {
-    await saveGroups(groups);
-  }
-
-  return {
-    changed,
-    enabledGroupCount: enabledGroups.length
-  };
-}
-
 async function runAuthorTask(
   task: AuthorTask,
   authorCacheMap: AuthorCacheMap,
@@ -1315,7 +1266,10 @@ async function runAuthorTask(
  * 刷新单个分组的收藏夹缓存：重建作者列表并同步收藏夹标题。
  * 是否继续衔接作者投稿刷新，由任务上的 authorRefreshMode 显式决定。
  */
-async function runGroupFavTask(task: GroupFavTask): Promise<void> {
+async function runGroupFavTask(
+  task: GroupFavTask,
+  folderSnapshot?: FavoriteFolderSnapshot | null
+): Promise<void> {
   const [groups, feedCacheMap, authorCacheMap, settings] = await Promise.all([
     loadGroups(),
     loadFeedCacheMap(),
@@ -1338,8 +1292,7 @@ async function runGroupFavTask(task: GroupFavTask): Promise<void> {
   // 同步收藏夹标题：别名 alias 独立保存，不会受此更新影响。
   let groupChanged = false;
   try {
-    const folders = await getMyCreatedFolders();
-    const folder = folders.find((item) => item.id === group.mediaId);
+    const folder = folderSnapshot?.folders.find((item) => item.id === group.mediaId);
     if (folder && folder.title !== group.mediaTitle) {
       group.mediaTitle = folder.title;
       group.updatedAt = Date.now();
@@ -1604,6 +1557,7 @@ async function runGroupFavLoop(): Promise<void> {
 
   const settings = await loadSettings();
   const batchSize = normalizeBatchSize(settings);
+  let batchFolderSnapshot: FavoriteFolderSnapshot | null | undefined = undefined;
 
   while (groupFavState.queue.length > 0) {
     if (isBurstActive()) {
@@ -1623,7 +1577,16 @@ async function runGroupFavLoop(): Promise<void> {
     const groupDisplayName = task.groupId;
 
     try {
-      await runGroupFavTask(task);
+      if (batchFolderSnapshot === undefined) {
+        try {
+          batchFolderSnapshot = await forceRefreshFavoriteFolderSnapshot();
+        } catch (error) {
+          batchFolderSnapshot = null;
+          debugWarn('[BBE] 批次收藏夹列表同步失败，本批仅跳过标题校正:', error);
+        }
+      }
+
+      await runGroupFavTask(task, batchFolderSnapshot);
       groupFavState.batchCompleted++;
       pushHistory({
         channel: 'group-fav',
@@ -1668,6 +1631,7 @@ async function runGroupFavLoop(): Promise<void> {
       groupFavState.batchCompleted = 0;
 
       if (groupFavState.queue.length > 0) {
+        batchFolderSnapshot = undefined;
         await sleep(groupFavState.currentBatchDelay);
       }
     } else if (groupFavState.queue.length > 0) {
@@ -2245,15 +2209,11 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
     }
 
     const settings = await loadSettings();
-    const [authorCandidate, shouldSyncFolderList] = await Promise.all([
-      collectOpportunisticAuthorCandidate(settings, state),
-      shouldSyncFolderListOpportunistically(state)
-    ]);
+    const authorCandidate = await collectOpportunisticAuthorCandidate(settings, state);
     const remainingBudget = Math.min(OPPORTUNISTIC_REFRESH_REQUEST_BUDGET, windowBudget);
     const canRunAuthorHead = !!authorCandidate && remainingBudget >= 2;
-    const canRunFolderSync = shouldSyncFolderList && remainingBudget >= 2;
 
-    if (!authorCandidate && !shouldSyncFolderList) {
+    if (!authorCandidate) {
       await saveOpportunisticRefreshState(state);
       const response = buildOpportunisticSkipResponse('no-candidate');
       logOpportunisticEvent('skip', {
@@ -2262,15 +2222,14 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
       });
       return response;
     }
-    if (!canRunAuthorHead && !canRunFolderSync) {
+    if (!canRunAuthorHead) {
       await saveOpportunisticRefreshState(state);
       const response = buildOpportunisticSkipResponse('window-ratelimited');
       logOpportunisticEvent('skip', {
         reasonCode: 'window-ratelimited',
         reason: response.reason,
         remainingBudget,
-        canRunAuthorHead,
-        canRunFolderSync
+        canRunAuthorHead
       });
       return response;
     }
@@ -2294,8 +2253,7 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
             ps: authorCandidate.ps,
             reason: authorCandidate.reason
           }
-        : null,
-      shouldSyncFolderList
+        : null
     });
 
     if (canRunAuthorHead && authorCandidate) {
@@ -2436,48 +2394,6 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
         liveBudget = Math.max(0, liveBudget - requestMeter.count);
         extraFetched += 1;
         await saveAuthorVideoCacheMap(authorCacheMap);
-      }
-    }
-
-    if (shouldSyncFolderList && liveBudget >= 2 && globalCooldownState.nextAllowedAt <= Date.now()) {
-      const requestMeter = createRequestMeter({
-        minIntervalMs: BG_REFRESH_INTRA_DELAY_MS,
-        throttleState: opportunisticThrottleState
-      });
-      try {
-        await syncFolderTitles(requestMeter);
-        state.lastFolderListSyncAt = Date.now();
-        pushHistory({
-          channel: 'group-fav',
-          name: 'folder-list-sync',
-          mode: 'opportunistic',
-          success: true,
-          timestamp: Date.now(),
-          taskReason: 'group-fav-refresh',
-          trigger: 'tab-open-opportunistic'
-        });
-        logOpportunisticEvent('folder-list-sync-success', {
-          requests: requestMeter.count
-        });
-      } catch (error) {
-        pushHistory({
-          channel: 'group-fav',
-          name: 'folder-list-sync',
-          mode: 'opportunistic',
-          success: false,
-          timestamp: Date.now(),
-          taskReason: 'group-fav-refresh',
-          trigger: 'tab-open-opportunistic',
-          error: error instanceof Error ? error.message : String(error)
-        });
-        logOpportunisticEvent('folder-list-sync-failed', {
-          requests: requestMeter.count,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        debugWarn('[BBE] 机会式收藏夹列表同步失败:', error);
-      } finally {
-        recordOpportunisticRequests(state, requestMeter.count, Date.now());
-        totalIssuedRequests += requestMeter.count;
       }
     }
 
