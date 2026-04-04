@@ -44,6 +44,7 @@
 
 1. 根层直接包含 `manifest.json`、`background.js`、`content.js`、`options.html`、`assets/`、`icons/` 等文件或目录。
 2. 不出现 `chromium/`、`firefox/` 作为 zip 内的额外顶层目录。
+3. 本地 `dist/` 下的历史 zip 最多保留最近 3 个版本，每个版本按 Chromium + Firefox 一整组保留。
 
 ### 2.2 GitHub Release 规则
 
@@ -77,6 +78,7 @@
 1. 读取当前版本号。
 2. 分别进入 `dist/chromium` 与 `dist/firefox` 目录执行 zip 打包。
 3. 输出 zip 到 `dist/` 根目录，避免把中间目录再嵌套进压缩包。
+4. 按 zip 文件名中的版本号分组，仅保留最近 3 个版本，超出的旧版本整组删除。
 
 ### 3.2 自动发布流程
 
@@ -113,9 +115,10 @@ GitHub Actions 工作流执行步骤如下：
 
 1. 本地执行 `npm run build` 后，`dist/` 下可见两个 zip 文件。
 2. 任一 zip 解压后，根层直接包含扩展文件，不包含额外顶层子目录。
-3. 默认分支 push 时，GitHub Actions 能自动创建 `v<version>` 对应 Release。
-4. Release 页面可下载 Chromium 与 Firefox 两个 zip 产物。
-5. 若未 bump 版本号导致 tag 已存在，工作流明确失败。
+3. 本地存在超过 3 个历史版本时，下一次构建会自动删除更早版本的整组 zip。
+4. 默认分支 push 时，GitHub Actions 能自动创建 `v<version>` 对应 Release。
+5. Release 页面可下载 Chromium 与 Firefox 两个 zip 产物。
+6. 若未 bump 版本号导致 tag 已存在，工作流明确失败。
 
 ## 6. 实施步骤
 

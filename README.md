@@ -44,6 +44,7 @@ npm run build
 zip 包说明：
 - 压缩包根层直接包含扩展文件本身。
 - 解压后不会出现额外的 `chromium/` 或 `firefox/` 顶层目录。
+- 本地 `dist/` 最多只保留最近 3 个版本的 zip，每个版本会同时保留 Chromium 与 Firefox 两个包。
 
 Chrome/Edge 加载步骤：
 1. 打开 Chrome/Edge 扩展管理页
