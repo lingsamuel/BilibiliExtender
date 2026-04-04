@@ -118,7 +118,15 @@ export type MessageRequest =
   | { type: 'SET_GROUP_EXCLUDE_UNREAD'; payload: { groupId: string; excludeFromUnreadCount: boolean } }
   | { type: 'SET_GROUP_MANUAL_AUTHOR_ORDER'; payload: { groupId: string; authorMids: number[] } }
   | { type: 'SET_AUTHOR_IGNORE_UNREAD'; payload: { mid: number; ignoreUnreadCount: boolean } }
-  | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
+  | {
+      type: 'SET_AUTHOR_READ_MARK';
+      payload: {
+        mid: number;
+        readMarkTs: number;
+        beforeVideoBvid?: string;
+        afterVideoBvid?: string;
+      };
+    }
   | { type: 'UNDO_AUTHOR_READ_MARK'; payload: { mid: number } }
   | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
   | {

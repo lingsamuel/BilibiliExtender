@@ -375,27 +375,28 @@
                       v-for="(video, index) in getAuthorVisibleVideos(author)"
                       :key="video.bvid"
                       class="bbe-author-grid-item"
-                      :class="{
-                        'has-read-boundary': isAuthorBoundaryIndex(author, index),
-                        'has-author-read-mark': author.hasAuthorReadMarkOverride
-                      }"
+                      :class="{ 'has-author-read-mark': author.hasAuthorReadMarkOverride }"
                     >
                       <button
-                        v-if="index > 0"
                         type="button"
                         class="bbe-author-read-boundary"
                         :class="{
-                          'is-active': isAuthorBoundaryIndex(author, index),
-                          'is-author-mark': author.hasAuthorReadMarkOverride && isAuthorBoundaryIndex(author, index)
+                          'is-active': isAuthorBoundarySlotActive(author, index),
+                          'is-author-mark': author.hasAuthorReadMarkOverride && isAuthorBoundarySlotActive(author, index),
+                          'is-page-out': isAuthorBoundarySlotPageOut(author, index)
                         }"
-                        :title="
-                          isAuthorBoundaryIndex(author, index)
-                            ? '左键设置作者已阅，右键清除'
-                            : '左键将该分界设置为作者已阅时间'
-                        "
-                        @click.stop="setAuthorReadMarkFromBoundaryIndex(author, index)"
+                        :title="getAuthorBoundaryTitle(author, index)"
+                        @click.stop="setAuthorReadMarkFromBoundarySlot(author, index)"
                         @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index)"
-                      />
+                      >
+                        <span
+                          v-if="getAuthorBoundaryPageOutDirection(author, index)"
+                          class="bbe-author-read-boundary-arrow"
+                          aria-hidden="true"
+                        >
+                          {{ getAuthorBoundaryPageOutDirection(author, index) === 'previous' ? '←' : '→' }}
+                        </span>
+                      </button>
                       <VideoCard
                         :video="video"
                         :clicked="clickedMap[video.bvid] !== undefined"
@@ -406,6 +407,27 @@
                         @toggle-like="onToggleVideoLike(video, $event)"
                         @toggle-reviewed="onToggleVideoReviewed"
                       />
+                      <button
+                        v-if="index === getAuthorVisibleVideos(author).length - 1"
+                        type="button"
+                        class="bbe-author-read-boundary is-tail"
+                        :class="{
+                          'is-active': isAuthorBoundarySlotActive(author, index + 1),
+                          'is-author-mark': author.hasAuthorReadMarkOverride && isAuthorBoundarySlotActive(author, index + 1),
+                          'is-page-out': isAuthorBoundarySlotPageOut(author, index + 1)
+                        }"
+                        :title="getAuthorBoundaryTitle(author, index + 1)"
+                        @click.stop="setAuthorReadMarkFromBoundarySlot(author, index + 1)"
+                        @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index + 1)"
+                      >
+                        <span
+                          v-if="getAuthorBoundaryPageOutDirection(author, index + 1)"
+                          class="bbe-author-read-boundary-arrow"
+                          aria-hidden="true"
+                        >
+                          {{ getAuthorBoundaryPageOutDirection(author, index + 1) === 'previous' ? '←' : '→' }}
+                        </span>
+                      </button>
                     </div>
                   </div>
                   <div v-if="shouldShowAuthorPagination(author)" class="bbe-author-pagination">
@@ -699,6 +721,11 @@ interface PendingAuthorPageTarget {
   requestedAt: number;
   intent: 'navigate' | 'refresh';
   reloadFeedAfterReady: boolean;
+}
+
+interface AuthorBoundaryRenderState {
+  slotIndex: number;
+  pageOutDirection?: 'previous' | 'next';
 }
 
 function getAuthorVideos(author: Pick<AuthorFeed, 'authorMid' | 'videos'>): VideoItem[] {
@@ -3194,36 +3221,128 @@ async function onByAuthorSortByLatestChange(): Promise<void> {
   }
 }
 
-const byAuthorBoundaryIndexMap = computed<Record<number, number>>(() => {
-  const result: Record<number, number> = {};
-  for (const author of byAuthorFeeds.value) {
-    const boundaryTs = author.effectiveReadBoundaryTs ?? 0;
-    const visibleVideos = getAuthorVisibleVideos(author);
-    if (boundaryTs <= 0) {
-      result[author.authorMid] = -1;
-      continue;
-    }
-    if (author.hasOnlyExtraOlderVideos || visibleVideos.length < 2) {
-      result[author.authorMid] = -1;
-      continue;
-    }
-
-    let boundaryIndex = -1;
-    for (let index = 1; index < visibleVideos.length; index++) {
-      // 视频按发布时间倒序排列：第一次从“>=边界”跨到“<边界”的位置就是分界点。
-      if (visibleVideos[index - 1].pubdate >= boundaryTs && visibleVideos[index].pubdate < boundaryTs) {
-        boundaryIndex = index;
-        break;
-      }
-    }
-    result[author.authorMid] = boundaryIndex;
+function resolveAuthorBoundarySlotByTimestamp(visibleVideos: VideoItem[], boundaryTs: number): number {
+  if (boundaryTs <= 0 || visibleVideos.length < 2) {
+    return -1;
   }
+  for (let slotIndex = 1; slotIndex < visibleVideos.length; slotIndex++) {
+    // 视频按发布时间倒序排列：第一次从“>=边界”跨到“<边界”的位置就是分界点。
+    if (visibleVideos[slotIndex - 1].pubdate >= boundaryTs && visibleVideos[slotIndex].pubdate < boundaryTs) {
+      return slotIndex;
+    }
+  }
+  return -1;
+}
 
+function resolveAuthorBoundaryPageOutDirection(
+  visibleVideos: VideoItem[],
+  boundaryTs: number
+): 'previous' | 'next' | undefined {
+  if (boundaryTs <= 0 || visibleVideos.length === 0) {
+    return undefined;
+  }
+  const firstPubdate = visibleVideos[0]?.pubdate ?? 0;
+  const lastPubdate = visibleVideos[visibleVideos.length - 1]?.pubdate ?? 0;
+  if (firstPubdate > 0 && boundaryTs > firstPubdate) {
+    return 'previous';
+  }
+  if (lastPubdate > 0 && boundaryTs <= lastPubdate) {
+    return 'next';
+  }
+  return undefined;
+}
+
+const byAuthorBoundaryRenderStateMap = computed<Record<number, AuthorBoundaryRenderState | undefined>>(() => {
+  const result: Record<number, AuthorBoundaryRenderState | undefined> = {};
+  for (const author of byAuthorFeeds.value) {
+    const visibleVideos = getAuthorVisibleVideos(author);
+    const boundaryTs = author.effectiveReadBoundaryTs ?? 0;
+    if (boundaryTs <= 0 || visibleVideos.length === 0) {
+      result[author.authorMid] = undefined;
+      continue;
+    }
+
+    const exactSlotIndex = resolveAuthorBoundarySlotByTimestamp(visibleVideos, boundaryTs);
+    if (exactSlotIndex >= 0) {
+      result[author.authorMid] = { slotIndex: exactSlotIndex };
+      continue;
+    }
+
+    const beforeIndex = author.beforeVideoBvid
+      ? visibleVideos.findIndex((video) => video.bvid === author.beforeVideoBvid)
+      : -1;
+    const afterIndex = author.afterVideoBvid
+      ? visibleVideos.findIndex((video) => video.bvid === author.afterVideoBvid)
+      : -1;
+
+    if (beforeIndex >= 0 && afterIndex >= 0) {
+      if (beforeIndex === afterIndex + 1) {
+        result[author.authorMid] = { slotIndex: beforeIndex };
+        continue;
+      }
+      const pageOutDirection = resolveAuthorBoundaryPageOutDirection(visibleVideos, boundaryTs);
+      result[author.authorMid] = pageOutDirection
+        ? {
+            slotIndex: pageOutDirection === 'previous' ? 0 : visibleVideos.length,
+            pageOutDirection
+          }
+        : undefined;
+      continue;
+    }
+
+    if (beforeIndex >= 0) {
+      result[author.authorMid] = { slotIndex: beforeIndex };
+      continue;
+    }
+
+    if (afterIndex >= 0) {
+      result[author.authorMid] = { slotIndex: afterIndex + 1 };
+      continue;
+    }
+
+    const pageOutDirection = resolveAuthorBoundaryPageOutDirection(visibleVideos, boundaryTs);
+    result[author.authorMid] = pageOutDirection
+      ? {
+          slotIndex: pageOutDirection === 'previous' ? 0 : visibleVideos.length,
+          pageOutDirection
+        }
+      : undefined;
+  }
   return result;
 });
 
-function isAuthorBoundaryIndex(author: AuthorFeed, index: number): boolean {
-  return byAuthorBoundaryIndexMap.value[author.authorMid] === index;
+function getAuthorBoundaryRenderState(author: AuthorFeed): AuthorBoundaryRenderState | undefined {
+  return byAuthorBoundaryRenderStateMap.value[author.authorMid];
+}
+
+function isAuthorBoundarySlotActive(author: AuthorFeed, slotIndex: number): boolean {
+  return getAuthorBoundaryRenderState(author)?.slotIndex === slotIndex;
+}
+
+function getAuthorBoundaryPageOutDirection(author: AuthorFeed, slotIndex: number): 'previous' | 'next' | undefined {
+  const state = getAuthorBoundaryRenderState(author);
+  if (!state || state.slotIndex !== slotIndex) {
+    return undefined;
+  }
+  return state.pageOutDirection;
+}
+
+function isAuthorBoundarySlotPageOut(author: AuthorFeed, slotIndex: number): boolean {
+  return getAuthorBoundaryPageOutDirection(author, slotIndex) !== undefined;
+}
+
+function getAuthorBoundaryTitle(author: AuthorFeed, slotIndex: number): string {
+  const pageOutDirection = getAuthorBoundaryPageOutDirection(author, slotIndex);
+  if (pageOutDirection === 'previous') {
+    return '左键设置作者已阅，右键清除；当前已阅点在上一页';
+  }
+  if (pageOutDirection === 'next') {
+    return '左键设置作者已阅，右键清除；当前已阅点在下一页';
+  }
+  if (isAuthorBoundarySlotActive(author, slotIndex)) {
+    return '左键设置作者已阅，右键清除';
+  }
+  return '左键将该分界设置为作者已阅时间';
 }
 
 const mixedAuthorReadMarkBoundaryMap = computed<Record<number, number>>(() => {
@@ -3511,21 +3630,56 @@ async function toggleGroupExcludeUnread(): Promise<void> {
 
 async function markAuthorReadNow(author: AuthorFeed): Promise<void> {
   const nowTs = Math.floor(Date.now() / 1000);
-  await setAuthorReadMark(author.authorMid, nowTs);
+  const visibleVideos = getAuthorVisibleVideos(author);
+  const beforeVideoBvid = canConfirmAuthorVisibleTopBoundary(author)
+    ? visibleVideos[0]?.bvid
+    : undefined;
+  await setAuthorReadMark(author.authorMid, nowTs, { beforeVideoBvid });
 }
 
-function resolveAuthorReadMarkTsByBoundaryIndex(authorMid: number, boundaryIndex: number): number {
+function canConfirmAuthorVisibleTopBoundary(author: AuthorFeed): boolean {
+  return !isByAuthorPaginationEnabled.value || getAuthorCurrentPage(author) === 1;
+}
+
+function resolveAuthorReadMarkWritePayloadBySlotIndex(
+  authorMid: number,
+  slotIndex: number
+): { readMarkTs: number; beforeVideoBvid?: string; afterVideoBvid?: string } | null {
   const visibleVideos = byAuthorVisibleVideosMap.value[authorMid] ?? [];
-  if (boundaryIndex <= 0 || boundaryIndex >= visibleVideos.length) {
-    return 0;
+  if (slotIndex < 0 || slotIndex > visibleVideos.length || visibleVideos.length === 0) {
+    return null;
   }
 
-  const newerVideo = visibleVideos[boundaryIndex - 1];
-  const olderVideo = visibleVideos[boundaryIndex];
+  if (slotIndex === 0) {
+    const firstVideo = visibleVideos[0];
+    const firstTs = firstVideo?.pubdate ?? 0;
+    if (firstTs <= 0) {
+      return null;
+    }
+    return {
+      readMarkTs: firstTs + 1,
+      beforeVideoBvid: firstVideo.bvid
+    };
+  }
+
+  if (slotIndex === visibleVideos.length) {
+    const lastVideo = visibleVideos[visibleVideos.length - 1];
+    const lastTs = lastVideo?.pubdate ?? 0;
+    if (lastTs <= 0) {
+      return null;
+    }
+    return {
+      readMarkTs: Math.max(1, lastTs - 1),
+      afterVideoBvid: lastVideo.bvid
+    };
+  }
+
+  const newerVideo = visibleVideos[slotIndex - 1];
+  const olderVideo = visibleVideos[slotIndex];
   const newerTs = newerVideo?.pubdate ?? 0;
   const olderTs = olderVideo?.pubdate ?? 0;
   if (newerTs <= 0 || olderTs <= 0) {
-    return 0;
+    return null;
   }
 
   /**
@@ -3534,12 +3688,24 @@ function resolveAuthorReadMarkTsByBoundaryIndex(authorMid: number, boundaryIndex
    * - 当出现同秒投稿等无法精确切分的情况，退化为 newerTs，至少保证可落盘为作者级已阅点。
    */
   if (olderTs >= newerTs) {
-    return newerTs;
+    return {
+      readMarkTs: newerTs,
+      beforeVideoBvid: olderVideo.bvid,
+      afterVideoBvid: newerVideo.bvid
+    };
   }
-  return Math.min(newerTs, olderTs + 1);
+  return {
+    readMarkTs: Math.min(newerTs, olderTs + 1),
+    beforeVideoBvid: olderVideo.bvid,
+    afterVideoBvid: newerVideo.bvid
+  };
 }
 
-async function setAuthorReadMark(authorMid: number, readMarkTs: number): Promise<void> {
+async function setAuthorReadMark(
+  authorMid: number,
+  readMarkTs: number,
+  options?: { beforeVideoBvid?: string; afterVideoBvid?: string }
+): Promise<void> {
   if (readMarkTs <= 0) {
     return;
   }
@@ -3549,7 +3715,9 @@ async function setAuthorReadMark(authorMid: number, readMarkTs: number): Promise
       type: 'SET_AUTHOR_READ_MARK',
       payload: {
         mid: authorMid,
-        readMarkTs
+        readMarkTs,
+        beforeVideoBvid: options?.beforeVideoBvid,
+        afterVideoBvid: options?.afterVideoBvid
       }
     });
     if (!resp.ok || !resp.data) {
@@ -3578,13 +3746,19 @@ async function undoAuthorReadMark(authorMid: number): Promise<void> {
   }
 }
 
-async function setAuthorReadMarkFromBoundaryIndex(author: AuthorFeed, boundaryIndex: number): Promise<void> {
-  const readMarkTs = resolveAuthorReadMarkTsByBoundaryIndex(author.authorMid, boundaryIndex);
-  await setAuthorReadMark(author.authorMid, readMarkTs);
+async function setAuthorReadMarkFromBoundarySlot(author: AuthorFeed, slotIndex: number): Promise<void> {
+  const payload = resolveAuthorReadMarkWritePayloadBySlotIndex(author.authorMid, slotIndex);
+  if (!payload) {
+    return;
+  }
+  await setAuthorReadMark(author.authorMid, payload.readMarkTs, {
+    beforeVideoBvid: payload.beforeVideoBvid,
+    afterVideoBvid: payload.afterVideoBvid
+  });
 }
 
-function onAuthorBoundaryContextMenu(author: AuthorFeed, boundaryIndex: number): void {
-  if (!isAuthorBoundaryIndex(author, boundaryIndex)) {
+function onAuthorBoundaryContextMenu(author: AuthorFeed, slotIndex: number): void {
+  if (!isAuthorBoundarySlotActive(author, slotIndex)) {
     return;
   }
   void clearAuthorReadMarkFromBoundary(author);

@@ -1397,6 +1397,8 @@ export function toFeedResult(
       hasAuthorReadMarkOverride,
       // 概览模式仍返回作者边界，供“按作者”视图显示/调整已阅分界线使用。
       effectiveReadBoundaryTs: authorBoundaryTs,
+      beforeVideoBvid: pref?.beforeVideoBvid,
+      afterVideoBvid: pref?.afterVideoBvid,
       totalVideoCount: getLatestKnownTotalCount(cache),
       apiPageSize: getPreferredAuthorPageSize(cache, settings.authorVideosPageSize),
       videos: videos.map((video) => injectAuthorMetaIntoVideo(video, meta)),

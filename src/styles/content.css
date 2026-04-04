@@ -1559,6 +1559,11 @@ body.bbe-page-scroll-lock {
   z-index: 2;
 }
 
+.bbe-author-read-boundary.is-tail {
+  left: auto;
+  right: calc(var(--bbe-author-grid-gap) * -0.5 - 12px);
+}
+
 .bbe-author-read-boundary::before {
   content: '';
   position: absolute;
@@ -1588,6 +1593,25 @@ body.bbe-page-scroll-lock {
     rgb(var(--bbe-theme-color-rgb) / 28%) 4px 7px
   );
   box-shadow: 0 0 0 1px rgb(var(--bbe-theme-color-rgb) / 20%);
+}
+
+.bbe-author-read-boundary-arrow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgb(31 42 55 / 35%);
+}
+
+.bbe-author-read-boundary.is-page-out::before {
+  width: 3px;
+  background: rgb(var(--bbe-theme-color-rgb) / 82%);
+  box-shadow: 0 0 0 2px rgb(var(--bbe-theme-color-rgb) / 16%);
 }
 
 .bbe-author-read-boundary:focus-visible {

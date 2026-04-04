@@ -111,6 +111,9 @@ export interface AuthorFeed {
   hasAuthorReadMarkOverride?: boolean;
   // 当前作者用于分割线与过滤的有效边界（秒级时间戳，0 表示无边界）。
   effectiveReadBoundaryTs?: number;
+  // 边界显示回退锚点：优先级低于时间戳判断，仅用于按作者视图中的作者级竖线。
+  beforeVideoBvid?: string;
+  afterVideoBvid?: string;
   // 作者投稿总量（来自投稿接口 page.count）。
   totalVideoCount?: number;
   // 作者投稿接口页大小（来自投稿接口 page.ps）。
@@ -234,6 +237,14 @@ export interface AuthorPreference {
   // 作者级已阅历史栈，按最近一次写入顺序倒序排列（栈顶在前），
   // 同值允许重复入栈，撤销时按操作次数逐次回退。
   readMarkTimestamps?: number[];
+  // 当前激活的边界显示回退锚点。
+  beforeVideoBvid?: string;
+  afterVideoBvid?: string;
+  // 与 readMarkTimestamps 对齐的显示锚点历史，用于撤销时恢复上一条显示状态。
+  readMarkDisplayHints?: Array<{
+    beforeVideoBvid?: string;
+    afterVideoBvid?: string;
+  }>;
   updatedAt?: number;
 }
 

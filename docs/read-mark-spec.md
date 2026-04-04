@@ -176,6 +176,10 @@ interface AuthorReadMark {
   // 最多保留 10 条，按最近一次写入顺序倒序（栈顶在前）
   // 同值允许重复入栈
   readMarkTimestamps?: number[];
+  // 仅用于按作者视图中的边界显示回退，不参与 unread / 过滤计算。
+  // before 表示“边界在该视频之前”，after 表示“边界在该视频之后”。
+  beforeVideoBvid?: string;
+  afterVideoBvid?: string;
   updatedAt?: number;
 }
 ```
@@ -203,6 +207,40 @@ interface AuthorReadMark {
   - 若撤销后栈空，则恢复为使用分组有效基线。
   - 即使连续两次写入了相同时间点，也视为两次独立操作，需要通过两次撤销分别回退。
 - 以上交互在“近期投稿”和“全部投稿”中保持一致，且都写入同一作者级字段。
+
+#### 3.2.3.1 写入规则
+
+- 作者级已阅的主语义始终是 `readMarkTs`；边界显示必须优先按时间戳判定。
+- `beforeVideoBvid` / `afterVideoBvid` 只是“当前可视列表中的显示回退锚点”，不参与 unread、过滤、排序或作者级优先级计算。
+- 写入规则：
+  - 点击两个可见视频之间的边界时：
+    - 正常写入两视频之间的 `readMarkTs`；
+    - 同时写入 `afterVideoBvid=左侧视频.bvid` 与 `beforeVideoBvid=右侧视频.bvid`。
+  - 点击当前可见列表首项之前的边界时：
+    - 写入 `readMarkTs=首项.pubdate + 1`；
+    - 写入 `beforeVideoBvid=首项.bvid`；
+    - 清空 `afterVideoBvid`。
+  - 点击当前可见列表末项之后的边界时：
+    - 写入 `readMarkTs=末项.pubdate - 1`；
+    - 写入 `afterVideoBvid=末项.bvid`；
+    - 清空 `beforeVideoBvid`。
+  - 点击作者标题上的 `标记已阅` 时：
+    - 始终写入 `readMarkTs=now`；
+    - 仅当当前视图可确认该作者当前页就是“可见列表顶部页”时，才额外写入 `beforeVideoBvid=当前首项.bvid`；
+    - 若无法确认当前页是否为顶部页，则不写入显示锚点，避免把“页外已阅”误绘成当前页首精确边界。
+
+#### 3.2.3.2 按作者视图中的边界渲染优先级
+
+- 渲染作者级边界时，优先级固定为：
+  - 先仅依据 `readMarkTs` 与当前缓存列表判断；若能被两条已知视频精确夹住，则按时间戳结果渲染普通精确竖线；
+  - 若时间戳无法被当前缓存精确夹住，再尝试使用 `beforeVideoBvid` / `afterVideoBvid` 在当前可见列表中回退定位；
+  - 若 `beforeVideoBvid` 当前可见，则在该视频之前渲染普通精确竖线；
+  - 否则若 `afterVideoBvid` 当前可见，则在该视频之后渲染普通精确竖线；
+  - 若两侧锚点都不可用，则降级为页外提示，不继续伪装成当前页内的精确边界。
+- 若 `beforeVideoBvid` 与 `afterVideoBvid` 同时可见，但它们在当前列表中已不再相邻，则说明当前列表相对写入时已发生重排或补数变化：
+  - 此时不得继续渲染普通精确竖线；
+  - 必须降级为页外提示或不显示。
+- 页外提示仅表达“已阅点在当前页可见范围之外”，不表达精确的跨页槽位。
 
 #### 3.2.4 特殊样式
 

@@ -1444,7 +1444,10 @@ async function handleSetAuthorIgnoreUnread(
 async function handleSetAuthorReadMark(
   request: Extract<MessageRequest, { type: 'SET_AUTHOR_READ_MARK' }>
 ): Promise<ResponseMap['SET_AUTHOR_READ_MARK']> {
-  const preference = await setAuthorReadMark(request.payload.mid, request.payload.readMarkTs);
+  const preference = await setAuthorReadMark(request.payload.mid, request.payload.readMarkTs, {
+    beforeVideoBvid: request.payload.beforeVideoBvid,
+    afterVideoBvid: request.payload.afterVideoBvid
+  });
   return { preference };
 }
 

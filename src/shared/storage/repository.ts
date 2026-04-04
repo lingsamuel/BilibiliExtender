@@ -797,11 +797,36 @@ function normalizeAuthorPreference(mid: number, prev?: AuthorPreference): Author
   const normalizedReadMarkTimestamps = readMarkTimestamps.length > 0
     ? readMarkTimestamps
     : (fallbackReadMarkTs ? [fallbackReadMarkTs] : []);
+  const rawDisplayHints = Array.isArray(prev?.readMarkDisplayHints)
+    ? prev.readMarkDisplayHints
+    : [];
+  const normalizedReadMarkDisplayHints = normalizedReadMarkTimestamps.length > 0
+    ? normalizedReadMarkTimestamps.map((_, index) => {
+        const rawHint = rawDisplayHints[index];
+        const beforeVideoBvid = typeof rawHint?.beforeVideoBvid === 'string' && rawHint.beforeVideoBvid.trim()
+          ? rawHint.beforeVideoBvid.trim()
+          : index === 0 && typeof prev?.beforeVideoBvid === 'string' && prev.beforeVideoBvid.trim()
+            ? prev.beforeVideoBvid.trim()
+            : undefined;
+        const afterVideoBvid = typeof rawHint?.afterVideoBvid === 'string' && rawHint.afterVideoBvid.trim()
+          ? rawHint.afterVideoBvid.trim()
+          : index === 0 && typeof prev?.afterVideoBvid === 'string' && prev.afterVideoBvid.trim()
+            ? prev.afterVideoBvid.trim()
+            : undefined;
+        return beforeVideoBvid || afterVideoBvid
+          ? { beforeVideoBvid, afterVideoBvid }
+          : {};
+      })
+    : undefined;
+  const currentDisplayHint = normalizedReadMarkDisplayHints?.[0];
   return {
     mid,
     ignoreUnreadCount: prev?.ignoreUnreadCount,
     readMarkTs: normalizedReadMarkTimestamps[0],
     readMarkTimestamps: normalizedReadMarkTimestamps.length > 0 ? normalizedReadMarkTimestamps : undefined,
+    beforeVideoBvid: currentDisplayHint?.beforeVideoBvid,
+    afterVideoBvid: currentDisplayHint?.afterVideoBvid,
+    readMarkDisplayHints: normalizedReadMarkDisplayHints,
     updatedAt: prev?.updatedAt
   };
 }
@@ -826,16 +851,38 @@ export async function setAuthorIgnoreUnreadCount(mid: number, ignoreUnreadCount:
   return next;
 }
 
-export async function setAuthorReadMark(mid: number, readMarkTs: number): Promise<AuthorPreference> {
+export async function setAuthorReadMark(
+  mid: number,
+  readMarkTs: number,
+  options?: { beforeVideoBvid?: string; afterVideoBvid?: string }
+): Promise<AuthorPreference> {
   const map = await loadAuthorPreferences();
   const prev = normalizeAuthorPreference(mid, map[mid]);
   const normalizedTs = Math.floor(readMarkTs);
   // 作者级已阅也必须保留真实操作历史，而不是“去重后的值集合”。
   const nextReadMarkTimestamps = [normalizedTs, ...(prev.readMarkTimestamps ?? [])].slice(0, MAX_AUTHOR_READ_MARK_COUNT);
+  const nextDisplayHint = {
+    beforeVideoBvid: typeof options?.beforeVideoBvid === 'string' && options.beforeVideoBvid.trim()
+      ? options.beforeVideoBvid.trim()
+      : undefined,
+    afterVideoBvid: typeof options?.afterVideoBvid === 'string' && options.afterVideoBvid.trim()
+      ? options.afterVideoBvid.trim()
+      : undefined
+  };
+  const nextReadMarkDisplayHints = [
+    nextDisplayHint,
+    ...((prev.readMarkDisplayHints ?? []).map((item) => ({
+      beforeVideoBvid: item.beforeVideoBvid,
+      afterVideoBvid: item.afterVideoBvid
+    })))
+  ].slice(0, MAX_AUTHOR_READ_MARK_COUNT);
   const next: AuthorPreference = {
     ...prev,
     readMarkTs: nextReadMarkTimestamps[0],
     readMarkTimestamps: nextReadMarkTimestamps,
+    beforeVideoBvid: nextDisplayHint.beforeVideoBvid,
+    afterVideoBvid: nextDisplayHint.afterVideoBvid,
+    readMarkDisplayHints: nextReadMarkDisplayHints,
     updatedAt: Date.now()
   };
   map[mid] = next;
@@ -852,14 +899,19 @@ export async function undoAuthorReadMark(
   if (stack.length === 0) {
     return { preference: prev };
   }
+  const displayHints = prev.readMarkDisplayHints ?? [];
 
   const [removedReadMarkTs, ...rest] = stack;
+  const [, ...restDisplayHints] = displayHints;
   if (rest.length === 0) {
     if (prev.ignoreUnreadCount) {
       const next: AuthorPreference = {
         ...prev,
         readMarkTs: undefined,
         readMarkTimestamps: undefined,
+        beforeVideoBvid: undefined,
+        afterVideoBvid: undefined,
+        readMarkDisplayHints: undefined,
         updatedAt: Date.now()
       };
       map[mid] = next;
@@ -875,6 +927,9 @@ export async function undoAuthorReadMark(
     ...prev,
     readMarkTs: rest[0],
     readMarkTimestamps: rest,
+    beforeVideoBvid: restDisplayHints[0]?.beforeVideoBvid,
+    afterVideoBvid: restDisplayHints[0]?.afterVideoBvid,
+    readMarkDisplayHints: restDisplayHints,
     updatedAt: Date.now()
   };
   map[mid] = next;
@@ -889,6 +944,9 @@ export async function clearAuthorReadMark(mid: number): Promise<AuthorPreference
     ...prev,
     readMarkTs: undefined,
     readMarkTimestamps: undefined,
+    beforeVideoBvid: undefined,
+    afterVideoBvid: undefined,
+    readMarkDisplayHints: undefined,
     updatedAt: Date.now()
   };
 
