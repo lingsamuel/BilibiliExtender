@@ -389,13 +389,24 @@
                         @click.stop="setAuthorReadMarkFromBoundarySlot(author, index)"
                         @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index)"
                       >
-                        <span
+                        <svg
                           v-if="getAuthorBoundaryPageOutDirection(author, index)"
                           class="bbe-author-read-boundary-arrow"
+                          :class="`is-${getAuthorBoundaryPageOutDirection(author, index)}`"
+                          viewBox="0 0 18 20"
                           aria-hidden="true"
                         >
-                          {{ getAuthorBoundaryPageOutDirection(author, index) === 'previous' ? '←' : '→' }}
-                        </span>
+                          <path
+                            v-if="getAuthorBoundaryPageOutDirection(author, index) === 'previous'"
+                            d="M18 8H7V3L0 10L7 17V12H18Z"
+                            fill="currentColor"
+                          />
+                          <path
+                            v-else
+                            d="M0 8H11V3L18 10L11 17V12H0Z"
+                            fill="currentColor"
+                          />
+                        </svg>
                       </button>
                       <VideoCard
                         :video="video"
@@ -420,13 +431,24 @@
                         @click.stop="setAuthorReadMarkFromBoundarySlot(author, index + 1)"
                         @contextmenu.prevent.stop="onAuthorBoundaryContextMenu(author, index + 1)"
                       >
-                        <span
+                        <svg
                           v-if="getAuthorBoundaryPageOutDirection(author, index + 1)"
                           class="bbe-author-read-boundary-arrow"
+                          :class="`is-${getAuthorBoundaryPageOutDirection(author, index + 1)}`"
+                          viewBox="0 0 18 20"
                           aria-hidden="true"
                         >
-                          {{ getAuthorBoundaryPageOutDirection(author, index + 1) === 'previous' ? '←' : '→' }}
-                        </span>
+                          <path
+                            v-if="getAuthorBoundaryPageOutDirection(author, index + 1) === 'previous'"
+                            d="M18 8H7V3L0 10L7 17V12H18Z"
+                            fill="currentColor"
+                          />
+                          <path
+                            v-else
+                            d="M0 8H11V3L18 10L11 17V12H0Z"
+                            fill="currentColor"
+                          />
+                        </svg>
                       </button>
                     </div>
                   </div>

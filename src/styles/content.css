@@ -1597,15 +1597,22 @@ body.bbe-page-scroll-lock {
 
 .bbe-author-read-boundary-arrow {
   position: absolute;
-  left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
-  color: #fff;
-  font-size: 12px;
-  line-height: 1;
-  font-weight: 700;
+  width: 8px;
+  height: 8px;
+  color: rgb(var(--bbe-theme-color-rgb) / 82%);
   pointer-events: none;
-  text-shadow: 0 1px 2px rgb(31 42 55 / 35%);
+  overflow: visible;
+}
+
+.bbe-author-read-boundary-arrow.is-previous {
+  right: 50%;
+  transform: translate(0, -50%);
+}
+
+.bbe-author-read-boundary-arrow.is-next {
+  left: 50%;
+  transform: translate(0, -50%);
 }
 
 .bbe-author-read-boundary.is-page-out::before {
