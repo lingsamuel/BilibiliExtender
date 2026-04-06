@@ -46,7 +46,7 @@ export type MessageRequest =
         csrf: string;
         pageOrigin: string;
         pageReferer: string;
-        source: 'video' | 'space' | 'card' | 'drawer';
+        source: 'video-page' | 'space-page' | 'video-author-hover-card' | 'comment-hover-card' | 'drawer-panel';
         video?: {
           aid?: number;
           bvid?: string;

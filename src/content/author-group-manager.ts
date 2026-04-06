@@ -5,7 +5,7 @@ import { formatRelativeMinutes } from '@/shared/utils/format';
 
 type MembershipState = ResponseMap['GET_AUTHOR_GROUP_MEMBERSHIP'];
 type DialogData = ResponseMap['GET_AUTHOR_GROUP_DIALOG_DATA'];
-type AuthorEntrySource = 'video' | 'space' | 'card' | 'drawer';
+type AuthorEntrySource = 'video-page' | 'space-page' | 'video-author-hover-card' | 'comment-hover-card' | 'drawer-panel';
 type QueryRoot = Document | ShadowRoot | HTMLElement;
 
 interface AuthorEntryContext {
@@ -39,14 +39,24 @@ interface DialogState {
 const BUTTON_ATTR = 'data-bbe-author-group-button';
 const BUTTON_CLASS = 'bbe-author-follow-btn';
 const BUTTON_EXTRA_CLASS = 'bbe-injected-author-group-btn';
+// 作者入口的 DOM 结构按场景分别约定，避免跨场景复用“猜测式”选择器。
+const VIDEO_ROOT_SELECTOR = '.up-info-container';
 const VIDEO_ACTION_SELECTOR = '.up-detail-top';
+const VIDEO_NAME_SELECTOR = 'a.up-name';
+const VIDEO_AVATAR_SELECTOR = '.bili-avatar img';
+const SPACE_ROOT_SELECTOR = '.upinfo';
 const SPACE_ACTION_SELECTOR = '.interactions';
-const CARD_ROOT_SELECTOR = '.usercard-wrap';
-const CARD_ACTION_SELECTOR = '.btn-box';
-const CARD_NAME_LINK_SELECTOR = '.user .name';
-const PROFILE_CARD_HOST_SELECTOR = 'bili-user-profile';
-const PROFILE_CARD_ACTION_SELECTOR = '#action';
-const PROFILE_CARD_AVATAR_SELECTOR = '#avatar';
+const SPACE_NAME_SELECTOR = '.nickname';
+const SPACE_AVATAR_SELECTOR = '.avatar img';
+const VIDEO_AUTHOR_HOVER_CARD_ROOT_SELECTOR = '.usercard-wrap';
+const VIDEO_AUTHOR_HOVER_CARD_ACTION_SELECTOR = '.btn-box';
+const VIDEO_AUTHOR_HOVER_CARD_NAME_LINK_SELECTOR = 'a.name';
+const VIDEO_AUTHOR_HOVER_CARD_AVATAR_SELECTOR = '.bili-avatar img';
+const COMMENT_HOVER_CARD_HOST_SELECTOR = 'bili-user-profile';
+const COMMENT_HOVER_CARD_ACTION_SELECTOR = '#action';
+const COMMENT_HOVER_CARD_NAME_LINK_SELECTOR = 'a#name';
+const COMMENT_HOVER_CARD_PROFILE_LINK_SELECTOR = '#avatar';
+const COMMENT_HOVER_CARD_AVATAR_SELECTOR = '#avatar img';
 
 const membershipCache = new Map<number, MembershipState>();
 const membershipPendingMap = new Map<number, Promise<MembershipState>>();
@@ -140,17 +150,6 @@ function extractMidFromUrl(url: string | null | undefined): number | null {
   return mid || null;
 }
 
-function extractMidFromElement(root: ParentNode): number | null {
-  const anchors = root.querySelectorAll('a[href*="space.bilibili.com/"], a[href*="//space.bilibili.com/"]');
-  for (const anchor of anchors) {
-    const mid = extractMidFromUrl((anchor as HTMLAnchorElement).href || anchor.getAttribute('href'));
-    if (mid) {
-      return mid;
-    }
-  }
-  return null;
-}
-
 function parseSpaceMidFromLocation(): number | null {
   const match = window.location.pathname.match(/^\/(\d+)(?:\/|$)/);
   if (!match) {
@@ -165,63 +164,21 @@ function parseVideoBvidFromLocation(): string | undefined {
   return match?.[1];
 }
 
-function queryFirst(root: QueryRoot, selectors: string[]): HTMLElement | null {
-  for (const selector of selectors) {
-    const matched = root.querySelector(selector);
-    if (matched instanceof HTMLElement) {
-      return matched;
-    }
+function getImageUrl(root: QueryRoot, selector: string): string | undefined {
+  const img = root.querySelector(selector);
+  if (!(img instanceof HTMLImageElement)) {
+    return undefined;
   }
-  return null;
+  const src = img.currentSrc || img.src || '';
+  return src || undefined;
 }
 
-function findAvatarUrl(root: QueryRoot): string | undefined {
-  const selectors = [
-    '.up-avatar img',
-    '.header-face img',
-    '.bili-user-profile-view__avatar img',
-    '.h-avatar img',
-    '.avatar img',
-    'a[href*="space.bilibili.com/"] img'
-  ];
-
-  for (const selector of selectors) {
-    const img = root.querySelector(selector);
-    if (!(img instanceof HTMLImageElement)) {
-      continue;
-    }
-    const src = img.currentSrc || img.src || '';
-    if (src) {
-      return src;
-    }
+function getTextContent(root: QueryRoot, selector: string): string | undefined {
+  const element = root.querySelector(selector);
+  if (!(element instanceof HTMLElement)) {
+    return undefined;
   }
-
-  return undefined;
-}
-
-function findAuthorName(root: QueryRoot): string | undefined {
-  const selectors = [
-    '.up-name',
-    '.username',
-    '.h-name',
-    '#h-name',
-    '.nickname',
-    '.bili-user-profile-view__info__uname',
-    '.bili-user-profile-view__info__name',
-    'a[href*="space.bilibili.com/"]'
-  ];
-
-  for (const selector of selectors) {
-    const element = root.querySelector(selector);
-    if (!(element instanceof HTMLElement)) {
-      continue;
-    }
-    const text = normalizeText(element.textContent);
-    if (text) {
-      return text;
-    }
-  }
-  return undefined;
+  return normalizeText(element.textContent) || undefined;
 }
 
 function extractMidFromAnchor(anchor: Element | null): number | null {
@@ -943,18 +900,6 @@ async function onCreateFolderSubmit(root: HTMLElement): Promise<void> {
   }
 }
 
-function insertAfter(target: Element, node: HTMLElement): void {
-  const parent = target.parentElement;
-  if (!parent) {
-    return;
-  }
-  if (target.nextSibling) {
-    parent.insertBefore(node, target.nextSibling);
-  } else {
-    parent.appendChild(node);
-  }
-}
-
 function createButton(root: HTMLElement, context: AuthorEntryContext): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
@@ -969,6 +914,18 @@ function createButton(root: HTMLElement, context: AuthorEntryContext): HTMLButto
   bindButtonContext(button, context);
   setButtonLoading(button);
   return button;
+}
+
+function insertAfter(target: Element, node: HTMLElement): void {
+  const parent = target.parentElement;
+  if (!parent) {
+    return;
+  }
+  if (target.nextSibling) {
+    parent.insertBefore(node, target.nextSibling);
+  } else {
+    parent.appendChild(node);
+  }
 }
 
 function upsertButton(root: HTMLElement, host: QueryRoot, actionRoot: HTMLElement, context: AuthorEntryContext): void {
@@ -1006,8 +963,14 @@ function upsertButton(root: HTMLElement, host: QueryRoot, actionRoot: HTMLElemen
   }
 }
 
-function buildVideoContext(actionRoot: HTMLElement): AuthorEntryContext | null {
-  const mid = extractMidFromElement(actionRoot) ?? extractMidFromElement(document);
+function buildVideoPageContext(actionRoot: HTMLElement): AuthorEntryContext | null {
+  const root = actionRoot.closest(VIDEO_ROOT_SELECTOR);
+  if (!(root instanceof HTMLElement)) {
+    return null;
+  }
+
+  const nameLink = root.querySelector(VIDEO_NAME_SELECTOR);
+  const mid = extractMidFromAnchor(nameLink);
   const bvid = parseVideoBvidFromLocation();
   if (!mid || !bvid) {
     return null;
@@ -1015,16 +978,21 @@ function buildVideoContext(actionRoot: HTMLElement): AuthorEntryContext | null {
 
   return {
     mid,
-    source: 'video',
-    name: findAuthorName(actionRoot) ?? findAuthorName(document),
-    face: findAvatarUrl(actionRoot) ?? findAvatarUrl(document),
+    source: 'video-page',
+    name: normalizeText(nameLink?.textContent) || undefined,
+    face: getImageUrl(root, VIDEO_AVATAR_SELECTOR),
     video: {
       bvid
     }
   };
 }
 
-function buildSpaceContext(actionRoot: HTMLElement): AuthorEntryContext | null {
+function buildSpacePageContext(actionRoot: HTMLElement): AuthorEntryContext | null {
+  const root = actionRoot.closest(SPACE_ROOT_SELECTOR);
+  if (!(root instanceof HTMLElement)) {
+    return null;
+  }
+
   const mid = parseSpaceMidFromLocation();
   if (!mid) {
     return null;
@@ -1032,53 +1000,39 @@ function buildSpaceContext(actionRoot: HTMLElement): AuthorEntryContext | null {
 
   return {
     mid,
-    source: 'space',
-    name: findAuthorName(document) ?? findAuthorName(actionRoot),
-    face: findAvatarUrl(document) ?? findAvatarUrl(actionRoot)
+    source: 'space-page',
+    name: getTextContent(root, SPACE_NAME_SELECTOR),
+    face: getImageUrl(root, SPACE_AVATAR_SELECTOR)
   };
 }
 
-function buildCardContext(root: QueryRoot, actionRoot: HTMLElement): AuthorEntryContext | null {
-  const mid = extractMidFromElement(root) ?? extractMidFromElement(actionRoot);
+function buildVideoAuthorHoverCardContext(cardRoot: HTMLElement): AuthorEntryContext | null {
+  const nameLink = cardRoot.querySelector(VIDEO_AUTHOR_HOVER_CARD_NAME_LINK_SELECTOR);
+  const mid = extractMidFromAnchor(nameLink);
   if (!mid) {
     return null;
   }
 
   return {
     mid,
-    source: 'card',
-    name: findAuthorName(root) ?? findAuthorName(actionRoot),
-    face: findAvatarUrl(root) ?? findAvatarUrl(actionRoot)
+    source: 'video-author-hover-card',
+    name: normalizeText(nameLink?.textContent) || undefined,
+    face: getImageUrl(cardRoot, VIDEO_AUTHOR_HOVER_CARD_AVATAR_SELECTOR)
   };
 }
 
-function buildLegacyCardContext(cardRoot: HTMLElement, actionRoot: HTMLElement): AuthorEntryContext | null {
-  const nameLink = cardRoot.querySelector(CARD_NAME_LINK_SELECTOR);
-  const mid = extractMidFromAnchor(nameLink) ?? extractMidFromElement(cardRoot) ?? extractMidFromElement(actionRoot);
+function buildCommentHoverCardContext(shadowRoot: ShadowRoot): AuthorEntryContext | null {
+  const avatarLink = shadowRoot.querySelector(COMMENT_HOVER_CARD_PROFILE_LINK_SELECTOR);
+  const mid = extractMidFromAnchor(avatarLink);
   if (!mid) {
     return null;
   }
 
   return {
     mid,
-    source: 'card',
-    name: normalizeText(nameLink?.textContent) || findAuthorName(cardRoot) || findAuthorName(actionRoot),
-    face: findAvatarUrl(cardRoot) ?? findAvatarUrl(actionRoot)
-  };
-}
-
-function buildProfileCardContext(shadowRoot: ShadowRoot, actionRoot: HTMLElement): AuthorEntryContext | null {
-  const avatarLink = shadowRoot.querySelector(PROFILE_CARD_AVATAR_SELECTOR);
-  const mid = extractMidFromAnchor(avatarLink) ?? extractMidFromElement(shadowRoot) ?? extractMidFromElement(actionRoot);
-  if (!mid) {
-    return null;
-  }
-
-  return {
-    mid,
-    source: 'card',
-    name: normalizeText(avatarLink?.textContent) || findAuthorName(shadowRoot) || findAuthorName(actionRoot),
-    face: findAvatarUrl(shadowRoot) ?? findAvatarUrl(actionRoot)
+    source: 'comment-hover-card',
+    name: getTextContent(shadowRoot, COMMENT_HOVER_CARD_NAME_LINK_SELECTOR),
+    face: getImageUrl(shadowRoot, COMMENT_HOVER_CARD_AVATAR_SELECTOR)
   };
 }
 
@@ -1086,11 +1040,15 @@ function scanVideoPage(root: HTMLElement): void {
   if (!/\/video\//.test(window.location.pathname)) {
     return;
   }
-  const actionRoot = document.querySelector(VIDEO_ACTION_SELECTOR);
+  const videoRoot = document.querySelector(VIDEO_ROOT_SELECTOR);
+  if (!(videoRoot instanceof HTMLElement) || !isElementVisible(videoRoot)) {
+    return;
+  }
+  const actionRoot = videoRoot.querySelector(VIDEO_ACTION_SELECTOR);
   if (!(actionRoot instanceof HTMLElement)) {
     return;
   }
-  const context = buildVideoContext(actionRoot);
+  const context = buildVideoPageContext(actionRoot);
   if (!context) {
     return;
   }
@@ -1101,46 +1059,50 @@ function scanSpacePage(root: HTMLElement): void {
   if (window.location.host !== 'space.bilibili.com') {
     return;
   }
-  const actionRoot = document.querySelector(SPACE_ACTION_SELECTOR);
+  const spaceRoot = document.querySelector(SPACE_ROOT_SELECTOR);
+  if (!(spaceRoot instanceof HTMLElement) || !isElementVisible(spaceRoot)) {
+    return;
+  }
+  const actionRoot = spaceRoot.querySelector(SPACE_ACTION_SELECTOR);
   if (!(actionRoot instanceof HTMLElement)) {
     return;
   }
-  const context = buildSpaceContext(actionRoot);
+  const context = buildSpacePageContext(actionRoot);
   if (!context) {
     return;
   }
   upsertButton(root, document, actionRoot, context);
 }
 
-function scanLegacyCardTargets(root: HTMLElement): void {
-  const cardRoots = document.querySelectorAll(CARD_ROOT_SELECTOR);
-  for (const cardRoot of cardRoots) {
-    if (!(cardRoot instanceof HTMLElement) || !isElementVisible(cardRoot)) {
+function scanVideoAuthorHoverCardTargets(root: HTMLElement): void {
+  const hoverCardRoots = document.querySelectorAll(VIDEO_AUTHOR_HOVER_CARD_ROOT_SELECTOR);
+  for (const hoverCardRoot of hoverCardRoots) {
+    if (!(hoverCardRoot instanceof HTMLElement) || !isElementVisible(hoverCardRoot)) {
       continue;
     }
 
-    const actionRoot = cardRoot.querySelector(CARD_ACTION_SELECTOR);
+    const actionRoot = hoverCardRoot.querySelector(VIDEO_AUTHOR_HOVER_CARD_ACTION_SELECTOR);
     if (!(actionRoot instanceof HTMLElement)) {
       continue;
     }
 
-    const context = buildLegacyCardContext(cardRoot, actionRoot);
+    const context = buildVideoAuthorHoverCardContext(hoverCardRoot);
     if (!context) {
       continue;
     }
 
-    upsertButton(root, cardRoot, actionRoot, context);
+    upsertButton(root, hoverCardRoot, actionRoot, context);
   }
 }
 
-function scanProfileCardTargets(root: HTMLElement): void {
-  const hosts = document.querySelectorAll(PROFILE_CARD_HOST_SELECTOR);
-  for (const host of hosts) {
-    if (!(host instanceof HTMLElement) || !host.shadowRoot) {
+function scanCommentHoverCardTargets(root: HTMLElement): void {
+  const hoverCardHosts = document.querySelectorAll(COMMENT_HOVER_CARD_HOST_SELECTOR);
+  for (const hoverCardHost of hoverCardHosts) {
+    if (!(hoverCardHost instanceof HTMLElement) || !hoverCardHost.shadowRoot) {
       continue;
     }
 
-    const shadowRoot = host.shadowRoot;
+    const shadowRoot = hoverCardHost.shadowRoot;
     if (!shadowRootObserverSet.has(shadowRoot)) {
       const observer = new MutationObserver(() => {
         scheduleScan(root);
@@ -1153,12 +1115,12 @@ function scanProfileCardTargets(root: HTMLElement): void {
       shadowRootObserverSet.add(shadowRoot);
     }
 
-    const actionRoot = shadowRoot.querySelector(PROFILE_CARD_ACTION_SELECTOR);
+    const actionRoot = shadowRoot.querySelector(COMMENT_HOVER_CARD_ACTION_SELECTOR);
     if (!(actionRoot instanceof HTMLElement) || !isElementVisible(actionRoot)) {
       continue;
     }
 
-    const context = buildProfileCardContext(shadowRoot, actionRoot);
+    const context = buildCommentHoverCardContext(shadowRoot);
     if (!context) {
       continue;
     }
@@ -1170,8 +1132,8 @@ function scanProfileCardTargets(root: HTMLElement): void {
 function runScan(root: HTMLElement): void {
   scanVideoPage(root);
   scanSpacePage(root);
-  scanLegacyCardTargets(root);
-  scanProfileCardTargets(root);
+  scanVideoAuthorHoverCardTargets(root);
+  scanCommentHoverCardTargets(root);
 }
 
 function scheduleScan(root: HTMLElement): void {

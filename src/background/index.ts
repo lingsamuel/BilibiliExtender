@@ -451,7 +451,7 @@ async function handleUpdateAuthorGroupMembership(
   let preferredAuthorName: string | undefined;
 
   if (action === 'add') {
-    if (request.payload.source === 'video') {
+    if (request.payload.source === 'video-page') {
       const target = normalizeVideoTarget(request.payload.video ?? {});
       await runWithFavRequestHeaders(pageOrigin, pageReferer, async () => {
         await addVideoToFavorites(target, group.mediaId, csrf);

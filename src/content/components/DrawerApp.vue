@@ -1744,7 +1744,7 @@ function openAuthorGroupDialog(author: AuthorFeed): void {
   window.dispatchEvent(new CustomEvent(EXTENSION_EVENT.OPEN_AUTHOR_GROUP_DIALOG, {
     detail: {
       mid: author.authorMid,
-      source: 'drawer',
+      source: 'drawer-panel',
       name: author.authorName,
       face: author.authorFace
     }
