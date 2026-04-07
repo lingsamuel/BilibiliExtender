@@ -162,6 +162,51 @@
         </div>
         <input v-model.number="settings.schedulerBatchSize" class="bbe-input" type="number" min="1" max="50" />
       </div>
+      <section class="bbe-settings-subsection">
+        <h4 class="bbe-settings-subtitle">Burst</h4>
+        <div class="bbe-setting-row">
+          <div>
+            快速阶段间隔（毫秒）
+            <div class="bbe-setting-hint">manual-burst 与 auto-burst 共享的快速阶段任务间隔</div>
+          </div>
+          <input v-model.number="settings.burstFastIntervalMs" class="bbe-input" type="number" min="100" max="60000" />
+        </div>
+        <div class="bbe-setting-row">
+          <div>
+            快速阶段预算（任务）
+            <div class="bbe-setting-hint">快速阶段最多连续执行多少个批量 Burst 任务</div>
+          </div>
+          <input v-model.number="settings.burstFastBudgetTasks" class="bbe-input" type="number" min="1" max="500" />
+        </div>
+        <div class="bbe-setting-row">
+          <div>
+            慢速阶段间隔（毫秒）
+            <div class="bbe-setting-hint">快速预算耗尽后使用的任务间隔</div>
+          </div>
+          <input v-model.number="settings.burstSlowIntervalMs" class="bbe-input" type="number" min="100" max="60000" />
+        </div>
+        <div class="bbe-setting-row">
+          <div>
+            慢速阶段预算（任务）
+            <div class="bbe-setting-hint">慢速阶段最多连续执行多少个批量 Burst 任务</div>
+          </div>
+          <input v-model.number="settings.burstSlowBudgetTasks" class="bbe-input" type="number" min="1" max="500" />
+        </div>
+        <div class="bbe-setting-row">
+          <div>
+            Burst 冷却时长（毫秒）
+            <div class="bbe-setting-hint">慢速阶段预算耗尽后进入冷却，结束后回到快速阶段</div>
+          </div>
+          <input v-model.number="settings.burstCooldownMs" class="bbe-input" type="number" min="1000" max="1800000" />
+        </div>
+        <div class="bbe-setting-row">
+          <div>
+            批量错误重试等待（毫秒）
+            <div class="bbe-setting-hint">manual-burst、auto-burst、常规更新在错误后固定等待的重试时间</div>
+          </div>
+          <input v-model.number="settings.burstErrorRetryMs" class="bbe-input" type="number" min="1000" max="1800000" />
+        </div>
+      </section>
       <div class="bbe-setting-row">
         <div>
           时间流模式最大加载数量
@@ -237,7 +282,13 @@ import {
   AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_DEFAULT,
   AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT,
   AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
-  AUTHOR_VIDEOS_PAGE_SIZE_MAX
+  AUTHOR_VIDEOS_PAGE_SIZE_MAX,
+  BURST_COOLDOWN_MS_DEFAULT,
+  BURST_ERROR_RETRY_MS_DEFAULT,
+  BURST_FAST_BUDGET_TASKS_DEFAULT,
+  BURST_FAST_INTERVAL_MS_DEFAULT,
+  BURST_SLOW_BUDGET_TASKS_DEFAULT,
+  BURST_SLOW_INTERVAL_MS_DEFAULT
 } from '@/shared/constants';
 import { sendMessage, type ResponseMap } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
@@ -265,6 +316,12 @@ const settings = ref<ExtensionSettings>({
   backgroundRefreshIntervalMinutes: 10,
   groupFavRefreshIntervalMinutes: 10,
   schedulerBatchSize: 10,
+  burstFastIntervalMs: BURST_FAST_INTERVAL_MS_DEFAULT,
+  burstFastBudgetTasks: BURST_FAST_BUDGET_TASKS_DEFAULT,
+  burstSlowIntervalMs: BURST_SLOW_INTERVAL_MS_DEFAULT,
+  burstSlowBudgetTasks: BURST_SLOW_BUDGET_TASKS_DEFAULT,
+  burstCooldownMs: BURST_COOLDOWN_MS_DEFAULT,
+  burstErrorRetryMs: BURST_ERROR_RETRY_MS_DEFAULT,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   authorVideosPageSize: AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,

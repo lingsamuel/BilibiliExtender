@@ -3,6 +3,16 @@
 > 状态说明：
 > 本文描述的是仓库当前代码实际行为，基于 `src/background/scheduler.ts` 与 `src/background/index.ts` 整理。
 > 它不是未来目标设计文档，也不试图覆盖 `docs/scheduler-spec.md` 中尚未完全落地的抽象。
+>
+> 2026-04-07 补充：
+> 作者类 Burst 已不再是单一 `burstState` 队列，而是实际拆为：
+> - `manual`：作者手动翻页、作者级刷新按钮；
+> - `manual-burst`：用户手动触发的分组级批量作者刷新；
+> - `auto-burst`：后台自动补缓存与自动补页；
+> - `author-video` / `group-fav` 常规更新仍保持独立。
+>
+> 其中 `manual-burst` 与 `auto-burst` 共享同一个 Burst 快慢冷却状态机；`manual` 不受该状态机约束。
+> 本文下文若仍出现“单一 burst 队列”的旧表述，请以 `docs/scheduler-burst-channel-redesign-spec.md` 与当前代码实现为准。
 
 ## 1. 调度器当前由哪些运行单元组成
 

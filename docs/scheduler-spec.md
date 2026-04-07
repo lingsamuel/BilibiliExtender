@@ -1,5 +1,9 @@
 # 通用调度器 Spec
 
+> 补充说明：
+> 本文描述调度器的总体方向。
+> 针对作者类 Burst 的进一步通道拆分、共享预算状态机与错误阻塞语义，请继续参考 `docs/scheduler-burst-channel-redesign-spec.md`。
+
 ## 1. 背景与目标
 
 ### 1.1 问题

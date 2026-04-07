@@ -45,7 +45,7 @@ type SchedulerHistoryEntry = {
   success: boolean;
   timestamp: number;
   error?: string;
-  mode: 'regular' | 'burst' | 'opportunistic';
+  mode: 'regular' | 'manual' | 'manual-burst' | 'auto-burst' | 'opportunistic';
   taskReason: SchedulerTaskReason;
   trigger: SchedulerTaskTrigger;
 };
@@ -772,11 +772,15 @@ export async function loadSchedulerHistory(): Promise<SchedulerHistoryEntry[]> {
         success: item.success === true,
         timestamp: item.timestamp,
         error: typeof item.error === 'string' ? item.error : undefined,
-        mode: item.mode === 'burst'
-          ? 'burst'
-          : item.mode === 'opportunistic'
-            ? 'opportunistic'
-            : 'regular',
+        mode: item.mode === 'manual'
+          ? 'manual'
+          : item.mode === 'manual-burst'
+            ? 'manual-burst'
+            : item.mode === 'auto-burst'
+              ? 'auto-burst'
+              : item.mode === 'opportunistic'
+                ? 'opportunistic'
+                : 'regular',
         taskReason,
         trigger: item.trigger ?? (channel === 'like-action' ? 'manual-click' : 'alarm-routine')
       };

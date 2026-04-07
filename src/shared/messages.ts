@@ -296,7 +296,7 @@ export interface SchedulerStatusResponse {
       authorMid: number;
     }>;
   };
-  burst: {
+  manualChannel: {
     running: boolean;
     queueLength: number;
     currentTask: {
@@ -307,8 +307,6 @@ export interface SchedulerStatusResponse {
       reason?: SchedulerAuthorTaskReason;
       groupNames: string[];
     } | null;
-    nextAllowedAt: number;
-    cooldownReason: 'intra-delay' | 'error' | null;
     lastRunAt?: number;
     queue: Array<{
       mid: number;
@@ -318,6 +316,62 @@ export interface SchedulerStatusResponse {
       reason?: SchedulerAuthorTaskReason;
       groupNames: string[];
     }>;
+  };
+  manualBurstChannel: {
+    queueLength: number;
+    currentTask: {
+      mid: number;
+      name?: string;
+      pn?: number;
+      ps?: number;
+      reason?: SchedulerAuthorTaskReason;
+      groupNames: string[];
+    } | null;
+    lastRunAt?: number;
+    queue: Array<{
+      mid: number;
+      name?: string;
+      pn?: number;
+      ps?: number;
+      reason?: SchedulerAuthorTaskReason;
+      groupNames: string[];
+    }>;
+  };
+  autoBurstChannel: {
+    queueLength: number;
+    currentTask: {
+      mid: number;
+      name?: string;
+      pn?: number;
+      ps?: number;
+      reason?: SchedulerAuthorTaskReason;
+      groupNames: string[];
+    } | null;
+    lastRunAt?: number;
+    queue: Array<{
+      mid: number;
+      name?: string;
+      pn?: number;
+      ps?: number;
+      reason?: SchedulerAuthorTaskReason;
+      groupNames: string[];
+    }>;
+  };
+  burstBudget: {
+    running: boolean;
+    phase: 'fast' | 'slow' | 'cooldown';
+    phaseConsumed: number;
+    phaseBudget: number;
+    remainingBudget: number;
+    nextAllowedAt: number;
+    activeChannel: 'manual-burst' | 'auto-burst' | null;
+    blocker: {
+      channel: 'manual-burst' | 'auto-burst' | 'author-video' | 'group-fav';
+      task: string;
+      error: string;
+      retryAt: number;
+    } | null;
+    lastRunAt?: number;
   };
   globalCooldown: {
     active: boolean;
@@ -353,7 +407,7 @@ export interface SchedulerStatusResponse {
     success: boolean;
     timestamp: number;
     error?: string;
-    mode: 'regular' | 'burst' | 'opportunistic';
+    mode: 'regular' | 'manual' | 'manual-burst' | 'auto-burst' | 'opportunistic';
     taskReason: SchedulerTaskReason;
     trigger: SchedulerTaskTrigger;
   }>;

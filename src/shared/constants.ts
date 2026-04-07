@@ -6,6 +6,12 @@ export const AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_DEFAULT = 3;
 export const AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_MIN = 1;
 export const AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT = 3;
 export const AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_MIN = 1;
+export const BURST_FAST_INTERVAL_MS_DEFAULT = 1_000;
+export const BURST_FAST_BUDGET_TASKS_DEFAULT = 60;
+export const BURST_SLOW_INTERVAL_MS_DEFAULT = 2_000;
+export const BURST_SLOW_BUDGET_TASKS_DEFAULT = 30;
+export const BURST_COOLDOWN_MS_DEFAULT = 120_000;
+export const BURST_ERROR_RETRY_MS_DEFAULT = 60_000;
 
 export const STORAGE_KEYS = {
   SETTINGS: 'bbe:settings',
@@ -32,6 +38,12 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   backgroundRefreshIntervalMinutes: 10,
   groupFavRefreshIntervalMinutes: 10,
   schedulerBatchSize: 10,
+  burstFastIntervalMs: BURST_FAST_INTERVAL_MS_DEFAULT,
+  burstFastBudgetTasks: BURST_FAST_BUDGET_TASKS_DEFAULT,
+  burstSlowIntervalMs: BURST_SLOW_INTERVAL_MS_DEFAULT,
+  burstSlowBudgetTasks: BURST_SLOW_BUDGET_TASKS_DEFAULT,
+  burstCooldownMs: BURST_COOLDOWN_MS_DEFAULT,
+  burstErrorRetryMs: BURST_ERROR_RETRY_MS_DEFAULT,
   timelineMixedMaxCount: 50,
   extraOlderVideoCount: 1,
   authorVideosPageSize: AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,

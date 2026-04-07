@@ -3,6 +3,12 @@ import {
   BG_REFRESH_BATCH_SIZE_DEFAULT,
   BG_REFRESH_INTRA_DELAY_MS,
   BG_REFRESH_MIN_BATCH_DELAY_MS,
+  BURST_COOLDOWN_MS_DEFAULT,
+  BURST_ERROR_RETRY_MS_DEFAULT,
+  BURST_FAST_BUDGET_TASKS_DEFAULT,
+  BURST_FAST_INTERVAL_MS_DEFAULT,
+  BURST_SLOW_BUDGET_TASKS_DEFAULT,
+  BURST_SLOW_INTERVAL_MS_DEFAULT,
   OPPORTUNISTIC_AUTHOR_EXTRA_BLOCKS_PER_RUN,
   OPPORTUNISTIC_REFRESH_DEBOUNCE_MS,
   OPPORTUNISTIC_REFRESH_MAX_REQUESTS_PER_WINDOW,
@@ -117,7 +123,6 @@ interface LikeActionTask {
 }
 
 const MAX_HISTORY = 50;
-const BURST_RETRY_DELAY_MS = 60_000;
 const GLOBAL_WBI_RETRY_DELAY_MS = 60_000;
 
 type AuthorTask =
@@ -125,7 +130,9 @@ type AuthorTask =
   & Required<Pick<SchedulerTask, 'staleAt' | 'queueOrderClass' | 'requestSeq'>>
   & Pick<SchedulerTask, 'groupId' | 'forceRefreshCurrentPage' | 'ensureContinuousFromHead'>
   & SchedulerOrderMeta;
-type BurstCooldownReason = 'intra-delay' | 'error' | null;
+type SchedulerRunMode = 'regular' | 'manual' | 'manual-burst' | 'auto-burst' | 'opportunistic';
+type BatchBurstChannelName = 'manual-burst' | 'auto-burst';
+type BatchBurstPhase = 'fast' | 'slow' | 'cooldown';
 
 export interface LikeTaskResult {
   aid: number;
@@ -160,7 +167,7 @@ interface HistoryEntry {
   aid?: number;
   pn?: number;
   name: string;
-  mode: 'regular' | 'burst' | 'opportunistic';
+  mode: SchedulerRunMode;
   success: boolean;
   timestamp: number;
   taskReason: SchedulerTaskReason;
@@ -217,11 +224,31 @@ interface QueueState<TTask> {
   currentTask: TTask | null;
 }
 
-interface BurstState extends QueueState<AuthorTask> {
+interface ManualState extends QueueState<AuthorTask> {
   running: boolean;
   lastRunAt?: number;
+}
+
+interface BurstBatchQueueState extends QueueState<AuthorTask> {
+  lastRunAt?: number;
+}
+
+interface BatchBurstBlocker {
+  channel: 'manual-burst' | 'auto-burst' | 'author-video' | 'group-fav';
+  task: string;
+  error: string;
+  retryAt: number;
+}
+
+interface BatchBurstState {
+  running: boolean;
+  currentTask: AuthorTask | null;
+  currentChannel: BatchBurstChannelName | null;
+  lastRunAt?: number;
   nextAllowedAt: number;
-  cooldownReason: BurstCooldownReason;
+  phase: BatchBurstPhase;
+  phaseConsumed: number;
+  blocker: BatchBurstBlocker | null;
 }
 
 function createChannelState<TTask>(): ChannelState<TTask> {
@@ -235,20 +262,40 @@ function createChannelState<TTask>(): ChannelState<TTask> {
   };
 }
 
-function createBurstState(): BurstState {
+function createManualState(): ManualState {
   return {
     queue: [],
     currentTask: null,
+    running: false
+  };
+}
+
+function createBurstBatchQueueState(): BurstBatchQueueState {
+  return {
+    queue: [],
+    currentTask: null
+  };
+}
+
+function createBatchBurstState(): BatchBurstState {
+  return {
     running: false,
+    currentTask: null,
+    currentChannel: null,
     nextAllowedAt: 0,
-    cooldownReason: null
+    phase: 'fast',
+    phaseConsumed: 0,
+    blocker: null
   };
 }
 
 const authorState = createChannelState<AuthorTask>();
 const groupFavState = createChannelState<GroupFavTask>();
 const likeActionState = createChannelState<LikeActionTask>();
-const burstState = createBurstState();
+const manualState = createManualState();
+const manualBurstState = createBurstBatchQueueState();
+const autoBurstState = createBurstBatchQueueState();
+const batchBurstState = createBatchBurstState();
 const history: HistoryEntry[] = [];
 let historyHydrated = false;
 let historyPersistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -266,8 +313,8 @@ let opportunisticRefreshRunning = false;
 
 // 作者通道运行期间暴露内存引用，避免调试面板读到过时快照。
 let liveAuthorCacheMap: AuthorCacheMap | null = null;
-const burstTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
-const burstTaskFirstResultListeners = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
+const manualTaskWaiters = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
+const manualTaskFirstResultListeners = new Map<string, Array<(result: { ok: boolean; error?: string }) => void>>();
 const likeTaskWaiters = new Map<string, Array<(result: LikeTaskWaiterResult) => void>>();
 void ensureHistoryHydrated();
 
@@ -327,25 +374,25 @@ async function waitForGlobalCooldownIfNeeded(): Promise<void> {
   }
 }
 
-function notifyBurstTaskFinished(task: AuthorTask, result: { ok: boolean; error?: string }): void {
+function notifyManualTaskFinished(task: AuthorTask, result: { ok: boolean; error?: string }): void {
   const key = keyOfAuthorTask(task);
-  const waiters = burstTaskWaiters.get(key);
+  const waiters = manualTaskWaiters.get(key);
   if (!waiters || waiters.length === 0) {
     return;
   }
-  burstTaskWaiters.delete(key);
+  manualTaskWaiters.delete(key);
   for (const waiter of waiters) {
     waiter(result);
   }
 }
 
-function notifyBurstTaskFirstResult(task: AuthorTask, result: { ok: boolean; error?: string }): void {
+function notifyManualTaskFirstResult(task: AuthorTask, result: { ok: boolean; error?: string }): void {
   const key = keyOfAuthorTask(task);
-  const listeners = burstTaskFirstResultListeners.get(key);
+  const listeners = manualTaskFirstResultListeners.get(key);
   if (!listeners || listeners.length === 0) {
     return;
   }
-  burstTaskFirstResultListeners.delete(key);
+  manualTaskFirstResultListeners.delete(key);
   for (const listener of listeners) {
     listener(result);
   }
@@ -370,6 +417,18 @@ function waitForLikeTask(task: LikeActionTask): Promise<LikeTaskWaiterResult> {
     waiters.push(resolve);
     likeTaskWaiters.set(key, waiters);
   });
+}
+
+async function acquireAuthorCacheMap(): Promise<AuthorCacheMap> {
+  const authorCacheMap = liveAuthorCacheMap ?? await loadAuthorVideoCacheMap();
+  liveAuthorCacheMap = authorCacheMap;
+  return authorCacheMap;
+}
+
+function releaseAuthorCacheMapIfIdle(): void {
+  if (!authorState.running && !manualState.running && !batchBurstState.running) {
+    liveAuthorCacheMap = null;
+  }
 }
 
 async function ensureHistoryHydrated(): Promise<void> {
@@ -466,14 +525,18 @@ function resolveRegularAuthorQueueOrderClass(task: SchedulerTask): number {
   return 0;
 }
 
-function resolveBurstQueueOrderClass(task: SchedulerTask): number {
+function resolveManualAuthorQueueOrderClass(task: SchedulerTask): number {
   if (typeof task.queueOrderClass === 'number') {
     return task.queueOrderClass;
   }
-  if (task.trigger === 'request-author-page' || task.reason === 'request-author-page' || task.reason === 'refresh-author-current-page') {
-    return 1;
+  return 0;
+}
+
+function resolveBatchBurstQueueOrderClass(task: SchedulerTask): number {
+  if (typeof task.queueOrderClass === 'number') {
+    return task.queueOrderClass;
   }
-  return 2;
+  return 0;
 }
 
 function normalizeRegularAuthorTask(task: SchedulerTask, requestContext: SchedulerRequestContext, requestSeq: number): AuthorTask {
@@ -488,11 +551,23 @@ function normalizeRegularAuthorTask(task: SchedulerTask, requestContext: Schedul
   };
 }
 
-function normalizeBurstAuthorTask(task: SchedulerTask, requestContext: SchedulerRequestContext, requestSeq: number): AuthorTask {
+function normalizeManualAuthorTask(task: SchedulerTask, requestContext: SchedulerRequestContext, requestSeq: number): AuthorTask {
   return {
     ...buildAuthorTaskBase(task),
     staleAt: Math.max(0, Number(task.staleAt) || 0),
-    queueOrderClass: resolveBurstQueueOrderClass(task),
+    queueOrderClass: resolveManualAuthorQueueOrderClass(task),
+    requestAt: task.requestContext?.requestAt ?? requestContext.requestAt,
+    requestBatchId: task.requestContext?.requestBatchId ?? requestContext.requestBatchId,
+    requestSeq: task.requestSeq ?? requestSeq,
+    enqueueSeq: ++enqueueSequence
+  };
+}
+
+function normalizeBatchBurstAuthorTask(task: SchedulerTask, requestContext: SchedulerRequestContext, requestSeq: number): AuthorTask {
+  return {
+    ...buildAuthorTaskBase(task),
+    staleAt: Math.max(0, Number(task.staleAt) || 0),
+    queueOrderClass: resolveBatchBurstQueueOrderClass(task),
     requestAt: task.requestContext?.requestAt ?? requestContext.requestAt,
     requestBatchId: task.requestContext?.requestBatchId ?? requestContext.requestBatchId,
     requestSeq: task.requestSeq ?? requestSeq,
@@ -639,6 +714,79 @@ function normalizeBatchSize(settings: ExtensionSettings): number {
 function normalizeInterval(mins: number, fallback: number): number {
   const value = Number(mins) || fallback;
   return Math.min(120, Math.max(5, value));
+}
+
+function getBatchErrorRetryMs(settings: ExtensionSettings): number {
+  return Math.max(1_000, Number(settings.burstErrorRetryMs) || BURST_ERROR_RETRY_MS_DEFAULT);
+}
+
+function getBatchBurstPhaseBudget(settings: ExtensionSettings, phase: BatchBurstPhase): number {
+  if (phase === 'fast') {
+    return Math.max(1, Number(settings.burstFastBudgetTasks) || BURST_FAST_BUDGET_TASKS_DEFAULT);
+  }
+  if (phase === 'slow') {
+    return Math.max(1, Number(settings.burstSlowBudgetTasks) || BURST_SLOW_BUDGET_TASKS_DEFAULT);
+  }
+  return 0;
+}
+
+function getBatchBurstPhaseIntervalMs(settings: ExtensionSettings, phase: Exclude<BatchBurstPhase, 'cooldown'>): number {
+  if (phase === 'fast') {
+    return Math.max(100, Number(settings.burstFastIntervalMs) || BURST_FAST_INTERVAL_MS_DEFAULT);
+  }
+  return Math.max(100, Number(settings.burstSlowIntervalMs) || BURST_SLOW_INTERVAL_MS_DEFAULT);
+}
+
+function getBatchBurstCooldownMs(settings: ExtensionSettings): number {
+  return Math.max(1_000, Number(settings.burstCooldownMs) || BURST_COOLDOWN_MS_DEFAULT);
+}
+
+function resetBatchBurstPhaseIfReady(): void {
+  if (batchBurstState.phase !== 'cooldown') {
+    return;
+  }
+  if (batchBurstState.nextAllowedAt > Date.now()) {
+    return;
+  }
+  batchBurstState.phase = 'fast';
+  batchBurstState.phaseConsumed = 0;
+  batchBurstState.nextAllowedAt = 0;
+}
+
+function consumeBatchBurstBudget(settings: ExtensionSettings, now: number): void {
+  if (batchBurstState.phase === 'cooldown') {
+    return;
+  }
+
+  batchBurstState.phaseConsumed += 1;
+
+  if (batchBurstState.phase === 'fast') {
+    const budget = getBatchBurstPhaseBudget(settings, 'fast');
+    if (batchBurstState.phaseConsumed >= budget) {
+      batchBurstState.phase = 'slow';
+      batchBurstState.phaseConsumed = 0;
+      batchBurstState.nextAllowedAt = now + getBatchBurstPhaseIntervalMs(settings, 'slow');
+      return;
+    }
+    batchBurstState.nextAllowedAt = now + getBatchBurstPhaseIntervalMs(settings, 'fast');
+    return;
+  }
+
+  const budget = getBatchBurstPhaseBudget(settings, 'slow');
+  if (batchBurstState.phaseConsumed >= budget) {
+    batchBurstState.phase = 'cooldown';
+    batchBurstState.phaseConsumed = 0;
+    batchBurstState.nextAllowedAt = now + getBatchBurstCooldownMs(settings);
+    return;
+  }
+  batchBurstState.nextAllowedAt = now + getBatchBurstPhaseIntervalMs(settings, 'slow');
+}
+
+function getBlockingTaskLabel(task: Pick<AuthorTask, 'mid' | 'pn' | 'ps' | 'name'> | GroupFavTask): string {
+  if ('groupId' in task) {
+    return `group:${task.groupId}`;
+  }
+  return `${task.name || task.mid} (mid=${task.mid}, pn=${task.pn}, ps=${task.ps})`;
 }
 
 function trimOpportunisticRequestTimestamps(timestamps: number[], now: number): number[] {
@@ -820,8 +968,23 @@ function getExistingLikeActionByBvid(bvid: string): LikeActionTask | null {
   return likeActionState.queue.find((task) => task.bvid === bvid) ?? null;
 }
 
-function isBurstActive(): boolean {
-  return burstState.running || burstState.queue.length > 0;
+function hasPendingManualTask(): boolean {
+  return manualState.running || manualState.queue.length > 0;
+}
+
+function hasPendingBatchBurstTask(): boolean {
+  return batchBurstState.running || manualBurstState.queue.length > 0 || autoBurstState.queue.length > 0;
+}
+
+function hasPriorityAuthorDemand(): boolean {
+  return hasPendingManualTask() || hasPendingBatchBurstTask();
+}
+
+function hasRunningBlockingCurrentTask(): boolean {
+  return !!manualState.currentTask
+    || !!batchBurstState.currentTask
+    || !!authorState.currentTask
+    || !!groupFavState.currentTask;
 }
 
 function hasRunningRegularTask(): boolean {
@@ -832,7 +995,7 @@ function hasOpportunisticConflict(): boolean {
   // 这里只判断“其他通道”的调度压力。
   // 机会式刷新自身的单例执行由 runTabOpenOpportunisticRefresh 入口处单独保护，
   // 不能把 opportunisticRefreshRunning 也算进来，否则会把自己永久判成 busy。
-  return isBurstActive()
+  return hasPriorityAuthorDemand()
     || hasRunningRegularTask()
     || authorState.queue.length > 0
     || groupFavState.queue.length > 0;
@@ -859,6 +1022,46 @@ function removeAuthorTasksFromRegularQueue(taskKeys: Set<string>): void {
   authorState.queue = authorState.queue.filter((task) => !taskKeys.has(keyOfAuthorTask(task)));
 }
 
+function removeAuthorTasksFromQueueState(state: QueueState<AuthorTask>, taskKeys: Set<string>): void {
+  if (taskKeys.size === 0 || state.queue.length === 0) {
+    return;
+  }
+  state.queue = state.queue.filter((task) => !taskKeys.has(keyOfAuthorTask(task)));
+}
+
+function buildBurstRelatedTaskKeySet(): Set<string> {
+  const existing = buildExistingTaskKeySet(manualState, keyOfAuthorTask);
+  for (const key of buildExistingTaskKeySet(manualBurstState, keyOfAuthorTask)) {
+    existing.add(key);
+  }
+  for (const key of buildExistingTaskKeySet(autoBurstState, keyOfAuthorTask)) {
+    existing.add(key);
+  }
+  return existing;
+}
+
+function buildActiveAuthorTaskKeySet(): Set<string> {
+  const existing = buildBurstRelatedTaskKeySet();
+  if (authorState.currentTask) {
+    existing.add(keyOfAuthorTask(authorState.currentTask));
+  }
+  return existing;
+}
+
+function buildCurrentAuthorTaskKeySet(): Set<string> {
+  const existing = new Set<string>();
+  if (manualState.currentTask) {
+    existing.add(keyOfAuthorTask(manualState.currentTask));
+  }
+  if (batchBurstState.currentTask) {
+    existing.add(keyOfAuthorTask(batchBurstState.currentTask));
+  }
+  if (authorState.currentTask) {
+    existing.add(keyOfAuthorTask(authorState.currentTask));
+  }
+  return existing;
+}
+
 function enqueueRegularAuthorTasks(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
   if (tasks.length === 0) {
     return 0;
@@ -868,13 +1071,26 @@ function enqueueRegularAuthorTasks(tasks: SchedulerTask[], requestContext?: Sche
   return dedupeMergeAndSort(authorState, normalizedTasks, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
 }
 
-function enqueueBurstTasks(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+function enqueueManualTasks(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
   if (tasks.length === 0) {
     return 0;
   }
   const context = requestContext ?? createSchedulerRequestContext();
-  const normalizedTasks = tasks.map((task, index) => normalizeBurstAuthorTask(task, context, index));
-  return dedupeMergeAndSort(burstState, normalizedTasks, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
+  const normalizedTasks = tasks.map((task, index) => normalizeManualAuthorTask(task, context, index));
+  return dedupeMergeAndSort(manualState, normalizedTasks, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
+}
+
+function enqueueBatchBurstTasks(
+  state: QueueState<AuthorTask>,
+  tasks: SchedulerTask[],
+  requestContext?: SchedulerRequestContext
+): number {
+  if (tasks.length === 0) {
+    return 0;
+  }
+  const context = requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeBatchBurstAuthorTask(task, context, index));
+  return dedupeMergeAndSort(state, normalizedTasks, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
 }
 
 function enqueueGroupFavTasks(tasks: GroupFavTaskInput[], requestContext?: SchedulerRequestContext): number {
@@ -1340,7 +1556,12 @@ async function runGroupFavTask(
     }
   }
 
-  enqueueBurst(burstTasks, requestContext);
+  if (forceAuthorRefresh) {
+    enqueueManualBurst([...burstTasks, ...priorityTasks], requestContext);
+    return;
+  }
+
+  enqueueAutoBurst(burstTasks, requestContext);
   enqueuePriority(priorityTasks, requestContext);
 }
 
@@ -1449,6 +1670,124 @@ async function runLikeActionLoop(): Promise<void> {
   likeActionState.running = false;
 }
 
+function clearBlockingState(channel: BatchBurstBlocker['channel']): void {
+  if (batchBurstState.blocker?.channel === channel) {
+    batchBurstState.blocker = null;
+  }
+}
+
+function setBlockingState(
+  channel: BatchBurstBlocker['channel'],
+  task: Pick<AuthorTask, 'mid' | 'pn' | 'ps' | 'name'> | GroupFavTask,
+  error: string,
+  retryAt: number
+): void {
+  batchBurstState.blocker = {
+    channel,
+    task: getBlockingTaskLabel(task),
+    error,
+    retryAt
+  };
+}
+
+function pickNextBatchBurstTask(): { channel: BatchBurstChannelName; state: BurstBatchQueueState; task: AuthorTask } | null {
+  const manualTask = manualBurstState.queue[0];
+  if (manualTask) {
+    return {
+      channel: 'manual-burst',
+      state: manualBurstState,
+      task: manualTask
+    };
+  }
+
+  const autoTask = autoBurstState.queue[0];
+  if (autoTask) {
+    return {
+      channel: 'auto-burst',
+      state: autoBurstState,
+      task: autoTask
+    };
+  }
+
+  return null;
+}
+
+async function waitForBatchBurstTurn(settings: ExtensionSettings): Promise<void> {
+  while (true) {
+    resetBatchBurstPhaseIfReady();
+    const waitMs = Math.max(batchBurstState.nextAllowedAt, globalCooldownState.nextAllowedAt) - Date.now();
+    if (waitMs <= 0) {
+      return;
+    }
+    await sleep(waitMs);
+  }
+}
+
+async function runManualLoop(): Promise<void> {
+  if (manualState.running) return;
+
+  manualState.running = true;
+  manualState.lastRunAt = Date.now();
+
+  const authorCacheMap = await acquireAuthorCacheMap();
+
+  while (manualState.queue.length > 0) {
+    const task = manualState.queue[0]!;
+    manualState.currentTask = task;
+
+    try {
+      await runAuthorTask(task, authorCacheMap);
+      manualState.queue.shift();
+      pushHistory({
+        channel: 'author-video',
+        mid: task.mid,
+        pn: task.pn,
+        name: task.name,
+        mode: 'manual',
+        success: true,
+        timestamp: Date.now(),
+        taskReason: task.reason,
+        trigger: task.trigger
+      });
+      await saveAuthorVideoCacheMap(authorCacheMap);
+      notifyManualTaskFirstResult(task, { ok: true });
+      notifyManualTaskFinished(task, { ok: true });
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      pushHistory({
+        channel: 'author-video',
+        mid: task.mid,
+        pn: task.pn,
+        name: task.name,
+        mode: 'manual',
+        success: false,
+        timestamp: Date.now(),
+        taskReason: task.reason,
+        trigger: task.trigger,
+        error: errorText
+      });
+      debugWarn('[BBE] 手动作者任务失败 mid:', task.mid, error);
+      manualState.queue.shift();
+      notifyManualTaskFirstResult(task, { ok: false, error: errorText });
+      notifyManualTaskFinished(task, { ok: false, error: errorText });
+    } finally {
+      manualState.currentTask = null;
+    }
+  }
+
+  await saveAuthorVideoCacheMap(authorCacheMap);
+  manualState.running = false;
+  releaseAuthorCacheMapIfIdle();
+
+  if (manualBurstState.queue.length > 0 || autoBurstState.queue.length > 0) {
+    startBatchBurstLoopIfIdle();
+    return;
+  }
+
+  startAuthorLoopIfIdle();
+  startGroupFavLoopIfIdle();
+}
+
 async function runAuthorLoop(): Promise<void> {
   if (authorState.running) return;
 
@@ -1457,28 +1796,30 @@ async function runAuthorLoop(): Promise<void> {
 
   const settings = await loadSettings();
   const batchSize = normalizeBatchSize(settings);
-  const authorCacheMap = await loadAuthorVideoCacheMap();
-  liveAuthorCacheMap = authorCacheMap;
+  const retryDelayMs = getBatchErrorRetryMs(settings);
+  const authorCacheMap = await acquireAuthorCacheMap();
 
   while (authorState.queue.length > 0) {
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       break;
     }
 
     await waitForGlobalCooldownIfNeeded();
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       break;
     }
     if (authorState.queue.length === 0) {
       break;
     }
 
-    const task = authorState.queue.shift()!;
+    const task = authorState.queue[0]!;
     authorState.currentTask = task;
 
     try {
       await runAuthorTask(task, authorCacheMap);
+      authorState.queue.shift();
       authorState.batchCompleted++;
+      clearBlockingState('author-video');
       pushHistory({
         channel: 'author-video',
         mid: task.mid,
@@ -1490,11 +1831,15 @@ async function runAuthorLoop(): Promise<void> {
         taskReason: task.reason,
         trigger: task.trigger
       });
+      await saveAuthorVideoCacheMap(authorCacheMap);
+      authorState.currentTask = null;
     } catch (error) {
-      authorState.batchFailed.push(task);
+      const errorText = error instanceof Error ? error.message : String(error);
       if (isWbiRatelimitError(error)) {
         triggerGlobalWbiCooldown();
       }
+      const retryAt = Date.now() + retryDelayMs;
+      setBlockingState('author-video', task, errorText, retryAt);
       pushHistory({
         channel: 'author-video',
         mid: task.mid,
@@ -1505,25 +1850,20 @@ async function runAuthorLoop(): Promise<void> {
         timestamp: Date.now(),
         taskReason: task.reason,
         trigger: task.trigger,
-        error: error instanceof Error ? error.message : String(error)
+        error: errorText
       });
       debugWarn('[BBE] 作者任务刷新失败 mid:', task.mid, error);
+      await saveAuthorVideoCacheMap(authorCacheMap);
+      await sleep(retryDelayMs);
+      continue;
     }
 
-    authorState.currentTask = null;
-
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       continue;
     }
 
     if (authorState.batchCompleted >= batchSize) {
-      if (authorState.batchFailed.length > 0) {
-        authorState.queue.push(...authorState.batchFailed);
-        authorState.batchFailed = [];
-      }
       authorState.batchCompleted = 0;
-
-      await saveAuthorVideoCacheMap(authorCacheMap);
 
       if (authorState.queue.length > 0) {
         await sleep(authorState.currentBatchDelay);
@@ -1533,19 +1873,19 @@ async function runAuthorLoop(): Promise<void> {
     }
   }
 
-  if (authorState.batchFailed.length > 0) {
-    authorState.queue.push(...authorState.batchFailed);
-    authorState.batchFailed = [];
-  }
   authorState.batchCompleted = 0;
-
+  authorState.currentTask = null;
   await saveAuthorVideoCacheMap(authorCacheMap);
 
   authorState.running = false;
-  liveAuthorCacheMap = null;
+  releaseAuthorCacheMapIfIdle();
 
-  if (isBurstActive()) {
-    startBurstLoopIfIdle();
+  if (hasPendingManualTask()) {
+    startManualLoopIfIdle();
+    return;
+  }
+  if (manualBurstState.queue.length > 0 || autoBurstState.queue.length > 0) {
+    startBatchBurstLoopIfIdle();
   }
 }
 
@@ -1557,22 +1897,23 @@ async function runGroupFavLoop(): Promise<void> {
 
   const settings = await loadSettings();
   const batchSize = normalizeBatchSize(settings);
+  const retryDelayMs = getBatchErrorRetryMs(settings);
   let batchFolderSnapshot: FavoriteFolderSnapshot | null | undefined = undefined;
 
   while (groupFavState.queue.length > 0) {
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       break;
     }
 
     await waitForGlobalCooldownIfNeeded();
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       break;
     }
     if (groupFavState.queue.length === 0) {
       break;
     }
 
-    const task = groupFavState.queue.shift()!;
+    const task = groupFavState.queue[0]!;
     groupFavState.currentTask = task;
     const groupDisplayName = task.groupId;
 
@@ -1587,7 +1928,9 @@ async function runGroupFavLoop(): Promise<void> {
       }
 
       await runGroupFavTask(task, batchFolderSnapshot);
+      groupFavState.queue.shift();
       groupFavState.batchCompleted++;
+      clearBlockingState('group-fav');
       pushHistory({
         channel: 'group-fav',
         groupId: task.groupId,
@@ -1598,11 +1941,14 @@ async function runGroupFavLoop(): Promise<void> {
         taskReason: 'group-fav-refresh',
         trigger: task.trigger
       });
+      groupFavState.currentTask = null;
     } catch (error) {
-      groupFavState.batchFailed.push(task);
+      const errorText = error instanceof Error ? error.message : String(error);
       if (isWbiRatelimitError(error)) {
         triggerGlobalWbiCooldown();
       }
+      const retryAt = Date.now() + retryDelayMs;
+      setBlockingState('group-fav', task, errorText, retryAt);
       pushHistory({
         channel: 'group-fav',
         groupId: task.groupId,
@@ -1612,22 +1958,18 @@ async function runGroupFavLoop(): Promise<void> {
         timestamp: Date.now(),
         taskReason: 'group-fav-refresh',
         trigger: task.trigger,
-        error: error instanceof Error ? error.message : String(error)
+        error: errorText
       });
       debugWarn('[BBE] 收藏夹任务刷新失败 groupId:', task.groupId, error);
+      await sleep(retryDelayMs);
+      continue;
     }
 
-    groupFavState.currentTask = null;
-
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       continue;
     }
 
     if (groupFavState.batchCompleted >= batchSize) {
-      if (groupFavState.batchFailed.length > 0) {
-        groupFavState.queue.push(...groupFavState.batchFailed);
-        groupFavState.batchFailed = [];
-      }
       groupFavState.batchCompleted = 0;
 
       if (groupFavState.queue.length > 0) {
@@ -1639,16 +1981,16 @@ async function runGroupFavLoop(): Promise<void> {
     }
   }
 
-  if (groupFavState.batchFailed.length > 0) {
-    groupFavState.queue.push(...groupFavState.batchFailed);
-    groupFavState.batchFailed = [];
-  }
   groupFavState.batchCompleted = 0;
-
+  groupFavState.currentTask = null;
   groupFavState.running = false;
 
-  if (isBurstActive()) {
-    startBurstLoopIfIdle();
+  if (hasPendingManualTask()) {
+    startManualLoopIfIdle();
+    return;
+  }
+  if (manualBurstState.queue.length > 0 || autoBurstState.queue.length > 0) {
+    startBatchBurstLoopIfIdle();
   }
 }
 
@@ -1676,112 +2018,139 @@ async function flushPendingRoutineAfterBurst(): Promise<void> {
   }
 }
 
-async function runBurstLoop(): Promise<void> {
-  if (burstState.running) return;
+async function runBatchBurstLoop(): Promise<void> {
+  if (batchBurstState.running) return;
 
-  burstState.running = true;
-  burstState.lastRunAt = Date.now();
+  batchBurstState.running = true;
+  batchBurstState.lastRunAt = Date.now();
 
-  const authorCacheMap = await loadAuthorVideoCacheMap();
-  liveAuthorCacheMap = authorCacheMap;
+  const settings = await loadSettings();
+  const retryDelayMs = getBatchErrorRetryMs(settings);
+  const authorCacheMap = await acquireAuthorCacheMap();
 
-  while (burstState.queue.length > 0) {
-    const waitMs = Math.max(burstState.nextAllowedAt, globalCooldownState.nextAllowedAt) - Date.now();
-    if (waitMs > 0) {
-      await sleep(waitMs);
-    }
-
-    if (burstState.queue.length === 0) {
+  while (manualBurstState.queue.length > 0 || autoBurstState.queue.length > 0) {
+    if (hasPendingManualTask()) {
       break;
     }
 
-    const task = burstState.queue[0]!;
-    burstState.currentTask = task;
+    await waitForBatchBurstTurn(settings);
+    if (hasPendingManualTask()) {
+      break;
+    }
+
+    const next = pickNextBatchBurstTask();
+    if (!next) {
+      break;
+    }
+
+    const task = next.task;
+    batchBurstState.currentTask = task;
+    batchBurstState.currentChannel = next.channel;
+    batchBurstState.lastRunAt = Date.now();
+    next.state.currentTask = task;
+    next.state.lastRunAt = batchBurstState.lastRunAt;
 
     try {
       await runAuthorTask(task, authorCacheMap);
-      burstState.queue.shift();
-      burstState.nextAllowedAt = Date.now() + BG_REFRESH_INTRA_DELAY_MS;
-      burstState.cooldownReason = 'intra-delay';
+      next.state.queue.shift();
+      consumeBatchBurstBudget(settings, Date.now());
+      clearBlockingState(next.channel);
       pushHistory({
         channel: 'author-video',
         mid: task.mid,
         pn: task.pn,
         name: task.name,
-        mode: 'burst',
+        mode: next.channel,
         success: true,
         timestamp: Date.now(),
         taskReason: task.reason,
         trigger: task.trigger
       });
       await saveAuthorVideoCacheMap(authorCacheMap);
-      notifyBurstTaskFirstResult(task, { ok: true });
-      notifyBurstTaskFinished(task, { ok: true });
+      next.state.currentTask = null;
+      batchBurstState.currentTask = null;
+      batchBurstState.currentChannel = null;
     } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
       if (isWbiRatelimitError(error)) {
         triggerGlobalWbiCooldown();
       }
+      consumeBatchBurstBudget(settings, Date.now());
+      const retryAt = Math.max(batchBurstState.nextAllowedAt, Date.now() + retryDelayMs);
+      batchBurstState.nextAllowedAt = retryAt;
+      setBlockingState(next.channel, task, errorText, retryAt);
       pushHistory({
         channel: 'author-video',
         mid: task.mid,
         pn: task.pn,
         name: task.name,
-        mode: 'burst',
+        mode: next.channel,
         success: false,
         timestamp: Date.now(),
         taskReason: task.reason,
         trigger: task.trigger,
-        error: error instanceof Error ? error.message : String(error)
+        error: errorText
       });
-      debugWarn('[BBE] Burst 作者任务刷新失败 mid:', task.mid, error);
-      notifyBurstTaskFirstResult(task, {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-
-      if (task.failFast) {
-        burstState.queue.shift();
-        burstState.nextAllowedAt = Date.now() + BG_REFRESH_INTRA_DELAY_MS;
-        burstState.cooldownReason = 'error';
-        notifyBurstTaskFinished(task, {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      } else {
-        burstState.nextAllowedAt = Date.now() + BURST_RETRY_DELAY_MS;
-        burstState.cooldownReason = 'error';
-      }
-    } finally {
-      burstState.currentTask = null;
+      debugWarn('[BBE] 批量 Burst 作者任务刷新失败 mid:', task.mid, 'channel:', next.channel, error);
+      await saveAuthorVideoCacheMap(authorCacheMap);
+      await sleep(Math.max(0, retryAt - Date.now()));
+      continue;
     }
   }
 
   await saveAuthorVideoCacheMap(authorCacheMap);
+  batchBurstState.running = false;
+  batchBurstState.currentTask = null;
+  batchBurstState.currentChannel = null;
+  manualBurstState.currentTask = null;
+  autoBurstState.currentTask = null;
+  releaseAuthorCacheMapIfIdle();
 
-  burstState.running = false;
-  liveAuthorCacheMap = null;
+  if (hasPendingManualTask()) {
+    startManualLoopIfIdle();
+    return;
+  }
 
-  if (burstState.queue.length > 0) {
-    startBurstLoopIfIdle();
+  if (manualBurstState.queue.length > 0 || autoBurstState.queue.length > 0) {
+    startBatchBurstLoopIfIdle();
     return;
   }
 
   await flushPendingRoutineAfterBurst();
-  if (!isBurstActive()) {
+  if (!hasPriorityAuthorDemand()) {
     startAuthorLoopIfIdle();
     startGroupFavLoopIfIdle();
   }
 }
 
-function startBurstLoopIfIdle(): void {
-  if (!burstState.running && burstState.queue.length > 0) {
-    void runBurstLoop();
+function startManualLoopIfIdle(): void {
+  if (manualState.running || manualState.queue.length === 0) {
+    return;
   }
+  if (hasRunningBlockingCurrentTask()) {
+    return;
+  }
+  void runManualLoop();
+}
+
+function startBatchBurstLoopIfIdle(): void {
+  if (batchBurstState.running || (manualBurstState.queue.length === 0 && autoBurstState.queue.length === 0)) {
+    return;
+  }
+  if (hasPendingManualTask()) {
+    startManualLoopIfIdle();
+    return;
+  }
+  if (hasRunningBlockingCurrentTask()) {
+    return;
+  }
+  void runBatchBurstLoop();
 }
 
 function startAuthorLoopIfIdle(): void {
-  if (isBurstActive()) {
-    startBurstLoopIfIdle();
+  if (hasPriorityAuthorDemand()) {
+    startManualLoopIfIdle();
+    startBatchBurstLoopIfIdle();
     return;
   }
 
@@ -1791,7 +2160,7 @@ function startAuthorLoopIfIdle(): void {
 }
 
 function startGroupFavLoopIfIdle(): void {
-  if (isBurstActive()) {
+  if (hasPriorityAuthorDemand()) {
     return;
   }
 
@@ -1806,33 +2175,74 @@ function startLikeActionLoopIfIdle(): void {
   }
 }
 
-export function enqueueBurst(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+export function enqueueManual(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
   const previewContext = requestContext ?? tasks[0]?.requestContext ?? createSchedulerRequestContext();
-  const previewTasks = tasks.map((task, index) => normalizeBurstAuthorTask(task, previewContext, index));
+  const previewTasks = tasks.map((task, index) => normalizeManualAuthorTask(task, previewContext, index));
   const taskKeys = new Set(previewTasks.map((task) => keyOfAuthorTask(task)));
-  const added = enqueueBurstTasks(tasks, previewContext);
-  if (taskKeys.size > 0) {
-    // Burst 任务优先级高于常规作者队列，入列后清掉常规队列里的同目标，避免重复调用。
-    removeAuthorTasksFromRegularQueue(taskKeys);
-  }
-  if (added > 0 && !hasRunningRegularTask()) {
-    startBurstLoopIfIdle();
-  }
+
+  removeAuthorTasksFromRegularQueue(taskKeys);
+  removeAuthorTasksFromQueueState(manualBurstState, taskKeys);
+  removeAuthorTasksFromQueueState(autoBurstState, taskKeys);
+
+  const activeKeys = buildCurrentAuthorTaskKeySet();
+  const added = enqueueManualTasks(
+    tasks.filter((task) => !activeKeys.has(keyOfAuthorTask(task))),
+    previewContext
+  );
+  startManualLoopIfIdle();
   return added;
 }
 
-export function observeBurstTaskFirstResult(
+export function enqueueManualBurst(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+  const previewContext = requestContext ?? tasks[0]?.requestContext ?? createSchedulerRequestContext();
+  const previewTasks = tasks.map((task, index) => normalizeBatchBurstAuthorTask(task, previewContext, index));
+  const taskKeys = new Set(previewTasks.map((task) => keyOfAuthorTask(task)));
+
+  removeAuthorTasksFromRegularQueue(taskKeys);
+  removeAuthorTasksFromQueueState(autoBurstState, taskKeys);
+
+  const activeKeys = buildCurrentAuthorTaskKeySet();
+  const added = enqueueBatchBurstTasks(
+    manualBurstState,
+    tasks.filter((task) => !activeKeys.has(keyOfAuthorTask(task))),
+    previewContext
+  );
+  startBatchBurstLoopIfIdle();
+  return added;
+}
+
+export function enqueueAutoBurst(tasks: SchedulerTask[], requestContext?: SchedulerRequestContext): number {
+  if (tasks.length === 0) {
+    return 0;
+  }
+
+  const previewContext = requestContext ?? tasks[0]?.requestContext ?? createSchedulerRequestContext();
+  const normalizedTasks = tasks.map((task, index) => normalizeBatchBurstAuthorTask(task, previewContext, index));
+  const existingKeys = buildActiveAuthorTaskKeySet();
+  const filtered = normalizedTasks.filter((task) => !existingKeys.has(keyOfAuthorTask(task)));
+  const taskKeys = new Set(filtered.map((task) => keyOfAuthorTask(task)));
+
+  if (taskKeys.size > 0) {
+    removeAuthorTasksFromRegularQueue(taskKeys);
+  }
+
+  const added = dedupeMergeAndSort(autoBurstState, filtered, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
+  startBatchBurstLoopIfIdle();
+  return added;
+}
+
+export function observeManualTaskFirstResult(
   task: SchedulerTask,
   listener: (result: { ok: boolean; error?: string }) => void
 ): () => void {
   const normalizedTask = buildAuthorTaskBase(task);
   const key = keyOfAuthorTask(normalizedTask);
-  const listeners = burstTaskFirstResultListeners.get(key) ?? [];
+  const listeners = manualTaskFirstResultListeners.get(key) ?? [];
   listeners.push(listener);
-  burstTaskFirstResultListeners.set(key, listeners);
+  manualTaskFirstResultListeners.set(key, listeners);
 
   return () => {
-    const nextListeners = burstTaskFirstResultListeners.get(key);
+    const nextListeners = manualTaskFirstResultListeners.get(key);
     if (!nextListeners || nextListeners.length === 0) {
       return;
     }
@@ -1842,34 +2252,18 @@ export function observeBurstTaskFirstResult(
     }
     nextListeners.splice(index, 1);
     if (nextListeners.length === 0) {
-      burstTaskFirstResultListeners.delete(key);
+      manualTaskFirstResultListeners.delete(key);
     }
   };
 }
 
-function waitForBurstTask(task: AuthorTask): Promise<{ ok: boolean; error?: string }> {
+function waitForManualTask(task: AuthorTask): Promise<{ ok: boolean; error?: string }> {
   const key = keyOfAuthorTask(task);
   return new Promise((resolve) => {
-    const waiters = burstTaskWaiters.get(key) ?? [];
+    const waiters = manualTaskWaiters.get(key) ?? [];
     waiters.push(resolve);
-    burstTaskWaiters.set(key, waiters);
+    manualTaskWaiters.set(key, waiters);
   });
-}
-
-function markBurstTaskFailFastByKeys(taskKeys: Set<string>): void {
-  if (taskKeys.size === 0) {
-    return;
-  }
-
-  if (burstState.currentTask && taskKeys.has(keyOfAuthorTask(burstState.currentTask))) {
-    burstState.currentTask.failFast = true;
-  }
-
-  for (const task of burstState.queue) {
-    if (taskKeys.has(keyOfAuthorTask(task))) {
-      task.failFast = true;
-    }
-  }
 }
 
 export async function enqueueBurstHeadAndWait(
@@ -1881,7 +2275,7 @@ export async function enqueueBurstHeadAndWait(
   }
 
   const context = requestContext ?? createSchedulerRequestContext();
-  const normalizedTasks = tasks.map((task, index) => normalizeBurstAuthorTask({
+  const normalizedTasks = tasks.map((task, index) => normalizeManualAuthorTask({
     ...task,
     queueOrderClass: 0
   }, context, index));
@@ -1890,17 +2284,16 @@ export async function enqueueBurstHeadAndWait(
     failFast: true,
     reason: 'load-more-boundary' as const
   }));
-  const taskKeys = new Set(failFastTasks.map((task) => keyOfAuthorTask(task)));
-  markBurstTaskFailFastByKeys(taskKeys);
-
   const waitJobs = failFastTasks.map(async (task) => {
     const key = keyOfAuthorTask(task);
-    const waiter = waitForBurstTask(task);
-    const added = dedupeMergeAndSort(burstState, [task], keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
+    const waiter = waitForManualTask(task);
+    removeAuthorTasksFromRegularQueue(new Set([key]));
+    removeAuthorTasksFromQueueState(manualBurstState, new Set([key]));
+    removeAuthorTasksFromQueueState(autoBurstState, new Set([key]));
+    const added = dedupeMergeAndSort(manualState, [task], keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
     if (added > 0) {
-      removeAuthorTasksFromRegularQueue(new Set([key]));
+      startManualLoopIfIdle();
     }
-    startBurstLoopIfIdle();
     const result = await waiter;
     if (result.ok) {
       return { ok: true as const, mid: task.mid, pn: task.pn };
@@ -1923,7 +2316,7 @@ export function enqueuePriority(tasks: SchedulerTask[], requestContext?: Schedul
 
   const context = requestContext ?? tasks[0]?.requestContext ?? createSchedulerRequestContext();
   const normalizedTasks = tasks.map((task, index) => normalizeRegularAuthorTask(task, context, index));
-  const burstKeys = buildExistingTaskKeySet(burstState, keyOfAuthorTask);
+  const burstKeys = buildBurstRelatedTaskKeySet();
   const filtered = normalizedTasks.filter((task) => !burstKeys.has(keyOfAuthorTask(task)));
   const added = dedupeMergeAndSort(authorState, filtered, keyOfAuthorTask, mergeAuthorTaskCapabilities, compareQueueOrderedTask);
   if (added > 0) {
@@ -2166,10 +2559,13 @@ export async function runTabOpenOpportunisticRefresh(): Promise<{
         reason: response.reason,
         authorQueueLength: authorState.queue.length,
         groupQueueLength: groupFavState.queue.length,
-        burstQueueLength: burstState.queue.length,
+        manualQueueLength: manualState.queue.length,
+        manualBurstQueueLength: manualBurstState.queue.length,
+        autoBurstQueueLength: autoBurstState.queue.length,
         authorRunning: authorState.running,
         groupRunning: groupFavState.running,
-        burstRunning: burstState.running
+        manualRunning: manualState.running,
+        burstRunning: batchBurstState.running
       });
       return response;
     }
@@ -2427,7 +2823,7 @@ async function triggerAuthorRoutine(options?: { resetAlarmSchedule: boolean }): 
     collectStaleAuthorTasks(settings, 'alarm-routine'),
     collectPrefetchAuthorTasks(settings, 'alarm-routine')
   ]);
-  const burstQueued = enqueueBurst(noCacheTasks, requestContext);
+  const burstQueued = enqueueAutoBurst(noCacheTasks, requestContext);
   const routineTasks = [...staleTasks, ...prefetchTasks];
   authorState.currentBatchDelay = calcBatchDelay(routineTasks.length, interval, normalizeBatchSize(settings));
   const normalQueued = enqueueRegularAuthorTasks(routineTasks, requestContext);
@@ -2456,7 +2852,7 @@ async function triggerAuthorRoutineNow(options?: { resetAlarmSchedule: boolean }
     collectNoCacheAuthorTasks(settings, 'debug-run-now'),
     collectOldestAuthorTasks(settings, 'debug-run-now')
   ]);
-  const burstQueued = enqueueBurst(noCacheTasks, requestContext);
+  const burstQueued = enqueueAutoBurst(noCacheTasks, requestContext);
   const targetTotal = Math.max(batchSize, authorState.queue.length);
   authorState.currentBatchDelay = calcBatchDelay(targetTotal, interval, batchSize);
   const picked = pickTasksToBatchSize(
@@ -2635,17 +3031,17 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     ps: item.ps,
     reason: item.reason
   }));
-  const burstCurrentTask = burstState.currentTask
+  const manualCurrentTask = manualState.currentTask
     ? {
-        mid: burstState.currentTask.mid,
-        name: resolveDisplayName(burstState.currentTask.name),
-        pn: burstState.currentTask.pn,
-        ps: burstState.currentTask.ps,
-        reason: burstState.currentTask.reason,
-        groupNames: getGroupNamesForTask(burstState.currentTask.mid, burstState.currentTask.groupId)
+        mid: manualState.currentTask.mid,
+        name: resolveDisplayName(manualState.currentTask.name),
+        pn: manualState.currentTask.pn,
+        ps: manualState.currentTask.ps,
+        reason: manualState.currentTask.reason,
+        groupNames: getGroupNamesForTask(manualState.currentTask.mid, manualState.currentTask.groupId)
       }
     : null;
-  const burstQueue = burstState.queue.map((item) => ({
+  const manualQueue = manualState.queue.map((item) => ({
     mid: item.mid,
     name: resolveDisplayName(item.name),
     pn: item.pn,
@@ -2653,7 +3049,44 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     reason: item.reason,
     groupNames: getGroupNamesForTask(item.mid, item.groupId)
   }));
-  const burstCooldownReason: BurstCooldownReason = burstState.nextAllowedAt > Date.now() ? burstState.cooldownReason : null;
+  const manualBurstCurrentTask = manualBurstState.currentTask
+    ? {
+        mid: manualBurstState.currentTask.mid,
+        name: resolveDisplayName(manualBurstState.currentTask.name),
+        pn: manualBurstState.currentTask.pn,
+        ps: manualBurstState.currentTask.ps,
+        reason: manualBurstState.currentTask.reason,
+        groupNames: getGroupNamesForTask(manualBurstState.currentTask.mid, manualBurstState.currentTask.groupId)
+      }
+    : null;
+  const manualBurstQueue = manualBurstState.queue.map((item) => ({
+    mid: item.mid,
+    name: resolveDisplayName(item.name),
+    pn: item.pn,
+    ps: item.ps,
+    reason: item.reason,
+    groupNames: getGroupNamesForTask(item.mid, item.groupId)
+  }));
+  const autoBurstCurrentTask = autoBurstState.currentTask
+    ? {
+        mid: autoBurstState.currentTask.mid,
+        name: resolveDisplayName(autoBurstState.currentTask.name),
+        pn: autoBurstState.currentTask.pn,
+        ps: autoBurstState.currentTask.ps,
+        reason: autoBurstState.currentTask.reason,
+        groupNames: getGroupNamesForTask(autoBurstState.currentTask.mid, autoBurstState.currentTask.groupId)
+      }
+    : null;
+  const autoBurstQueue = autoBurstState.queue.map((item) => ({
+    mid: item.mid,
+    name: resolveDisplayName(item.name),
+    pn: item.pn,
+    ps: item.ps,
+    reason: item.reason,
+    groupNames: getGroupNamesForTask(item.mid, item.groupId)
+  }));
+  resetBatchBurstPhaseIfReady();
+  const burstPhaseBudget = getBatchBurstPhaseBudget(settings, batchBurstState.phase);
   const globalCooldownActive = globalCooldownState.nextAllowedAt > Date.now();
   const globalCooldownReason = globalCooldownActive || globalCooldownState.lastTriggeredAt
     ? 'wbi-ratelimit'
@@ -2710,14 +3143,35 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
         authorMid: item.authorMid
       }))
     },
-    burst: {
-      running: burstState.running,
-      queueLength: burstState.queue.length,
-      currentTask: burstCurrentTask,
-      nextAllowedAt: burstState.nextAllowedAt,
-      cooldownReason: burstCooldownReason,
-      lastRunAt: burstState.lastRunAt,
-      queue: burstQueue
+    manualChannel: {
+      running: manualState.running,
+      queueLength: manualState.queue.length,
+      currentTask: manualCurrentTask,
+      lastRunAt: manualState.lastRunAt,
+      queue: manualQueue
+    },
+    manualBurstChannel: {
+      queueLength: manualBurstState.queue.length,
+      currentTask: manualBurstCurrentTask,
+      lastRunAt: manualBurstState.lastRunAt,
+      queue: manualBurstQueue
+    },
+    autoBurstChannel: {
+      queueLength: autoBurstState.queue.length,
+      currentTask: autoBurstCurrentTask,
+      lastRunAt: autoBurstState.lastRunAt,
+      queue: autoBurstQueue
+    },
+    burstBudget: {
+      running: batchBurstState.running,
+      phase: batchBurstState.phase,
+      phaseConsumed: batchBurstState.phaseConsumed,
+      phaseBudget: burstPhaseBudget,
+      remainingBudget: Math.max(0, burstPhaseBudget - batchBurstState.phaseConsumed),
+      nextAllowedAt: batchBurstState.nextAllowedAt,
+      activeChannel: batchBurstState.currentChannel,
+      blocker: batchBurstState.blocker,
+      lastRunAt: batchBurstState.lastRunAt
     },
     globalCooldown: {
       active: globalCooldownActive,
@@ -2753,7 +3207,7 @@ export async function getAuthorCacheSnapshot(): Promise<AuthorCacheMap> {
 
 ext.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAMES.AUTHOR_VIDEO) {
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       pendingAuthorRoutineAfterBurst = true;
       return;
     }
@@ -2765,7 +3219,7 @@ ext.alarms.onAlarm.addListener((alarm) => {
   }
 
   if (alarm.name === ALARM_NAMES.GROUP_FAV) {
-    if (isBurstActive()) {
+    if (hasPriorityAuthorDemand()) {
       pendingGroupFavRoutineAfterBurst = true;
       return;
     }

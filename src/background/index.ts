@@ -65,13 +65,14 @@ import {
 } from '@/background/feed-service';
 import {
   createSchedulerRequestContext,
-  enqueueBurst,
+  enqueueAutoBurst,
   enqueueLikeBatch,
   enqueueLikeActionAndWait,
+  enqueueManual,
   enqueuePriority,
   enqueuePriorityGroup,
   getAuthorCacheSnapshot,
-  observeBurstTaskFirstResult,
+  observeManualTaskFirstResult,
   getStatus,
   runSchedulerNow,
   runTabOpenOpportunisticRefresh,
@@ -520,7 +521,7 @@ async function handleUpdateAuthorGroupMembership(
 
     if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
       const requestContext = createSchedulerRequestContext();
-      enqueueBurst(missingAuthorTasks.burst, requestContext);
+      enqueueAutoBurst(missingAuthorTasks.burst, requestContext);
       enqueuePriority(missingAuthorTasks.priority, requestContext);
     }
   }
@@ -997,7 +998,7 @@ async function handleGetGroupFeed(
 
   const hasBoundaryIntent = Boolean(diagnostics && diagnostics.boundaryTasks.length > 0);
   if (hasBoundaryIntent) {
-    enqueueBurst(
+    enqueueAutoBurst(
       diagnostics!.boundaryTasks.map((task) => ({
         ...task,
         staleAt: authorCacheMap[task.mid]?.lastFirstPageFetchedAt
@@ -1016,7 +1017,7 @@ async function handleGetGroupFeed(
   const missingAuthorTasks = splitMissingAuthorTasks(feedCache.authorMids, authorCacheMap, settings.authorVideosPageSize);
   if (missingAuthorTasks.burst.length > 0 || missingAuthorTasks.priority.length > 0) {
     const requestContext = createSchedulerRequestContext();
-    enqueueBurst(missingAuthorTasks.burst, requestContext);
+    enqueueAutoBurst(missingAuthorTasks.burst, requestContext);
     enqueuePriority(missingAuthorTasks.priority, requestContext);
     if (runtimeChanged || runtimeMutatedByLoadMore) {
       await saveRuntimeStateMap(runtimeMap);
@@ -1519,7 +1520,7 @@ async function handleRequestAuthorPage(
 
   const requestedAt = Date.now();
 
-  observeBurstTaskFirstResult(
+  observeManualTaskFirstResult(
     {
       mid,
       name: cache?.name?.trim() || String(mid),
@@ -1548,7 +1549,7 @@ async function handleRequestAuthorPage(
     }
   );
 
-  enqueueBurst([
+  enqueueManual([
     {
       mid,
       name: cache?.name?.trim() || String(mid),

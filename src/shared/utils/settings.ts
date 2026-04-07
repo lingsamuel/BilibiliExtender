@@ -4,6 +4,12 @@ import {
   AUTHOR_CONTINUOUS_EXTRA_PAGE_COUNT_MIN,
   AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_DEFAULT,
   AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_MIN,
+  BURST_COOLDOWN_MS_DEFAULT,
+  BURST_ERROR_RETRY_MS_DEFAULT,
+  BURST_FAST_BUDGET_TASKS_DEFAULT,
+  BURST_FAST_INTERVAL_MS_DEFAULT,
+  BURST_SLOW_BUDGET_TASKS_DEFAULT,
+  BURST_SLOW_INTERVAL_MS_DEFAULT,
   AUTHOR_VIDEOS_PAGE_SIZE_DEFAULT,
   AUTHOR_VIDEOS_PAGE_SIZE_MAX
 } from '@/shared/constants';
@@ -46,6 +52,14 @@ export function normalizeAuthorNonContinuousCachePageCount(value: unknown): numb
   return Math.min(10, Math.max(AUTHOR_NON_CONTINUOUS_CACHE_PAGE_COUNT_MIN, parsed));
 }
 
+function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
 export function normalizeExtensionSettings(source: ExtensionSettings): ExtensionSettings {
   return {
     ...source,
@@ -53,6 +67,12 @@ export function normalizeExtensionSettings(source: ExtensionSettings): Extension
     backgroundRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(source.backgroundRefreshIntervalMinutes) || 10)),
     groupFavRefreshIntervalMinutes: Math.min(120, Math.max(5, Number(source.groupFavRefreshIntervalMinutes) || 10)),
     schedulerBatchSize: Math.min(50, Math.max(1, Number(source.schedulerBatchSize) || 10)),
+    burstFastIntervalMs: normalizePositiveInteger(source.burstFastIntervalMs, BURST_FAST_INTERVAL_MS_DEFAULT, 100, 60_000),
+    burstFastBudgetTasks: normalizePositiveInteger(source.burstFastBudgetTasks, BURST_FAST_BUDGET_TASKS_DEFAULT, 1, 500),
+    burstSlowIntervalMs: normalizePositiveInteger(source.burstSlowIntervalMs, BURST_SLOW_INTERVAL_MS_DEFAULT, 100, 60_000),
+    burstSlowBudgetTasks: normalizePositiveInteger(source.burstSlowBudgetTasks, BURST_SLOW_BUDGET_TASKS_DEFAULT, 1, 500),
+    burstCooldownMs: normalizePositiveInteger(source.burstCooldownMs, BURST_COOLDOWN_MS_DEFAULT, 1_000, 30 * 60 * 1000),
+    burstErrorRetryMs: normalizePositiveInteger(source.burstErrorRetryMs, BURST_ERROR_RETRY_MS_DEFAULT, 1_000, 30 * 60 * 1000),
     timelineMixedMaxCount: Math.min(500, Math.max(10, Number(source.timelineMixedMaxCount) || 50)),
     extraOlderVideoCount: Math.min(20, Math.max(0, Number(source.extraOlderVideoCount) || 1)),
     authorVideosPageSize: normalizeAuthorVideosPageSize(source.authorVideosPageSize),

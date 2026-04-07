@@ -34,25 +34,65 @@
     </section>
 
     <section class="bbe-panel bbe-debug-panel bbe-debug-status-card">
-      <h2 class="bbe-panel-title">Burst 状态</h2>
+      <h2 class="bbe-panel-title">Burst 通道状态</h2>
       <div class="bbe-debug-grid">
-        <span>状态</span>
-        <span>{{ status?.burst.running ? '运行中' : '空闲' }}</span>
-        <span>当前任务</span>
-        <span>{{ burstCurrentTaskText }}</span>
-        <span>队列长度</span>
-        <span>{{ status?.burst.queueLength ?? 0 }}</span>
-        <span>上次执行</span>
-        <span>{{ burstLastRunText }}</span>
-        <span>下一次可执行</span>
-        <span>{{ burstNextAllowedText }}</span>
-        <span>冷却状态</span>
-        <span>{{ burstCooldownText }}</span>
+        <span>manual 状态</span>
+        <span>{{ status?.manualChannel.running ? '运行中' : '空闲' }}</span>
+        <span>manual 当前任务</span>
+        <span>{{ manualCurrentTaskText }}</span>
+        <span>manual 队列长度</span>
+        <span>{{ status?.manualChannel.queueLength ?? 0 }}</span>
+        <span>manual 上次执行</span>
+        <span>{{ manualLastRunText }}</span>
+        <span>manual-burst 当前任务</span>
+        <span>{{ manualBurstCurrentTaskText }}</span>
+        <span>manual-burst 队列长度</span>
+        <span>{{ status?.manualBurstChannel.queueLength ?? 0 }}</span>
+        <span>manual-burst 上次执行</span>
+        <span>{{ manualBurstLastRunText }}</span>
+        <span>auto-burst 当前任务</span>
+        <span>{{ autoBurstCurrentTaskText }}</span>
+        <span>auto-burst 队列长度</span>
+        <span>{{ status?.autoBurstChannel.queueLength ?? 0 }}</span>
+        <span>auto-burst 上次执行</span>
+        <span>{{ autoBurstLastRunText }}</span>
       </div>
 
-      <h3 v-if="status && status.burst.queue.length > 0" class="bbe-debug-subtitle">队列详情</h3>
-      <div v-if="status && status.burst.queue.length > 0" class="bbe-debug-queue">
-        <div v-for="(task, i) in status.burst.queue" :key="`${task.mid}-${i}`" class="bbe-debug-queue-item">
+      <h3 class="bbe-debug-subtitle">共享 Burst 状态机</h3>
+      <div class="bbe-debug-grid">
+        <span>状态</span>
+        <span>{{ status?.burstBudget.running ? '运行中' : '空闲' }}</span>
+        <span>当前阶段</span>
+        <span>{{ burstPhaseText }}</span>
+        <span>阶段进度</span>
+        <span>{{ burstPhaseProgressText }}</span>
+        <span>剩余预算</span>
+        <span>{{ status?.burstBudget.remainingBudget ?? 0 }}</span>
+        <span>活跃通道</span>
+        <span>{{ burstActiveChannelText }}</span>
+        <span>下一次可执行</span>
+        <span>{{ burstNextAllowedText }}</span>
+        <span>阻塞状态</span>
+        <span>{{ burstBlockerText }}</span>
+      </div>
+
+      <h3 v-if="status && status.manualChannel.queue.length > 0" class="bbe-debug-subtitle">manual 队列</h3>
+      <div v-if="status && status.manualChannel.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.manualChannel.queue" :key="`manual-${task.mid}-${i}`" class="bbe-debug-queue-item">
+          {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }} / p{{ task.pn ?? 1 }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+        </div>
+      </div>
+
+      <h3 v-if="status && status.manualBurstChannel.queue.length > 0" class="bbe-debug-subtitle">manual-burst 队列</h3>
+      <div v-if="status && status.manualBurstChannel.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.manualBurstChannel.queue" :key="`manual-burst-${task.mid}-${i}`" class="bbe-debug-queue-item">
+          {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }} / p{{ task.pn ?? 1 }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
+        </div>
+      </div>
+
+      <h3 v-if="status && status.autoBurstChannel.queue.length > 0" class="bbe-debug-subtitle">auto-burst 队列</h3>
+      <div v-if="status && status.autoBurstChannel.queue.length > 0" class="bbe-debug-queue">
+        <div v-for="(task, i) in status.autoBurstChannel.queue" :key="`auto-burst-${task.mid}-${i}`" class="bbe-debug-queue-item">
           {{ i + 1 }}. {{ formatBurstTaskLabel(task.name, task.mid) }} / p{{ task.pn ?? 1 }}（{{ task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组' }}）
         </div>
       </div>
@@ -242,38 +282,74 @@ const likeCurrentTaskText = computed(() => {
   return `${task.bvid} / ${task.action === 'like' ? '点赞' : '取消点赞'} / ${task.source === 'author-batch-like' ? '批量' : '单卡'}`;
 });
 
-const burstLastRunText = computed(() => {
-  if (!status.value?.burst.lastRunAt) return '从未';
-  return formatRelativeMinutes(status.value.burst.lastRunAt);
-});
-
-const burstCurrentTaskText = computed(() => {
-  const task = status.value?.burst.currentTask;
+function formatAuthorTaskText(task: {
+  mid: number;
+  name?: string;
+  pn?: number;
+  groupNames: string[];
+} | null | undefined): string {
   if (!task) return '无';
   const groups = task.groupNames.length > 0 ? task.groupNames.join(' / ') : '未知分组';
   return `${formatBurstTaskLabel(task.name, task.mid)} / p${task.pn ?? 1}（${groups}）`;
+}
+
+const manualLastRunText = computed(() => {
+  if (!status.value?.manualChannel.lastRunAt) return '从未';
+  return formatRelativeMinutes(status.value.manualChannel.lastRunAt);
+});
+
+const manualCurrentTaskText = computed(() => formatAuthorTaskText(status.value?.manualChannel.currentTask));
+
+const manualBurstLastRunText = computed(() => {
+  if (!status.value?.manualBurstChannel.lastRunAt) return '从未';
+  return formatRelativeMinutes(status.value.manualBurstChannel.lastRunAt);
+});
+
+const manualBurstCurrentTaskText = computed(() => formatAuthorTaskText(status.value?.manualBurstChannel.currentTask));
+
+const autoBurstLastRunText = computed(() => {
+  if (!status.value?.autoBurstChannel.lastRunAt) return '从未';
+  return formatRelativeMinutes(status.value.autoBurstChannel.lastRunAt);
+});
+
+const autoBurstCurrentTaskText = computed(() => formatAuthorTaskText(status.value?.autoBurstChannel.currentTask));
+
+const burstPhaseText = computed(() => {
+  const phase = status.value?.burstBudget.phase;
+  if (!phase) return '无';
+  if (phase === 'fast') return '快速';
+  if (phase === 'slow') return '慢速';
+  return '冷却';
+});
+
+const burstPhaseProgressText = computed(() => {
+  const burst = status.value?.burstBudget;
+  if (!burst) return '0 / 0';
+  if (burst.phase === 'cooldown') {
+    return '冷却中';
+  }
+  return `${burst.phaseConsumed} / ${burst.phaseBudget}`;
+});
+
+const burstActiveChannelText = computed(() => {
+  const channel = status.value?.burstBudget.activeChannel;
+  if (!channel) return '无';
+  return channel;
 });
 
 const burstNextAllowedText = computed(() => {
-  const nextAllowedAt = status.value?.burst.nextAllowedAt ?? 0;
+  const nextAllowedAt = status.value?.burstBudget.nextAllowedAt ?? 0;
   if (!nextAllowedAt) return '无';
+  if (nextAllowedAt <= Date.now()) {
+    return `${formatTime(nextAllowedAt)}（已就绪）`;
+  }
   return formatAlarmText(nextAllowedAt);
 });
 
-const burstCooldownText = computed(() => {
-  const burst = status.value?.burst;
-  if (!burst || !burst.cooldownReason) return '无';
-
-  const diff = burst.nextAllowedAt - Date.now();
-  if (diff <= 0) {
-    return burst.cooldownReason === 'error' ? '错误冷却结束' : '间隔冷却结束';
-  }
-
-  const secs = Math.ceil(diff / 1000);
-  if (burst.cooldownReason === 'error') {
-    return `错误冷却中（剩余 ${secs} 秒）`;
-  }
-  return `间隔冷却中（剩余 ${secs} 秒）`;
+const burstBlockerText = computed(() => {
+  const blocker = status.value?.burstBudget.blocker;
+  if (!blocker) return '无';
+  return `${blocker.channel} / ${blocker.error}`;
 });
 
 const globalCooldownStatusText = computed(() => {
@@ -341,8 +417,10 @@ function formatHistoryChannel(channel: 'author-video' | 'group-fav' | 'like-acti
   return 'author-video';
 }
 
-function formatHistoryMode(mode: 'regular' | 'burst' | 'opportunistic'): string {
-  if (mode === 'burst') return 'Burst';
+function formatHistoryMode(mode: 'regular' | 'manual' | 'manual-burst' | 'auto-burst' | 'opportunistic'): string {
+  if (mode === 'manual') return '手动';
+  if (mode === 'manual-burst') return '手动批量';
+  if (mode === 'auto-burst') return '自动批量';
   if (mode === 'opportunistic') return '机会式';
   return '常规';
 }

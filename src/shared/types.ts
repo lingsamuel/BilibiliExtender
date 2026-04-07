@@ -18,6 +18,12 @@ export interface ExtensionSettings {
   backgroundRefreshIntervalMinutes: number;
   groupFavRefreshIntervalMinutes: number;
   schedulerBatchSize: number;
+  burstFastIntervalMs: number;
+  burstFastBudgetTasks: number;
+  burstSlowIntervalMs: number;
+  burstSlowBudgetTasks: number;
+  burstCooldownMs: number;
+  burstErrorRetryMs: number;
   timelineMixedMaxCount: number;
   extraOlderVideoCount: number;
   // 控制作者投稿接口 ps 参数的默认值，并作为前端分页兜底口径。
