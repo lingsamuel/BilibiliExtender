@@ -2152,7 +2152,7 @@ body.bbe-page-scroll-lock {
 
 .bbe-debug-grid {
   display: grid;
-  grid-template-columns: 100px 1fr;
+  grid-template-columns: 160px 1fr;
   gap: 4px 12px;
 }
 
