@@ -3591,9 +3591,10 @@ async function undoLatestGroupReadMark(): Promise<void> {
 }
 
 async function onVideoClick(bvid: string): Promise<void> {
-  clickedMap.value = { ...clickedMap.value, [bvid]: Date.now() };
+  const clickedAt = Date.now();
+  clickedMap.value = { ...clickedMap.value, [bvid]: clickedAt };
   try {
-    await sendMessage({ type: 'RECORD_VIDEO_CLICK', payload: { bvid } });
+    await sendMessage({ type: 'RECORD_VIDEO_CLICK', payload: { bvid, clickedAt } });
   } catch {
     // 静默失败
   }

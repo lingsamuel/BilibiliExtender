@@ -111,7 +111,7 @@ export type MessageRequest =
       };
     }
   | { type: 'GET_GROUP_READ_MARKS'; payload: { groupIds: string[] } }
-  | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
+  | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string; clickedAt: number } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
   | { type: 'GET_LIKED_VIDEOS'; payload: { bvids: string[] } }
   | {
@@ -500,7 +500,7 @@ export interface ResponseMap {
     skippedBvids: string[];
   };
   GET_GROUP_READ_MARKS: { marks: Record<string, GroupReadMark> };
-  RECORD_VIDEO_CLICK: { bvid: string };
+  RECORD_VIDEO_CLICK: { bvid: string; clickedAt: number };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
   GET_LIKED_VIDEOS: { liked: Record<string, number> };
   SET_VIDEO_REVIEWED: { bvid: string; state: VideoReviewedState };

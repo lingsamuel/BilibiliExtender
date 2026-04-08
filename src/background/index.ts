@@ -1366,8 +1366,11 @@ async function handleBatchLikeVideos(
 async function handleRecordVideoClick(
   request: Extract<MessageRequest, { type: 'RECORD_VIDEO_CLICK' }>
 ): Promise<ResponseMap['RECORD_VIDEO_CLICK']> {
-  await recordVideoClick(request.payload.bvid);
-  return { bvid: request.payload.bvid };
+  await recordVideoClick(request.payload.bvid, request.payload.clickedAt);
+  return {
+    bvid: request.payload.bvid,
+    clickedAt: request.payload.clickedAt
+  };
 }
 
 async function handleGetClickedVideos(

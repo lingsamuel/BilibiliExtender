@@ -646,9 +646,9 @@ export async function saveClickedVideos(map: ClickedVideoMap): Promise<void> {
   await storageSet(ext.storage.local, STORAGE_KEYS.CLICKED_VIDEOS, map);
 }
 
-export async function recordVideoClick(bvid: string): Promise<void> {
+export async function recordVideoClick(bvid: string, clickedAt = Date.now()): Promise<void> {
   const map = await loadClickedVideos();
-  map[bvid] = Date.now();
+  map[bvid] = clickedAt;
   await saveClickedVideos(map);
 }
 
