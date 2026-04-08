@@ -267,15 +267,24 @@ interface AuthorReadMark {
 
 “已阅对勾”的最终状态由以下来源合成：
 
-1. 手动覆盖（最高优先级）
-- 用户点击对勾后写入显式状态（true/false）。
+1. 手动切换
+- 用户点击对勾，或右键点击封面时，写入该视频的最新手动状态（`reviewed=true/false`）。
+- 手动切换会同时记录当时的自动信号快照，用于判断“后续是否出现了新的自动变化”。
 
-2. 自动判定（无手动覆盖时生效）
-- 点击记录命中（`RECORD_VIDEO_CLICK`）。
-- 或播放进度 `playback_position >= 10`。
+2. 自动判定
+- 左键或中键点击视频链接，写入新的点击记录（`RECORD_VIDEO_CLICK`）。
+- 播放进度达到 `playback_position >= 10` 时，可作为自动已阅信号。
 
-3. 默认
-- 未命中上述条件时为未阅。
+3. 手动状态被新的自动信号覆写
+- 若用户手动标记为未阅，则旧的自动信号不得立刻把它恢复为已阅。
+- 只有出现“新的自动信号”时，才允许重新自动标记为已阅：
+  - 点击记录时间戳严格大于“上次手动切换时记录的点击时间戳”；
+  - 或播放进度严格大于“上次手动切换时记录的播放进度”，且仍满足 `playback_position >= 10`。
+- 左键或中键点击属于用户主动行为，每次都视为新的自动信号。
+- 播放进度只有在“相对上次手动切换时确实增加”时，才算新的自动信号。
+
+4. 默认
+- 未命中手动状态或自动信号时为未阅。
 
 补充：
 - “已阅”与“已看完”不互斥，可同时存在。
@@ -324,7 +333,18 @@ interface AuthorReadMark {
 | `bbe:group-read-marks` | `Record<string, GroupReadMark>` | 分组“上次看到”时间点历史 |
 | `bbe:author-read-marks` | `Record<number, AuthorReadMark>` | 作者级跨组已阅时间点 |
 | `bbe:clicked-videos` | `Record<string, number>` | 视频点击记录（自动已阅信号） |
-| `bbe:video-reviewed-overrides` | `Record<string, boolean>` | 手动对勾覆盖状态 |
+| `bbe:video-reviewed-overrides` | `Record<string, VideoReviewedState>` | VideoCard 手动状态与自动恢复阈值 |
+
+```ts
+interface VideoReviewedState {
+  // 最近一次手动切换后的显式状态。
+  reviewed: boolean;
+  // 最近一次手动切换时观测到的点击时间戳；仅用于判断后续是否出现了新的点击。
+  autoResumeClickAt?: number;
+  // 最近一次手动切换时观测到的播放进度；仅用于判断后续播放是否继续推进。
+  autoResumePlaybackPosition?: number;
+}
+```
 
 ### 4.2 清理策略
 
@@ -336,7 +356,15 @@ interface AuthorReadMark {
 ```ts
 | { type: 'UNDO_GROUP_READ_MARK'; payload: { groupId: string } }
 | { type: 'CLEAR_GROUP_READ_MARK'; payload: { groupId: string } }
-| { type: 'SET_VIDEO_REVIEWED'; payload: { bvid: string; reviewed: boolean } }
+| {
+    type: 'SET_VIDEO_REVIEWED';
+    payload: {
+      bvid: string;
+      reviewed: boolean;
+      clickedAt?: number;
+      playbackPosition?: number;
+    };
+  }
 | { type: 'GET_VIDEO_REVIEWED_OVERRIDES'; payload: { bvids: string[] } }
 | { type: 'SET_AUTHOR_READ_MARK'; payload: { mid: number; readMarkTs: number } }
 | { type: 'CLEAR_AUTHOR_READ_MARK'; payload: { mid: number } }
@@ -382,5 +410,7 @@ interface AuthorReadMark {
 - 作者标题上的 `撤销已阅` 只回退最近一次作者级已阅写入，不清空整条作者历史；清空仍由边界线右键负责。
 - “已阅对勾”点击事件必须阻断链接跳转，保证“就地切换状态”。
 - VideoCard 封面右键必须阻断浏览器默认右键菜单，并复用显式“切换已阅”写入链路，不能伪造为“已点击打开视频”。
+- 自动已阅与手动切换必须共用同一套最终判定函数，前台展示与后台 unread 计算口径保持一致。
+- 手动切换为未阅时，必须记住当时的点击时间戳与播放进度；只有更晚的点击或更大的播放进度，才能重新自动标记为已阅。
 - 分组“上次看到”时间点必须采用“分钟精度 + 真实操作栈”规则。
 - 所有粉色相关 UI（分隔符、边界线、特殊态）统一复用主题变量，避免硬编码散落。

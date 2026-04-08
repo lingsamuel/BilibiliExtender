@@ -537,6 +537,7 @@ import type {
   GroupFeedResult,
   GroupSummary,
   VideoItem,
+  VideoReviewedState,
   ViewMode
 } from '@/shared/types';
 import { debugError, debugWarn } from '@/shared/utils/debug-console';
@@ -661,7 +662,7 @@ const byAuthorSortByLatest = ref(true);
 const readMarkTimestamps = ref<number[]>([]);
 const graceReadMarkTs = ref(0);
 const clickedMap = ref<Record<string, number>>({});
-const reviewedOverrideMap = ref<Record<string, boolean>>({});
+const reviewedOverrideMap = ref<Record<string, VideoReviewedState>>({});
 const likedStateMap = ref<Record<string, VideoLikeState>>({});
 const followPendingMap = ref<Record<number, boolean>>({});
 const authorLikePendingMap = ref<Record<number, boolean>>({});
@@ -2154,6 +2155,25 @@ function collectAllBvids(): string[] {
   return Array.from(bvids);
 }
 
+function findVideoByBvid(bvid: string): VideoItem | undefined {
+  if (!feed.value) {
+    return undefined;
+  }
+  for (const video of feed.value.mixedVideos) {
+    if (video.bvid === bvid) {
+      return video;
+    }
+  }
+  for (const author of feed.value.videosByAuthor) {
+    for (const video of getAuthorVideos(author)) {
+      if (video.bvid === bvid) {
+        return video;
+      }
+    }
+  }
+  return undefined;
+}
+
 async function restoreLikeProgressState(currentBvids: string[]): Promise<void> {
   if (currentBvids.length === 0) {
     authorLikePendingMap.value = {};
@@ -3580,26 +3600,70 @@ async function onVideoClick(bvid: string): Promise<void> {
 }
 
 function isVideoReviewed(video: VideoItem): boolean {
-  if (Object.prototype.hasOwnProperty.call(reviewedOverrideMap.value, video.bvid)) {
-    return reviewedOverrideMap.value[video.bvid] === true;
+  const state = reviewedOverrideMap.value[video.bvid];
+  if (!state) {
+    return isVideoAutoReviewed(video);
   }
-  return clickedMap.value[video.bvid] !== undefined || (video.playbackPosiiton ?? 0) >= 10;
+  if (state.reviewed === true) {
+    return true;
+  }
+  return hasNewerAutoReviewSignal(video, state);
+}
+
+function isVideoAutoReviewed(video: VideoItem): boolean {
+  return clickedMap.value[video.bvid] !== undefined || getVideoPlaybackPosition(video) >= 10;
+}
+
+function hasNewerAutoReviewSignal(video: VideoItem, state: VideoReviewedState): boolean {
+  // 前台卡片展示必须与后台 unread 计算保持同一口径：
+  // 手动取消后只接受“更新”的点击/进度信号，旧信号不允许直接复活已阅态。
+  const clickedAt = clickedMap.value[video.bvid];
+  const playbackPosition = getVideoPlaybackPosition(video);
+  const clickAdvanced = state.autoResumeClickAt !== undefined
+    && clickedAt !== undefined
+    && clickedAt > state.autoResumeClickAt;
+  const playbackAdvanced = state.autoResumePlaybackPosition !== undefined
+    && playbackPosition >= 10
+    && playbackPosition > state.autoResumePlaybackPosition;
+  return clickAdvanced || playbackAdvanced;
+}
+
+function getVideoPlaybackPosition(video: VideoItem): number {
+  return Math.max(0, Math.floor(Number(video.playbackPosiiton) || 0));
+}
+
+function buildManualReviewedState(video: VideoItem | undefined, reviewed: boolean): VideoReviewedState {
+  return {
+    reviewed,
+    autoResumeClickAt: video ? clickedMap.value[video.bvid] ?? 0 : 0,
+    autoResumePlaybackPosition: video ? getVideoPlaybackPosition(video) : 0
+  };
 }
 
 async function onToggleVideoReviewed(payload: { bvid: string; reviewed: boolean }): Promise<void> {
+  const video = findVideoByBvid(payload.bvid);
   const prevMap = reviewedOverrideMap.value;
+  const nextState = buildManualReviewedState(video, payload.reviewed);
   reviewedOverrideMap.value = {
     ...reviewedOverrideMap.value,
-    [payload.bvid]: payload.reviewed
+    [payload.bvid]: nextState
   };
   try {
     const resp = await sendMessage({
       type: 'SET_VIDEO_REVIEWED',
-      payload
+      payload: {
+        ...payload,
+        clickedAt: nextState.autoResumeClickAt,
+        playbackPosition: nextState.autoResumePlaybackPosition
+      }
     });
     if (!resp.ok || !resp.data) {
       throw new Error(resp.error ?? '设置视频已阅状态失败');
     }
+    reviewedOverrideMap.value = {
+      ...reviewedOverrideMap.value,
+      [payload.bvid]: resp.data.state
+    };
     await reloadFeedWithReadMark({ silent: true });
   } catch (error) {
     reviewedOverrideMap.value = prevMap;

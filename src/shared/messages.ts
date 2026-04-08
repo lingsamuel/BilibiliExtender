@@ -10,6 +10,7 @@ import type {
   GroupOptionsData,
   GroupSummary,
   VideoItem,
+  VideoReviewedState,
   ViewMode
 } from '@/shared/types';
 import { ext } from '@/shared/platform/webext';
@@ -113,7 +114,15 @@ export type MessageRequest =
   | { type: 'RECORD_VIDEO_CLICK'; payload: { bvid: string } }
   | { type: 'GET_CLICKED_VIDEOS'; payload: { bvids: string[] } }
   | { type: 'GET_LIKED_VIDEOS'; payload: { bvids: string[] } }
-  | { type: 'SET_VIDEO_REVIEWED'; payload: { bvid: string; reviewed: boolean } }
+  | {
+      type: 'SET_VIDEO_REVIEWED';
+      payload: {
+        bvid: string;
+        reviewed: boolean;
+        clickedAt?: number;
+        playbackPosition?: number;
+      };
+    }
   | { type: 'GET_VIDEO_REVIEWED_OVERRIDES'; payload: { bvids: string[] } }
   | { type: 'SET_GROUP_EXCLUDE_UNREAD'; payload: { groupId: string; excludeFromUnreadCount: boolean } }
   | { type: 'SET_GROUP_MANUAL_AUTHOR_ORDER'; payload: { groupId: string; authorMids: number[] } }
@@ -494,8 +503,8 @@ export interface ResponseMap {
   RECORD_VIDEO_CLICK: { bvid: string };
   GET_CLICKED_VIDEOS: { clicked: Record<string, number> };
   GET_LIKED_VIDEOS: { liked: Record<string, number> };
-  SET_VIDEO_REVIEWED: { bvid: string; reviewed: boolean };
-  GET_VIDEO_REVIEWED_OVERRIDES: { overrides: Record<string, boolean> };
+  SET_VIDEO_REVIEWED: { bvid: string; state: VideoReviewedState };
+  GET_VIDEO_REVIEWED_OVERRIDES: { overrides: Record<string, VideoReviewedState> };
   SET_GROUP_EXCLUDE_UNREAD: { group: GroupConfig };
   SET_GROUP_MANUAL_AUTHOR_ORDER: { groupId: string; authorMids: number[] };
   SET_AUTHOR_IGNORE_UNREAD: { preference: AuthorPreference };

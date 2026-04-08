@@ -24,6 +24,7 @@ import type {
   GroupSummary,
   GroupSyncStatus,
   VideoItem,
+  VideoReviewedState,
   ViewMode
 } from '@/shared/types';
 
@@ -32,7 +33,7 @@ export type FeedCacheMap = Record<string, GroupFeedCache>;
 export type AuthorCacheMap = Record<number, AuthorVideoCache>;
 type ReadMarkMap = Record<string, GroupReadMark>;
 type ClickedVideoMap = Record<string, number>;
-type ReviewedOverrideMap = Record<string, boolean>;
+type ReviewedOverrideMap = Record<string, VideoReviewedState>;
 type AuthorPreferenceMap = Record<number, AuthorPreference>;
 const DEFAULT_BY_AUTHOR_SORT_BY_LATEST = true;
 const DEFAULT_ALL_POSTS_FILTER: AllPostsFilterKey = 'all';
@@ -859,12 +860,40 @@ function isVideoReviewed(
   clickedVideos: ClickedVideoMap,
   reviewedOverrides: ReviewedOverrideMap
 ): boolean {
-  if (Object.prototype.hasOwnProperty.call(reviewedOverrides, video.bvid)) {
-    return reviewedOverrides[video.bvid] === true;
+  const state = reviewedOverrides[video.bvid];
+  if (!state) {
+    return isVideoAutoReviewed(video, clickedVideos);
   }
-  // “已查看”与卡片展示规则保持一致：
-  // 1) 点击记录命中；或 2) playback_position >= 10。
-  return clickedVideos[video.bvid] !== undefined || (video.playbackPosiiton ?? 0) >= 10;
+  if (state.reviewed === true) {
+    return true;
+  }
+  return hasNewerAutoReviewSignal(video, clickedVideos, state);
+}
+
+function isVideoAutoReviewed(video: VideoItem, clickedVideos: ClickedVideoMap): boolean {
+  return clickedVideos[video.bvid] !== undefined || getVideoPlaybackPosition(video) >= 10;
+}
+
+function hasNewerAutoReviewSignal(
+  video: VideoItem,
+  clickedVideos: ClickedVideoMap,
+  state: VideoReviewedState
+): boolean {
+  // 手动取消已阅后，旧的自动信号不能立刻把状态“弹回去”。
+  // 只有点击时间戳变得更晚，或播放进度继续前进，才允许重新自动标记为已阅。
+  const clickedAt = clickedVideos[video.bvid];
+  const playbackPosition = getVideoPlaybackPosition(video);
+  const clickAdvanced = state.autoResumeClickAt !== undefined
+    && clickedAt !== undefined
+    && clickedAt > state.autoResumeClickAt;
+  const playbackAdvanced = state.autoResumePlaybackPosition !== undefined
+    && playbackPosition >= 10
+    && playbackPosition > state.autoResumePlaybackPosition;
+  return clickAdvanced || playbackAdvanced;
+}
+
+function getVideoPlaybackPosition(video: VideoItem): number {
+  return Math.max(0, Math.floor(Number(video.playbackPosiiton) || 0));
 }
 
 /**

@@ -19,7 +19,8 @@ import type {
   GroupFeedCache,
   GroupReadMark,
   GroupRuntimeState,
-  VideoItem
+  VideoItem,
+  VideoReviewedState
 } from '@/shared/types';
 
 type RuntimeStateMap = Record<string, GroupRuntimeState>;
@@ -68,7 +69,7 @@ const memoryCache: {
   groupReadMarks?: Record<string, GroupReadMark>;
   clickedVideos?: ClickedVideoMap;
   likedVideos?: LikedVideoMap;
-  videoReviewedOverrides?: Record<string, boolean>;
+  videoReviewedOverrides?: VideoReviewedOverrideMap;
   authorPreferences?: AuthorPreferenceMap;
   opportunisticRefresh?: OpportunisticRefreshState;
   schedulerHistory?: SchedulerHistoryEntry[];
@@ -516,7 +517,7 @@ export async function saveLastGroupId(groupId: string): Promise<void> {
 }
 
 type ReadMarkMap = Record<string, GroupReadMark>;
-type VideoReviewedOverrideMap = Record<string, boolean>;
+type VideoReviewedOverrideMap = Record<string, VideoReviewedState>;
 const MAX_AUTHOR_READ_MARK_COUNT = 10;
 
 let legacyAuthorReadMarksDropped = false;
@@ -693,18 +694,80 @@ export async function clearVideoLiked(bvid: string): Promise<void> {
   await saveLikedVideos(map);
 }
 
+function normalizeVideoReviewedSignalValue(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  const num = Math.floor(Number(value));
+  return Number.isFinite(num) && num >= 0 ? num : undefined;
+}
+
+function normalizeVideoReviewedState(raw: unknown): VideoReviewedState | undefined {
+  if (typeof raw === 'boolean') {
+    return { reviewed: raw };
+  }
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const reviewed = (raw as Partial<VideoReviewedState>).reviewed === true;
+  const autoResumeClickAt = normalizeVideoReviewedSignalValue((raw as Partial<VideoReviewedState>).autoResumeClickAt);
+  const autoResumePlaybackPosition = normalizeVideoReviewedSignalValue(
+    (raw as Partial<VideoReviewedState>).autoResumePlaybackPosition
+  );
+  return {
+    reviewed,
+    autoResumeClickAt,
+    autoResumePlaybackPosition
+  };
+}
+
 export async function loadVideoReviewedOverrides(): Promise<VideoReviewedOverrideMap> {
   if (memoryCache.videoReviewedOverrides) {
     return memoryCache.videoReviewedOverrides;
   }
 
-  const map = await storageGet(
+  const rawMap = await storageGet(
     ext.storage.local,
     STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES,
-    {} as VideoReviewedOverrideMap
+    {} as Record<string, unknown>
   );
-  memoryCache.videoReviewedOverrides = map;
-  return map;
+  const nextMap: VideoReviewedOverrideMap = {};
+  let changed = false;
+
+  for (const [bvid, rawState] of Object.entries(rawMap)) {
+    const normalized = normalizeVideoReviewedState(rawState);
+    if (!normalized) {
+      changed = true;
+      continue;
+    }
+    nextMap[bvid] = normalized;
+    if (typeof rawState === 'boolean') {
+      changed = true;
+      continue;
+    }
+    if (!rawState || typeof rawState !== 'object') {
+      changed = true;
+      continue;
+    }
+    const rawReviewed = (rawState as Partial<VideoReviewedState>).reviewed === true;
+    const rawClickAt = normalizeVideoReviewedSignalValue((rawState as Partial<VideoReviewedState>).autoResumeClickAt);
+    const rawPlaybackPosition = normalizeVideoReviewedSignalValue(
+      (rawState as Partial<VideoReviewedState>).autoResumePlaybackPosition
+    );
+    if (
+      rawReviewed !== normalized.reviewed
+      || rawClickAt !== normalized.autoResumeClickAt
+      || rawPlaybackPosition !== normalized.autoResumePlaybackPosition
+    ) {
+      changed = true;
+    }
+  }
+
+  memoryCache.videoReviewedOverrides = nextMap;
+  if (changed) {
+    await storageSet(ext.storage.local, STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES, nextMap);
+  }
+  return nextMap;
 }
 
 export async function saveVideoReviewedOverrides(map: VideoReviewedOverrideMap): Promise<void> {
@@ -712,10 +775,23 @@ export async function saveVideoReviewedOverrides(map: VideoReviewedOverrideMap):
   await storageSet(ext.storage.local, STORAGE_KEYS.VIDEO_REVIEWED_OVERRIDES, map);
 }
 
-export async function setVideoReviewedOverride(bvid: string, reviewed: boolean): Promise<void> {
+export async function setVideoReviewedOverride(
+  bvid: string,
+  reviewed: boolean,
+  signalSnapshot?: {
+    clickedAt?: number;
+    playbackPosition?: number;
+  }
+): Promise<VideoReviewedState> {
   const map = await loadVideoReviewedOverrides();
-  map[bvid] = reviewed;
+  const nextState: VideoReviewedState = {
+    reviewed,
+    autoResumeClickAt: normalizeVideoReviewedSignalValue(signalSnapshot?.clickedAt) ?? 0,
+    autoResumePlaybackPosition: normalizeVideoReviewedSignalValue(signalSnapshot?.playbackPosition) ?? 0
+  };
+  map[bvid] = nextState;
   await saveVideoReviewedOverrides(map);
+  return nextState;
 }
 
 export async function loadAuthorPreferences(): Promise<AuthorPreferenceMap> {
@@ -1015,22 +1091,44 @@ export async function cleanOrphanClicks(authorVideoCacheMap?: AuthorVideoCacheMa
 export async function cleanOrphanReviewedOverrides(
   authorVideoCacheMap?: AuthorVideoCacheMap
 ): Promise<VideoReviewedOverrideMap> {
-  const [map, cacheMap] = await Promise.all([
+  const [map, cacheMap, clickedVideos] = await Promise.all([
     loadVideoReviewedOverrides(),
-    authorVideoCacheMap ? Promise.resolve(authorVideoCacheMap) : loadAuthorVideoCacheMap()
+    authorVideoCacheMap ? Promise.resolve(authorVideoCacheMap) : loadAuthorVideoCacheMap(),
+    loadClickedVideos()
   ]);
   const activeBvids = new Set<string>();
+  const activeSignals = new Map<string, { clickedAt: number; playbackPosition: number }>();
 
   for (const cache of Object.values(cacheMap)) {
     for (const video of getActiveCacheVideos(cache)) {
       activeBvids.add(video.bvid);
+      activeSignals.set(video.bvid, {
+        clickedAt: clickedVideos[video.bvid] ?? 0,
+        playbackPosition: Math.max(0, Math.floor(Number(video.playbackPosiiton) || 0))
+      });
     }
   }
 
   let changed = false;
-  for (const bvid of Object.keys(map)) {
+  for (const [bvid, state] of Object.entries(map)) {
     if (!activeBvids.has(bvid)) {
       delete map[bvid];
+      changed = true;
+      continue;
+    }
+    if (state.reviewed !== false) {
+      continue;
+    }
+    const signal = activeSignals.get(bvid);
+    if (!signal) {
+      continue;
+    }
+    if (state.autoResumeClickAt === undefined || state.autoResumePlaybackPosition === undefined) {
+      map[bvid] = {
+        ...state,
+        autoResumeClickAt: state.autoResumeClickAt ?? signal.clickedAt,
+        autoResumePlaybackPosition: state.autoResumePlaybackPosition ?? signal.playbackPosition
+      };
       changed = true;
     }
   }

@@ -90,6 +90,15 @@ export interface VideoItem {
   };
 }
 
+export interface VideoReviewedState {
+  // 最近一次手动切换后的显式已阅状态。
+  reviewed: boolean;
+  // 手动切换当时观测到的点击时间戳；只有更晚的点击才可重新自动标记为已阅。
+  autoResumeClickAt?: number;
+  // 手动切换当时观测到的播放进度；只有更大的进度才可重新自动标记为已阅。
+  autoResumePlaybackPosition?: number;
+}
+
 export interface AuthorVideoVersionFingerprint {
   totalCount: number;
   tagCounts: Array<{ tid: number; count: number }>;

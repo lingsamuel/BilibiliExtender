@@ -28,7 +28,6 @@ import {
   cleanOrphanReviewedOverrides,
   loadAuthorPreferences,
   loadLikedVideos,
-  loadVideoReviewedOverrides,
   loadGroupReadMarks,
   loadClickedVideos,
   loadFeedCacheMap,
@@ -854,25 +853,16 @@ async function handleGetGroupSummary(
 async function handleGetGroupFeed(
   request: Extract<MessageRequest, { type: 'GET_GROUP_FEED' }>
 ): Promise<ResponseMap['GET_GROUP_FEED']> {
-  const [
-    groups,
-    settings,
-    runtimeMap,
-    feedCacheMap,
-    initialAuthorCacheMap,
-    clickedVideos,
-    reviewedOverrides,
-    authorPreferences
-  ] = await Promise.all([
+  const [groups, settings, runtimeMap, feedCacheMap, initialAuthorCacheMap, clickedVideos, authorPreferences] = await Promise.all([
     loadGroups(),
     loadSettings(),
     loadRuntimeStateMap(),
     loadFeedCacheMap(),
     getAuthorCacheSnapshot(),
     loadClickedVideos(),
-    loadVideoReviewedOverrides(),
     loadAuthorPreferences()
   ]);
+  const reviewedOverrides = await cleanOrphanReviewedOverrides(initialAuthorCacheMap);
 
   const isAllGroup = request.payload.groupId === ALL_GROUP_ID;
   const missingFavGroupIds: string[] = [];
@@ -1413,22 +1403,25 @@ async function handleGetLikedVideos(
 async function handleSetVideoReviewed(
   request: Extract<MessageRequest, { type: 'SET_VIDEO_REVIEWED' }>
 ): Promise<ResponseMap['SET_VIDEO_REVIEWED']> {
-  await setVideoReviewedOverride(request.payload.bvid, request.payload.reviewed);
+  const state = await setVideoReviewedOverride(request.payload.bvid, request.payload.reviewed, {
+    clickedAt: request.payload.clickedAt,
+    playbackPosition: request.payload.playbackPosition
+  });
   return {
     bvid: request.payload.bvid,
-    reviewed: request.payload.reviewed
+    state
   };
 }
 
 async function handleGetVideoReviewedOverrides(
   request: Extract<MessageRequest, { type: 'GET_VIDEO_REVIEWED_OVERRIDES' }>
 ): Promise<ResponseMap['GET_VIDEO_REVIEWED_OVERRIDES']> {
-  const all = await loadVideoReviewedOverrides();
-  const overrides: Record<string, boolean> = {};
+  const all = await cleanOrphanReviewedOverrides();
+  const overrides: ResponseMap['GET_VIDEO_REVIEWED_OVERRIDES']['overrides'] = {};
 
   for (const bvid of request.payload.bvids) {
     if (Object.prototype.hasOwnProperty.call(all, bvid)) {
-      overrides[bvid] = all[bvid] === true;
+      overrides[bvid] = all[bvid];
     }
   }
 
