@@ -207,7 +207,7 @@
                           :liked="isVideoLiked(item.video.bvid)"
                           :like-pending="isVideoLikePending(item.video.bvid)"
                           :reviewed="isVideoReviewed(item.video)"
-                          :dimmed="shouldDimMixedVideo(item.video)"
+                          :dimmed="shouldDimVideo(item.video)"
                           @click="onVideoClick"
                           @toggle-like="onToggleVideoLike(item.video, $event)"
                           @toggle-reviewed="onToggleVideoReviewed"
@@ -414,6 +414,7 @@
                         :liked="isVideoLiked(video.bvid)"
                         :like-pending="isVideoLikePending(video.bvid)"
                         :reviewed="isVideoReviewed(video)"
+                        :dimmed="shouldDimVideo(video)"
                         @click="onVideoClick"
                         @toggle-like="onToggleVideoLike(video, $event)"
                         @toggle-reviewed="onToggleVideoReviewed"
@@ -3367,7 +3368,7 @@ function getAuthorBoundaryTitle(author: AuthorFeed, slotIndex: number): string {
   return '左键将该分界设置为作者已阅时间';
 }
 
-const mixedAuthorReadMarkBoundaryMap = computed<Record<number, number>>(() => {
+const authorReadMarkBoundaryMap = computed<Record<number, number>>(() => {
   if (!feed.value) {
     return {};
   }
@@ -3385,17 +3386,15 @@ const mixedAuthorReadMarkBoundaryMap = computed<Record<number, number>>(() => {
 });
 
 /**
- * 时间流下，命中“作者级逻辑已阅”或“视频已看过”的卡片默认半透明。
+ * 三种视图统一复用“已阅降透明度”语义：
+ * 命中“作者级逻辑已阅”或“视频已看过”的卡片默认半透明，
  * hover 时由样式恢复为不透明，避免影响快速扫读。
  */
-function shouldDimMixedVideo(video: VideoItem): boolean {
-  if (mode.value !== 'mixed') {
-    return false;
-  }
+function shouldDimVideo(video: VideoItem): boolean {
   if (isVideoReviewed(video)) {
     return true;
   }
-  const boundaryTs = mixedAuthorReadMarkBoundaryMap.value[video.authorMid];
+  const boundaryTs = authorReadMarkBoundaryMap.value[video.authorMid];
   return typeof boundaryTs === 'number' && boundaryTs > 0 && video.pubdate <= boundaryTs;
 }
 
