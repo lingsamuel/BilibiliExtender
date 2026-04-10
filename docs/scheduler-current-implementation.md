@@ -11,12 +11,12 @@
 > - `auto-burst`：后台自动补缓存与自动补页；
 > - `author-video` / `group-fav` 常规更新仍保持独立。
 >
-> 其中 `manual-burst` 与 `auto-burst` 共享同一个 Burst 快慢冷却状态机；`manual` 不受该状态机约束。
+> 其中 `manual-burst` 与 `auto-burst` 共享同一个 Burst 滑动窗口预算；`manual` 不受该预算约束。
 > 本文下文若仍出现“单一 burst 队列”的旧表述，请以 `docs/scheduler-burst-channel-redesign-spec.md` 与当前代码实现为准。
 
 ## 1. 调度器当前由哪些运行单元组成
 
-当前实现不是一个完全拆分的“通用调度器内核 + 多通道模块”结构，而是集中在单文件中维护 5 个运行状态：
+当前实现不是一个完全拆分的“通用调度器内核 + 多通道模块”结构，而是集中在单文件中维护 8 个核心运行状态：
 
 1. `authorState`
    - 作者常规队列。
@@ -30,11 +30,23 @@
    - 点赞动作队列。
    - 负责单卡点赞/取消点赞、作者批量点赞。
 
-4. `burstState`
-   - 作者 Burst 专用队列。
-   - 负责无缓存作者首刷、时间流边界补页、作者分页请求等高优先作者任务。
+4. `manualState`
+   - 单作者手动通道。
+   - 负责作者手动翻页、作者级刷新按钮等“单任务、前台等待结果”的请求。
 
-5. `globalCooldownState`
+5. `manualBurstState`
+   - 手动批量 Burst 队列。
+   - 负责用户主动触发、但属于分组级批量作者刷新的任务。
+
+6. `autoBurstState`
+   - 自动批量 Burst 队列。
+   - 负责无缓存作者首刷、时间流边界补页、自动补页等后台批量作者任务。
+
+7. `batchBurstState`
+   - `manual-burst` / `auto-burst` 的共享 Burst 预算状态。
+   - 使用滑动窗口记录最近一段时间内已执行的 Burst 任务，并据此决定快速、慢速或窗口已满等待。
+
+8. `globalCooldownState`
    - 全局 WBI 冷却门。
    - 仅在作者投稿接口命中 `WbiExpiredError` 后生效，阻塞作者类请求与分组收藏夹刷新请求。
 
@@ -205,9 +217,10 @@ key = `like:${bvid}`
 
 规则如下：
 
-1. 只要 `burstState.queue.length > 0` 或 `burstState.running === true`，作者常规队列与分组收藏夹队列都不会启动新的执行循环。
+1. 只要 `manual-burst` 或 `auto-burst` 队列非空，或者共享 `batchBurstState` 正在运行，作者常规队列与分组收藏夹队列都不会启动新的执行循环。
 2. 若作者常规队列或分组收藏夹队列已经在执行一个任务，Burst 不会强杀当前任务。
 3. 当前任务执行完后，常规循环会在下一轮检查时退出，把控制权让给 Burst。
+4. 在 Burst 内部，`manual-burst` 总是优先于 `auto-burst` 取下一项任务。
 
 这意味着：
 
@@ -231,14 +244,15 @@ key = `like:${bvid}`
 
 - `runAuthorLoop` 在每次真正取任务前调用 `waitForGlobalCooldownIfNeeded()`
 - `runGroupFavLoop` 也会调用同一个等待逻辑
-- `runBurstLoop` 会同时受 `burstState.nextAllowedAt` 与 `globalCooldownState.nextAllowedAt` 约束
+- `runBatchBurstLoop` 会同时受共享 Burst 滑动窗口、批量 Burst 任务间隔与 `globalCooldownState.nextAllowedAt` 约束
 - `runLikeActionLoop` 不读全局冷却
 
 所以全局冷却的当前实际影响范围是：
 
 - `author-video`
 - `group-fav`
-- `burst`
+- `manual-burst`
+- `auto-burst`
 
 不包括：
 
@@ -491,23 +505,27 @@ force > stale > none
 6. 循环结束时
    - 再把剩余 `batchFailed` 统一追加到队尾
 
-### 7.2 Burst 队列
+### 7.2 Burst 通道
 
-Burst 的失败语义与常规队列不同：
+当前实现下，作者类 Burst 已拆成 `manual`、`manual-burst`、`auto-burst` 三条语义不同的通道：
 
-1. 成功
-   - 任务从队首移除
-   - `nextAllowedAt = now + 1000ms`
+1. `manual`
+   - 不参与共享 Burst 预算
+   - 失败后直接结束任务并通知前台
+   - 不自动重试
 
-2. 失败且 `failFast === false`
-   - 任务保留在队首
-   - `nextAllowedAt = now + 60s`
-   - 冷却后优先重试同一任务
+2. `manual-burst` / `auto-burst`
+   - 共享同一个 Burst 滑动窗口
+   - 每次成功或失败执行后，都会把执行时间写入窗口
+   - 下一次何时可执行，取决于：
+     - 快速/慢速任务间隔；
+     - 窗口是否已满；
+     - 全局 WBI 冷却是否仍在生效
 
-3. 失败且 `failFast === true`
-   - 任务从队首移除
-   - 以失败终态通知等待方
-   - `nextAllowedAt = now + 1000ms`
+3. `manual-burst` / `auto-burst` 的失败处理
+   - 失败任务保留在队首
+   - 固定等待 `60s` 后重试当前任务
+   - 若同时触发全局 WBI 冷却或窗口已满，则还要继续等这些门解除
 
 ### 7.3 点赞队列
 

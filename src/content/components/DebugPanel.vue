@@ -58,7 +58,7 @@
         <span>{{ autoBurstLastRunText }}</span>
       </div>
 
-      <h3 class="bbe-debug-subtitle">共享 Burst 状态机</h3>
+      <h3 class="bbe-debug-subtitle">共享 Burst 滑动窗口</h3>
       <div class="bbe-debug-grid">
         <span>状态</span>
         <span>{{ status?.burstBudget.running ? '运行中' : '空闲' }}</span>
@@ -66,6 +66,8 @@
         <span>{{ burstPhaseText }}</span>
         <span>阶段进度</span>
         <span>{{ burstPhaseProgressText }}</span>
+        <span>窗口占用</span>
+        <span>{{ burstWindowProgressText }}</span>
         <span>剩余预算</span>
         <span>{{ status?.burstBudget.remainingBudget ?? 0 }}</span>
         <span>活跃通道</span>
@@ -328,7 +330,13 @@ const burstPhaseProgressText = computed(() => {
   if (burst.phase === 'cooldown') {
     return '冷却中';
   }
-  return `${burst.phaseConsumed} / ${burst.phaseBudget}`;
+  return `${burst.phaseTaskCount} / ${burst.phaseBudget}`;
+});
+
+const burstWindowProgressText = computed(() => {
+  const burst = status.value?.burstBudget;
+  if (!burst) return '0 / 0';
+  return `${burst.windowTaskCount} / ${burst.windowCapacity}`;
 });
 
 const burstActiveChannelText = computed(() => {

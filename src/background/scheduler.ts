@@ -246,8 +246,7 @@ interface BatchBurstState {
   currentChannel: BatchBurstChannelName | null;
   lastRunAt?: number;
   nextAllowedAt: number;
-  phase: BatchBurstPhase;
-  phaseConsumed: number;
+  recentTaskTimestamps: number[];
   blocker: BatchBurstBlocker | null;
 }
 
@@ -283,8 +282,7 @@ function createBatchBurstState(): BatchBurstState {
     currentTask: null,
     currentChannel: null,
     nextAllowedAt: 0,
-    phase: 'fast',
-    phaseConsumed: 0,
+    recentTaskTimestamps: [],
     blocker: null
   };
 }
@@ -741,45 +739,95 @@ function getBatchBurstCooldownMs(settings: ExtensionSettings): number {
   return Math.max(1_000, Number(settings.burstCooldownMs) || BURST_COOLDOWN_MS_DEFAULT);
 }
 
-function resetBatchBurstPhaseIfReady(): void {
-  if (batchBurstState.phase !== 'cooldown') {
-    return;
-  }
-  if (batchBurstState.nextAllowedAt > Date.now()) {
-    return;
-  }
-  batchBurstState.phase = 'fast';
-  batchBurstState.phaseConsumed = 0;
-  batchBurstState.nextAllowedAt = 0;
+interface BatchBurstWindowSnapshot {
+  phase: BatchBurstPhase;
+  phaseTaskCount: number;
+  phaseBudget: number;
+  windowTaskCount: number;
+  windowCapacity: number;
+  remainingBudget: number;
+  nextWindowReadyAt: number;
 }
 
-function consumeBatchBurstBudget(settings: ExtensionSettings, now: number): void {
-  if (batchBurstState.phase === 'cooldown') {
-    return;
+function trimBatchBurstTaskTimestamps(timestamps: number[], now: number, cooldownMs: number): number[] {
+  const minTs = now - cooldownMs;
+  return timestamps.filter((item) => item > minTs);
+}
+
+function syncBatchBurstWindow(settings: ExtensionSettings, now: number): BatchBurstWindowSnapshot {
+  const cooldownMs = getBatchBurstCooldownMs(settings);
+  const fastBudget = getBatchBurstPhaseBudget(settings, 'fast');
+  const slowBudget = getBatchBurstPhaseBudget(settings, 'slow');
+  const windowCapacity = fastBudget + slowBudget;
+
+  batchBurstState.recentTaskTimestamps = trimBatchBurstTaskTimestamps(batchBurstState.recentTaskTimestamps, now, cooldownMs);
+
+  const windowTaskCount = batchBurstState.recentTaskTimestamps.length;
+  if (windowTaskCount < fastBudget) {
+    return {
+      phase: 'fast',
+      phaseTaskCount: windowTaskCount,
+      phaseBudget: fastBudget,
+      windowTaskCount,
+      windowCapacity,
+      remainingBudget: windowCapacity - windowTaskCount,
+      nextWindowReadyAt: 0
+    };
   }
 
-  batchBurstState.phaseConsumed += 1;
-
-  if (batchBurstState.phase === 'fast') {
-    const budget = getBatchBurstPhaseBudget(settings, 'fast');
-    if (batchBurstState.phaseConsumed >= budget) {
-      batchBurstState.phase = 'slow';
-      batchBurstState.phaseConsumed = 0;
-      batchBurstState.nextAllowedAt = now + getBatchBurstPhaseIntervalMs(settings, 'slow');
-      return;
-    }
-    batchBurstState.nextAllowedAt = now + getBatchBurstPhaseIntervalMs(settings, 'fast');
-    return;
+  if (windowTaskCount < windowCapacity) {
+    return {
+      phase: 'slow',
+      phaseTaskCount: windowTaskCount - fastBudget,
+      phaseBudget: slowBudget,
+      windowTaskCount,
+      windowCapacity,
+      remainingBudget: windowCapacity - windowTaskCount,
+      nextWindowReadyAt: 0
+    };
   }
 
-  const budget = getBatchBurstPhaseBudget(settings, 'slow');
-  if (batchBurstState.phaseConsumed >= budget) {
-    batchBurstState.phase = 'cooldown';
-    batchBurstState.phaseConsumed = 0;
-    batchBurstState.nextAllowedAt = now + getBatchBurstCooldownMs(settings);
-    return;
+  return {
+    phase: 'cooldown',
+    phaseTaskCount: windowTaskCount,
+    phaseBudget: windowCapacity,
+    windowTaskCount,
+    windowCapacity,
+    remainingBudget: 0,
+    nextWindowReadyAt: (batchBurstState.recentTaskTimestamps[0] ?? now) + cooldownMs
+  };
+}
+
+function recordBatchBurstExecution(settings: ExtensionSettings, executedAt: number): BatchBurstWindowSnapshot {
+  const cooldownMs = getBatchBurstCooldownMs(settings);
+  batchBurstState.recentTaskTimestamps = trimBatchBurstTaskTimestamps(batchBurstState.recentTaskTimestamps, executedAt, cooldownMs);
+  batchBurstState.recentTaskTimestamps.push(executedAt);
+  const snapshot = syncBatchBurstWindow(settings, executedAt);
+  if (snapshot.phase === 'cooldown') {
+    batchBurstState.nextAllowedAt = 0;
+    return snapshot;
   }
-  batchBurstState.nextAllowedAt = now + getBatchBurstPhaseIntervalMs(settings, 'slow');
+  batchBurstState.nextAllowedAt = executedAt + getBatchBurstPhaseIntervalMs(settings, snapshot.phase);
+  return snapshot;
+}
+
+/**
+ * Burst 的真实放行时间由三类门共同决定：
+ * - 批量 Burst 自身的任务间隔；
+ * - 全局 WBI 冷却；
+ * - 滑动窗口已满时等待最老记录滑出窗口。
+ */
+function getBatchBurstEffectiveNextAllowedAt(
+  settings: ExtensionSettings,
+  now: number,
+  snapshot?: BatchBurstWindowSnapshot
+): number {
+  const currentSnapshot = snapshot ?? syncBatchBurstWindow(settings, now);
+  return Math.max(
+    batchBurstState.nextAllowedAt,
+    globalCooldownState.nextAllowedAt,
+    currentSnapshot.nextWindowReadyAt
+  );
 }
 
 function getBlockingTaskLabel(task: Pick<AuthorTask, 'mid' | 'pn' | 'ps' | 'name'> | GroupFavTask): string {
@@ -1714,8 +1762,9 @@ function pickNextBatchBurstTask(): { channel: BatchBurstChannelName; state: Burs
 
 async function waitForBatchBurstTurn(settings: ExtensionSettings): Promise<void> {
   while (true) {
-    resetBatchBurstPhaseIfReady();
-    const waitMs = Math.max(batchBurstState.nextAllowedAt, globalCooldownState.nextAllowedAt) - Date.now();
+    const now = Date.now();
+    const snapshot = syncBatchBurstWindow(settings, now);
+    const waitMs = getBatchBurstEffectiveNextAllowedAt(settings, now, snapshot) - now;
     if (waitMs <= 0) {
       return;
     }
@@ -2053,7 +2102,8 @@ async function runBatchBurstLoop(): Promise<void> {
     try {
       await runAuthorTask(task, authorCacheMap);
       next.state.queue.shift();
-      consumeBatchBurstBudget(settings, Date.now());
+      const executedAt = Date.now();
+      recordBatchBurstExecution(settings, executedAt);
       clearBlockingState(next.channel);
       pushHistory({
         channel: 'author-video',
@@ -2062,7 +2112,7 @@ async function runBatchBurstLoop(): Promise<void> {
         name: task.name,
         mode: next.channel,
         success: true,
-        timestamp: Date.now(),
+        timestamp: executedAt,
         taskReason: task.reason,
         trigger: task.trigger
       });
@@ -2075,8 +2125,14 @@ async function runBatchBurstLoop(): Promise<void> {
       if (isWbiRatelimitError(error)) {
         triggerGlobalWbiCooldown();
       }
-      consumeBatchBurstBudget(settings, Date.now());
-      const retryAt = Math.max(batchBurstState.nextAllowedAt, Date.now() + retryDelayMs);
+      const executedAt = Date.now();
+      const postSnapshot = recordBatchBurstExecution(settings, executedAt);
+      const retryAt = Math.max(
+        batchBurstState.nextAllowedAt,
+        globalCooldownState.nextAllowedAt,
+        postSnapshot.nextWindowReadyAt,
+        executedAt + retryDelayMs
+      );
       batchBurstState.nextAllowedAt = retryAt;
       setBlockingState(next.channel, task, errorText, retryAt);
       pushHistory({
@@ -2086,7 +2142,7 @@ async function runBatchBurstLoop(): Promise<void> {
         name: task.name,
         mode: next.channel,
         success: false,
-        timestamp: Date.now(),
+        timestamp: executedAt,
         taskReason: task.reason,
         trigger: task.trigger,
         error: errorText
@@ -3085,9 +3141,10 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     reason: item.reason,
     groupNames: getGroupNamesForTask(item.mid, item.groupId)
   }));
-  resetBatchBurstPhaseIfReady();
-  const burstPhaseBudget = getBatchBurstPhaseBudget(settings, batchBurstState.phase);
-  const globalCooldownActive = globalCooldownState.nextAllowedAt > Date.now();
+  const now = Date.now();
+  const burstWindowSnapshot = syncBatchBurstWindow(settings, now);
+  const burstNextAllowedAt = getBatchBurstEffectiveNextAllowedAt(settings, now, burstWindowSnapshot);
+  const globalCooldownActive = globalCooldownState.nextAllowedAt > now;
   const globalCooldownReason = globalCooldownActive || globalCooldownState.lastTriggeredAt
     ? 'wbi-ratelimit'
     : null;
@@ -3164,11 +3221,13 @@ export async function getStatus(): Promise<SchedulerStatusResponse> {
     },
     burstBudget: {
       running: batchBurstState.running,
-      phase: batchBurstState.phase,
-      phaseConsumed: batchBurstState.phaseConsumed,
-      phaseBudget: burstPhaseBudget,
-      remainingBudget: Math.max(0, burstPhaseBudget - batchBurstState.phaseConsumed),
-      nextAllowedAt: batchBurstState.nextAllowedAt,
+      phase: burstWindowSnapshot.phase,
+      phaseTaskCount: burstWindowSnapshot.phaseTaskCount,
+      phaseBudget: burstWindowSnapshot.phaseBudget,
+      windowTaskCount: burstWindowSnapshot.windowTaskCount,
+      windowCapacity: burstWindowSnapshot.windowCapacity,
+      remainingBudget: burstWindowSnapshot.remainingBudget,
+      nextAllowedAt: burstNextAllowedAt,
       activeChannel: batchBurstState.currentChannel,
       blocker: batchBurstState.blocker,
       lastRunAt: batchBurstState.lastRunAt

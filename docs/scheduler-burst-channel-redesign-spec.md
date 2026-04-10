@@ -135,7 +135,7 @@ author-video / group-fav 常规更新
 2. `manual-burst` 与 `auto-burst` 之间共享同一个 Burst 状态机，但仍保留独立队列，以表达“用户手动批量高于后台自动补齐”的优先级。
 3. `manual` 不参与 Burst 状态机，因此它的失败不应污染 `manual-burst / auto-burst` 的预算阶段。
 
-## 6. Burst 共享状态机
+## 6. Burst 共享滑动窗口
 
 ### 6.1 设计原则
 
@@ -145,46 +145,52 @@ author-video / group-fav 常规更新
 
 1. 两个通道共享同一组配置项。
 2. 两个通道共享同一个运行时状态：
-   - 当前阶段；
-   - 当前阶段已消耗任务数；
+   - 共享任务时间窗口；
+   - 当前窗口内的任务数；
    - 下一次允许执行时间。
 
 也就是说：
 
-- 若 `manual-burst` 已消耗了 50 个“快速模式”任务预算；
-- 切换到 `auto-burst` 执行时，`auto-burst` 只能继续使用剩余 10 个“快速模式”名额；
-- 不能因为切换了通道就重置快速预算。
+- 若 `manual-burst` 已在当前窗口内消耗了 50 个任务；
+- 切换到 `auto-burst` 执行时，`auto-burst` 看到的仍是同一个窗口占用结果；
+- 不能因为切换了通道就重置窗口内已消耗的预算。
 
-### 6.2 三阶段
+### 6.2 滑动窗口规则
 
-Burst 共享状态机采用三阶段：
+Burst 共享状态机不再使用“计满后切换阶段、冷却后整段重置”的计数器模式，而改成按 `burstCooldownMs` 长度维护一个共享滑动窗口。
 
-1. 快速阶段
+定义：
+
+1. 快速层
    - 任务间隔：默认 `1s`
-   - 预算：默认 `60` 个任务
+   - 窗口预算：默认 `60` 个任务
 
-2. 慢速阶段
+2. 慢速层
    - 任务间隔：默认 `2s`
-   - 预算：默认 `30` 个任务
+   - 额外窗口预算：默认 `30` 个任务
 
-3. 冷却阶段
-   - 不执行 `manual-burst` / `auto-burst`
-   - 默认等待 `2min`
+3. 窗口长度
+   - 默认 `2min`
+   - 即 `burstCooldownMs`
 
-### 6.3 阶段推进规则
+### 6.3 执行判定
 
 规则如下：
 
-1. 初始进入快速阶段。
-2. 每成功或失败执行一个批量 Burst 任务，都记为一次任务消耗。
-3. 快速阶段预算耗尽后，进入慢速阶段。
-4. 慢速阶段预算耗尽后，进入冷却阶段。
-5. 冷却阶段结束后，重置预算并回到快速阶段。
+1. 每次准备执行 `manual-burst` / `auto-burst` 任务前，都先清理窗口外的旧记录：
+   - 若某条记录满足 `now - timestamp >= burstCooldownMs`，则移出窗口。
+2. 清理完成后：
+   - 若窗口内任务数 `< burstFastBudgetTasks`，本次任务按快速层执行；
+   - 若窗口内任务数 `< burstFastBudgetTasks + burstSlowBudgetTasks`，本次任务按慢速层执行；
+   - 否则不允许继续执行，必须等待最老记录滑出窗口后再尝试下一项。
+3. 每成功或失败执行一个批量 Burst 任务，都要把该次执行时间写入窗口。
+4. 两次批量 Burst 之间若空闲时间足够长，旧记录会自然滑出，因此预算会自动恢复。
 
 说明：
 
 1. 本方案中的“预算”明确按任务数计算，而不是按真实请求数计算。
 2. 本方案中的“间隔”明确按任务间隔计算，而不是按任务内部的单次 HTTP 请求间隔计算。
+3. 任务的快速/慢速归属，在“准备执行下一项任务前”判定，而不是在上一项结束后硬切状态。
 
 ## 7. 错误处理
 
@@ -229,7 +235,7 @@ interface BurstSettings {
   burstFastBudgetTasks: number;     // 默认 60
   burstSlowIntervalMs: number;      // 默认 2000
   burstSlowBudgetTasks: number;     // 默认 30
-  burstCooldownMs: number;          // 默认 120000
+  burstCooldownMs: number;          // 默认 120000，Burst 滑动窗口长度
   burstErrorRetryMs: number;        // 默认 60000
 }
 ```
@@ -250,8 +256,9 @@ interface BurstSettings {
 3. `auto-burst` 当前任务与队列长度
 4. Burst 共享状态机：
    - 当前阶段：`fast | slow | cooldown`
-   - 当前阶段已消耗任务数
-   - 当前阶段剩余预算
+   - 当前层已占用任务数
+   - 当前窗口总占用
+   - 当前窗口剩余预算
    - 下一次允许执行时间
 5. 批量模式当前阻塞任务：
    - 通道名
@@ -271,7 +278,7 @@ interface BurstSettings {
 
 1. 现有单一 `burst` 队列将被拆为 `manual`、`manual-burst`、`auto-burst` 三种逻辑通道。
 2. `REQUEST_AUTHOR_PAGE` 与作者级刷新按钮不再进入批量 Burst 预算体系。
-3. `manual-burst` 与 `auto-burst` 共享同一个 Burst 快慢冷却状态，而不是各自独立计数。
+3. `manual-burst` 与 `auto-burst` 共享同一个 Burst 滑动窗口，而不是各自独立计数。
 4. 常规更新不共享 Burst 预算状态，但仍继续在 Burst 类通道空闲后执行。
 5. 调试页需要新增对 Burst 阶段状态与阻塞错误的可视化。
 
@@ -285,4 +292,3 @@ interface BurstSettings {
 2. 现有请求批次与排序元数据规则仍然成立。
 3. `manual-burst` 与 `auto-burst` 即使分成两个队列，也必须共享同一个 Burst 运行时状态对象。
 4. `manual` 的失败通知语义不能退化成批量模式。
-

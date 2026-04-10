@@ -195,7 +195,7 @@
         <div class="bbe-setting-row">
           <div>
             Burst 冷却时长（毫秒）
-            <div class="bbe-setting-hint">慢速阶段预算耗尽后进入冷却，结束后回到快速阶段</div>
+            <div class="bbe-setting-hint">Burst 滑动窗口时长；窗口内前 N 个任务快速、再后 M 个任务慢速，窗口满后需等待最老记录滑出</div>
           </div>
           <input v-model.number="settings.burstCooldownMs" class="bbe-input" type="number" min="1000" max="1800000" />
         </div>

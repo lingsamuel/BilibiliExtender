@@ -369,8 +369,10 @@ export interface SchedulerStatusResponse {
   burstBudget: {
     running: boolean;
     phase: 'fast' | 'slow' | 'cooldown';
-    phaseConsumed: number;
+    phaseTaskCount: number;
     phaseBudget: number;
+    windowTaskCount: number;
+    windowCapacity: number;
     remainingBudget: number;
     nextAllowedAt: number;
     activeChannel: 'manual-burst' | 'auto-burst' | null;
