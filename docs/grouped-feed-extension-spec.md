@@ -79,6 +79,13 @@ Bilibili 现有关注/动态入口信息密集，无法按用户自定义主题�
   - `https://www.bilibili.com/*`
   - `https://space.bilibili.com/*`
 - 注入位置：站点顶部 Header 区域，新增“分组动态”入口（视觉风格贴近站点现有导航）。
+  - 入口插在站点原生「消息」条目**之前**（即「大会员」之后、「消息」之前）；识别不到「消息」条目时退回容器第 3 个位置。
+- 依赖的站点结构（2025 年 Header 前端重构后）：
+  - 条目容器是 `.right-entry > .right-entry__main`（`display:flex`），`.right-entry` 本身只是外壳；
+  - 条目为 `.right-entry__item > .right-entry__item-trigger`，图标类名 `.trigger-icon`，文案类名 `.trigger-text`；
+  - 重构前的 `.right-entry-item` / `.right-entry-text` / `.right-entry-icon` 已从站点 CSS 与 JS 中移除，插件不再兼容旧结构。
+- 就绪判定以条目容器内 `.right-entry__item` 数量下限（5 个）为准，避免在骨架/半渲染状态下注入。
+- 注入状态机、注入开关，以及注入不可用时的悬浮框兜底入口，见 `floating-entry-spec.md`。
 - 点击行为：打开右侧抽屉面板（内容脚本挂载 Vue 应用）。
 - 面板结构：
   - 左侧：分组列表（支持红点）
@@ -89,9 +96,9 @@ Bilibili 现有关注/动态入口信息密集，无法按用户自定义主题�
 - Header 入口支持两种状态：
   - 红点状态：`unreadCount > 0` 时显示。
   - 数字状态：显示全局 `unreadCount`，`>99` 时显示 `99+`。
-- 红点/数字元素复用站点样式类 `red-num--message`，避免自定义视觉与站点风格偏差。
-- `unreadCount = 0` 时数字文本为空（隐藏数字），不通过 `display` 切换元素显隐。
-- 红点/数字挂载的父节点必须显式设置 `position: relative`，保证绝对定位稳定，不受站点布局变更影响。
+- 红点/数字元素复用站点样式类 `red-num`（挂载在站点 `.trigger-icon-wrap` 内，该节点即绝对定位参照），避免自定义视觉与站点风格偏差。
+- 未读数字节点额外带 `data-bbe-nav-dot` 标记：站点类名只承担视觉，节点查找一律走该属性，避免站点再次改类名后未读数字失联。
+- `unreadCount = 0` 时直接移除数字节点（站点类名在空文本下仍会渲染成色块），不通过 `display` 切换元素显隐。
 
 #### 4.2.2 抽屉导航状态模型
 

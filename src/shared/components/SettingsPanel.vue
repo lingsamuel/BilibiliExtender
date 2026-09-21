@@ -124,6 +124,36 @@
       </div>
       <div class="bbe-setting-row">
         <div>
+          Header 入口注入
+          <div class="bbe-setting-hint">关闭后不再向站点顶部导航注入“分组动态”入口，仅保留悬浮框入口</div>
+        </div>
+        <label>
+          <input v-model="navEntryInjectionEnabled" type="checkbox" /> 启用
+        </label>
+      </div>
+      <div class="bbe-setting-row">
+        <div>
+          悬浮框常驻
+          <div class="bbe-setting-hint">
+            {{
+              settings.disableHeaderEntryInjection
+                ? '已因“Header 入口注入”关闭而强制开启'
+                : '开启后即使 Header 入口注入成功也显示悬浮框'
+            }}
+          </div>
+        </div>
+        <label>
+          <input
+            :checked="floatingEntryAlwaysVisible"
+            type="checkbox"
+            :disabled="settings.disableHeaderEntryInjection"
+            @change="onFloatingEntryAlwaysVisibleChange"
+          />
+          {{ settings.disableHeaderEntryInjection ? '强制开启' : '启用' }}
+        </label>
+      </div>
+      <div class="bbe-setting-row">
+        <div>
           开启同步存储
           <div class="bbe-setting-hint">超限会自动回退到本地存储</div>
         </div>
@@ -294,7 +324,7 @@ import { sendMessage, type ResponseMap } from '@/shared/messages';
 import { ext } from '@/shared/platform/webext';
 import type { ExtensionSettings, FavoriteFolder, FavoriteFolderSnapshot, GroupConfig } from '@/shared/types';
 import { formatRelativeMinutes } from '@/shared/utils/format';
-import { normalizeExtensionSettings } from '@/shared/utils/settings';
+import { normalizeExtensionSettings, resolveFloatingEntryAlwaysVisible } from '@/shared/utils/settings';
 
 const emit = defineEmits<{
   (e: 'group-created'): void;
@@ -330,8 +360,36 @@ const settings = ref<ExtensionSettings>({
   defaultReadMarkDays: 7,
   enableAllGroup: true,
   useStorageSync: true,
-  debugMode: false
+  debugMode: false,
+  disableHeaderEntryInjection: false,
+  floatingEntryAlwaysVisible: false
 });
+
+/**
+ * 「Header 入口注入」在设置里以正向开关呈现（勾选 = 注入），
+ * 而存储字段是反向的 `disableHeaderEntryInjection`，这里做一次语义翻转。
+ */
+const navEntryInjectionEnabled = computed({
+  get: () => settings.value.disableHeaderEntryInjection !== true,
+  set: (value: boolean) => {
+    settings.value.disableHeaderEntryInjection = !value;
+  }
+});
+
+/**
+ * 悬浮框复选框展示的是**有效值**：关闭注入时被强制视为开启。
+ * 强制只影响展示与运行时行为，不会改写用户保存的 `floatingEntryAlwaysVisible`，
+ * 因此重新打开注入后会回到用户原本的选择。
+ */
+const floatingEntryAlwaysVisible = computed(() => resolveFloatingEntryAlwaysVisible(settings.value));
+
+function onFloatingEntryAlwaysVisibleChange(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  settings.value.floatingEntryAlwaysVisible = target.checked;
+}
 
 const selectedMediaId = ref('');
 const message = ref('');

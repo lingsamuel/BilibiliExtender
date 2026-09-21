@@ -30,7 +30,8 @@ export const STORAGE_KEYS = {
   CLICKED_VIDEOS: 'bbe:clicked-videos',
   LIKED_VIDEOS: 'bbe:liked-videos',
   VIDEO_REVIEWED_OVERRIDES: 'bbe:video-reviewed-overrides',
-  SCHEDULER_HISTORY: 'bbe:scheduler:history'
+  SCHEDULER_HISTORY: 'bbe:scheduler:history',
+  FLOATING_ENTRY_POSITION: 'bbe:floating-entry-position'
 } as const;
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -52,8 +53,22 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   defaultReadMarkDays: 7,
   enableAllGroup: true,
   useStorageSync: true,
-  debugMode: false
+  debugMode: false,
+  disableHeaderEntryInjection: false,
+  floatingEntryAlwaysVisible: false
 };
+
+// ===== 悬浮框入口（Header 注入不可用时的兜底入口）=====
+// 折叠态为固定尺寸的图标胶囊，折叠尺寸参与位置钳制与吸附计算。
+export const FLOATING_ENTRY_COLLAPSED_SIZE_PX = 36;
+// 悬浮框与视口边缘的最小留白。
+export const FLOATING_ENTRY_EDGE_MARGIN_PX = 12;
+// 拖拽结束时，距边缘小于该阈值即吸附到边缘留白处。
+export const FLOATING_ENTRY_SNAP_THRESHOLD_PX = 48;
+// 按下后位移不超过该阈值视为点击（打开抽屉），否则视为拖拽。
+export const FLOATING_ENTRY_DRAG_THRESHOLD_PX = 4;
+// 首次出现时的垂直位置（占视口高度比例）。
+export const FLOATING_ENTRY_DEFAULT_TOP_RATIO = 0.4;
 
 export const MIXED_LOAD_INCREMENT = 20;
 
@@ -97,7 +112,8 @@ export const EXTENSION_EVENT = {
   OPEN_DRAWER: 'bbe:open-drawer',
   UNREAD_CHANGED: 'bbe:unread-changed',
   OPEN_AUTHOR_GROUP_DIALOG: 'bbe:open-author-group-dialog',
-  AUTHOR_GROUP_MEMBERSHIP_CHANGED: 'bbe:author-group-membership-changed'
+  AUTHOR_GROUP_MEMBERSHIP_CHANGED: 'bbe:author-group-membership-changed',
+  DRAWER_VISIBILITY_CHANGED: 'bbe:drawer-visibility-changed'
 } as const;
 
 export const VIRTUAL_GROUP_ID = {

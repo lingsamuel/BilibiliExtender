@@ -2100,6 +2100,19 @@ function emitUnreadChanged(): void {
   );
 }
 
+/**
+ * 对外广播抽屉可见性。
+ * 悬浮框入口据此在抽屉打开期间隐藏自己：抽屉遮罩覆盖全屏，
+ * 悬浮框若继续显示会变成“看得见却点不到”的元素。
+ */
+watch(visible, (next) => {
+  window.dispatchEvent(
+    new CustomEvent(EXTENSION_EVENT.DRAWER_VISIBILITY_CHANGED, {
+      detail: { visible: next }
+    })
+  );
+});
+
 async function loadSummary(): Promise<void> {
   const resp = await sendMessage({
     type: 'GET_GROUP_SUMMARY'

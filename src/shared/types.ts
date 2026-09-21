@@ -37,6 +37,10 @@ export interface ExtensionSettings {
   enableAllGroup: boolean;
   useStorageSync: boolean;
   debugMode: boolean;
+  // 关闭 Header 导航入口注入：只保留悬浮框入口（悬浮框常驻会被强制生效）。
+  disableHeaderEntryInjection: boolean;
+  // 悬浮框常驻：即使 Header 入口注入成功也显示悬浮框。
+  floatingEntryAlwaysVisible: boolean;
 }
 
 export interface GroupRuntimeState {

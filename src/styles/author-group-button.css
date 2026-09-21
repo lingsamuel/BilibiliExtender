@@ -36,3 +36,46 @@
 .bbe-author-follow-btn.bbe-injected-author-group-btn.loading {
   opacity: 0.65;
 }
+
+/* ===== 悬浮卡片按钮行适配 =====
+ * 站点新版的两类作者悬浮卡片都只剩 276px 内容宽度，却把原生按钮放大到 100×30、字号 14px：
+ *   - 评论区卡片（bili-user-profile 的 shadow DOM）在自身样式里写了
+ *     `#action button { min-width: 100px }`，其 ID 选择器权重高于本文件的类选择器，
+ *     会直接作用到插件注入的 <button>；
+ *   - 视频页 UP 主卡片写了 `.btn-box a { width: 100px }`。
+ * 于是插入第三个按钮后一行需要 100×3 + 8×2 = 316px，“发消息”会被顶出卡片
+ * （评论区卡片实测超出卡片右边界 20px）。
+ *
+ * 这里用 :has() 把适配严格限定在“插件按钮确实已注入”的按钮行上：
+ *   - 站点原生两按钮形态完全不参与匹配，不受影响；
+ *   - 三个按钮等分剩余宽度（276px 减去按钮间距后各约 84px），与原生按钮同高同字号，
+ *     观感回到重构前的三等分形态。
+ * 注意 flex-basis 归零后，站点写死的 width / min-width 不再参与主轴尺寸计算，
+ * 因此无需（也不应该）依赖选择器权重去覆盖它们。
+ */
+#action:has(> button.bbe-injected-author-group-btn) > button,
+.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > a,
+.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button {
+  flex: 1 1 0;
+  min-width: 0;
+  /* 插件按钮自带的 margin-left 会与原生按钮的 margin-right 叠加成 16px 的错位间距，
+     这里统一收敛为右外边距；站点对“发消息”单独写的 `#action button#chat { margin-left: 8px }`
+     是双 ID 权重，不做覆盖，正好保留“发消息”前间距略大的原生观感。 */
+  margin-left: 0;
+  margin-right: 8px;
+  /* 预留 4px 内边距，保证长文案（如“已分组(12)”）不触发换行 */
+  padding: 0 4px;
+}
+
+#action:has(> button.bbe-injected-author-group-btn) > button:last-child,
+.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > :last-child {
+  margin-right: 0;
+}
+
+/* 视频页卡片只给原生 <a> 定义了按钮规格，插件 <button> 需要补齐同样的尺寸 */
+.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button {
+  height: 30px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 4px;
+}

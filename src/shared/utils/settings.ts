@@ -81,6 +81,21 @@ export function normalizeExtensionSettings(source: ExtensionSettings): Extension
     defaultReadMarkDays: normalizeDefaultReadMarkDays(source.defaultReadMarkDays),
     enableAllGroup: source.enableAllGroup === true,
     useStorageSync: source.useStorageSync === true,
-    debugMode: source.debugMode === true
+    debugMode: source.debugMode === true,
+    disableHeaderEntryInjection: source.disableHeaderEntryInjection === true,
+    floatingEntryAlwaysVisible: source.floatingEntryAlwaysVisible === true
   };
+}
+
+/**
+ * 计算「悬浮框常驻」的有效值。
+ *
+ * 关闭 Header 入口注入后，悬浮框是唯一可用入口，因此必须常驻；
+ * 该推导只影响运行时行为与设置页展示，**不回写**用户保存的
+ * `floatingEntryAlwaysVisible`，这样重新打开注入后能回到用户原本的选择。
+ */
+export function resolveFloatingEntryAlwaysVisible(
+  settings: Pick<ExtensionSettings, 'disableHeaderEntryInjection' | 'floatingEntryAlwaysVisible'>
+): boolean {
+  return settings.disableHeaderEntryInjection === true || settings.floatingEntryAlwaysVisible === true;
 }

@@ -28,6 +28,112 @@ body.bbe-page-scroll-lock {
   overscroll-behavior: none;
 }
 
+/* ===== 悬浮框入口（Header 注入不可用时的兜底入口）=====
+ * 折叠态为固定 36px 的图标胶囊（边框 1 + 内边距 7 + 图标 20 + 内边距 7 + 边框 1），
+ * 未读以完整的数字气泡提示；hover 额外展开文案。
+ * 展开方向由锚定侧决定（右锚定向左展开），因此贴边展开不会越出视口。
+ * 显隐与位置由 content/floating-entry.ts 通过 is-visible / left / right / top 控制。
+ */
+.bbe-floating-entry {
+  position: absolute;
+  z-index: 8;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 7px;
+  border: 1px solid #dbe4f0;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--bbe-brand-color);
+  box-shadow: 0 6px 18px rgb(23 36 55 / 18%);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.bbe-floating-entry.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.bbe-floating-entry.is-visible:hover {
+  border-color: #b9d9ea;
+  box-shadow: 0 8px 22px rgb(23 36 55 / 24%);
+}
+
+.bbe-floating-entry.is-dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+.bbe-floating-entry-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.bbe-floating-entry-text {
+  max-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width 0.18s ease, margin-left 0.18s ease, opacity 0.18s ease;
+}
+
+.bbe-floating-entry.is-visible:hover .bbe-floating-entry-text {
+  max-width: 96px;
+  margin-left: 6px;
+  opacity: 1;
+}
+
+.bbe-floating-entry.is-dragging .bbe-floating-entry-text {
+  max-width: 0;
+  margin-left: 0;
+  opacity: 0;
+  transition: none;
+}
+
+/* 未读数字气泡：折叠态与展开态都完整显示数字，不随 hover 变化尺寸 */
+.bbe-floating-entry-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--bbe-theme-color, #fb7299);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.bbe-floating-entry-badge[hidden] {
+  display: none;
+}
+
 .bbe-mask {
   position: absolute;
   inset: 0;
