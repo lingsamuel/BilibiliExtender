@@ -48,23 +48,43 @@
  *
  * 这里用 :has() 把适配严格限定在“插件按钮确实已注入”的按钮行上：
  *   - 站点原生两按钮形态完全不参与匹配，不受影响；
- *   - 三个按钮等分剩余宽度（276px 减去按钮间距后各约 84px），与原生按钮同高同字号，
- *     观感回到重构前的三等分形态。
+ *   - 三个按钮同高同字号，并按下方字符量规则分配主轴宽度。
  * 注意 flex-basis 归零后，站点写死的 width / min-width 不再参与主轴尺寸计算，
  * 因此无需（也不应该）依赖选择器权重去覆盖它们。
  */
 #action:has(> button.bbe-injected-author-group-btn) > button,
 .usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > a,
 .usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button {
-  flex: 1 1 0;
+  /* 主轴宽度按字符量分配：原生按钮各占 3 份（“关注”含 + 号约 3 字符、“发消息”3 字符），
+     插件按钮默认也是 3 份；当其文案为“添加到分组”（5 字符）时由下方规则提升到 5 份。 */
+  flex: 3 1 0;
   min-width: 0;
   /* 插件按钮自带的 margin-left 会与原生按钮的 margin-right 叠加成 16px 的错位间距，
      这里统一收敛为右外边距；站点对“发消息”单独写的 `#action button#chat { margin-left: 8px }`
-     是双 ID 权重，不做覆盖，正好保留“发消息”前间距略大的原生观感。 */
+     是双 ID 权重，不做覆盖，正好保留“发消息”前的原生间距。 */
   margin-left: 0;
   margin-right: 8px;
   /* 预留 4px 内边距，保证长文案（如“已分组(12)”）不触发换行 */
   padding: 0 4px;
+  /* 站点给卡片按钮写了 `transition: all`，而本插件的类选择器权重低于站点规则，
+     于是 flex 重排后的宽度会被当成过渡属性做“渐变”，卡片出现后一段时间内才收敛到目标宽度。
+     这里把过渡属性收窄到颜色/阴影，宽度、flex 等几何属性不再过渡，卡片出现即定型。 */
+  transition-property: border-color, background-color, color, box-shadow, opacity;
+}
+
+/* “添加到分组”比原生按钮多两个汉字，独占 5 份主轴宽度（5:3 ≈ 1.67 倍）。 */
+#action:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn,
+.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn {
+  flex-grow: 5;
+  /* “发消息”自带 margin-left；“关注”的 margin-right 已足够承担其与分组按钮之间的间距，
+     这里再去掉分组按钮的 margin-right，避免该间隙被叠加成两倍。 */
+  margin-right: 0;
+}
+
+/* “已分组(N)”的字符量与原生按钮相当，回到三等分。 */
+#action:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn.followed,
+.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn.followed {
+  flex-grow: 3;
 }
 
 #action:has(> button.bbe-injected-author-group-btn) > button:last-child,
