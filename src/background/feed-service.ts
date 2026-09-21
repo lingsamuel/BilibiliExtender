@@ -937,6 +937,124 @@ function calcGroupUnreadCount(
 }
 
 /**
+ * 计算“全部”聚合分组下每个作者的未读基线。
+ *
+ * 该函数刻意与 calcGlobalUnreadCount 的基线选取保持一致，避免“全部”分组的侧栏红点
+ * 与作者行红点出现两套口径：
+ * - 只考虑启用、且未勾选“不计算未读”的真实分组；
+ * - 同一作者出现在多个分组时取最大基线（等价于“最近一次已阅”）；
+ * - 作者级已阅时间点由 resolveAuthorUnreadBaselineTs 内部绝对覆盖，因此在每个分组都会得到同一值，
+ *   取最大值不会削弱它的优先级。
+ *
+ * 返回的 Map 只包含至少属于一个有效真实分组的作者；未出现的作者视作未读为 0
+ * （即该作者只存在于被勾选“不计算未读”的分组中）。
+ */
+function buildAllGroupAuthorBaselineMap(
+  groups: GroupConfig[],
+  runtimeMap: RuntimeMap,
+  feedCacheMap: FeedCacheMap,
+  settings: ExtensionSettings,
+  authorPreferences: AuthorPreferenceMap
+): Map<number, number> {
+  const baselineMap = new Map<number, number>();
+
+  for (const group of groups) {
+    if (!group.enabled || group.excludeFromUnreadCount) {
+      continue;
+    }
+
+    const feedCache = feedCacheMap[group.groupId];
+    if (!feedCache) {
+      continue;
+    }
+
+    const runtime = runtimeMap[group.groupId];
+    const recentDays = normalizeRecentDays(runtime?.savedRecentDays ?? settings.defaultReadMarkDays);
+    const groupBaselineTs = resolveGroupRecentBaselineTs(runtime?.savedReadMarkTs, recentDays);
+
+    for (const mid of feedCache.authorMids) {
+      // 作者级“不计算未读”要整体排除该作者，而不是把基线压到 0：
+      // 压到 0 仍会把“很久以前但未点开”的视频算成未读。
+      if (authorPreferences[mid]?.ignoreUnreadCount) {
+        continue;
+      }
+
+      const baseline = resolveAuthorUnreadBaselineTs(mid, groupBaselineTs, authorPreferences);
+      const prev = baselineMap.get(mid);
+      if (prev === undefined || baseline > prev) {
+        baselineMap.set(mid, baseline);
+      }
+    }
+  }
+
+  return baselineMap;
+}
+
+/**
+ * 为“按作者视图”的每个作者计算未读数量，供作者导航行的红点使用。
+ *
+ * 口径与分组 unread 完全一致，只是按作者拆分：
+ * - 计数范围是作者的全量连续缓存，而不是当前页 / 当前展示筛选命中的视频；
+ *   否则作者分页翻页或切换“全部投稿”筛选时红点会抖动，与分组红点对不上；
+ * - 已阅判定复用 isVideoReviewed，保证与 VideoCard 对勾状态始终一致；
+ * - 分组勾选“不计算未读”时整组归零，作者勾选“不计算未读”时该作者归零。
+ *
+ * 返回的 Map 只包含未读数大于 0 的作者，调用方按“缺省即 0”处理。
+ */
+function calcAuthorUnreadCountMap(
+  group: GroupConfig,
+  authorMids: number[],
+  authorCacheMap: AuthorCacheMap,
+  groupBaselineTs: number,
+  clickedVideos: ClickedVideoMap,
+  reviewedOverrides: ReviewedOverrideMap,
+  authorPreferences: AuthorPreferenceMap,
+  realGroups: GroupConfig[],
+  runtimeMap: RuntimeMap,
+  feedCacheMap: FeedCacheMap,
+  settings: ExtensionSettings
+): Map<number, number> {
+  const isAllGroup = group.groupId === VIRTUAL_GROUP_ID.ALL;
+  if (!isAllGroup && group.excludeFromUnreadCount) {
+    return new Map();
+  }
+
+  // “全部”分组没有自己的分组级基线，必须回退到“按作者取各真实分组最大基线”的聚合口径。
+  const allGroupBaselineMap = isAllGroup
+    ? buildAllGroupAuthorBaselineMap(realGroups, runtimeMap, feedCacheMap, settings, authorPreferences)
+    : undefined;
+
+  const unreadMap = new Map<number, number>();
+
+  for (const mid of authorMids) {
+    if (authorPreferences[mid]?.ignoreUnreadCount) {
+      continue;
+    }
+
+    const baseline = isAllGroup
+      ? allGroupBaselineMap?.get(mid)
+      : resolveAuthorUnreadBaselineTs(mid, groupBaselineTs, authorPreferences);
+    // “全部”分组中只属于被排除分组的作者没有基线，按未读 0 处理。
+    if (baseline === undefined) {
+      continue;
+    }
+
+    let count = 0;
+    for (const video of getContinuousVideos(authorCacheMap[mid])) {
+      if (video.pubdate > baseline && !isVideoReviewed(video, clickedVideos, reviewedOverrides)) {
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      unreadMap.set(mid, count);
+    }
+  }
+
+  return unreadMap;
+}
+
+/**
  * 从全局作者缓存中聚合分组的混合视频列表。
  */
 function aggregateMixedVideos(authorMids: number[], authorCacheMap: AuthorCacheMap): VideoItem[] {
@@ -1365,6 +1483,9 @@ export function toFeedResult(
   activeReadMarkTs: number | undefined,
   showAllForMixed: boolean,
   allPostsFilter: AllPostsFilterKey,
+  // 真实分组列表（不含“全部”聚合分组）。
+  // 仅当 group 为“全部”分组时用于聚合每个作者的未读基线；真实分组下传空数组即可。
+  realGroups: GroupConfig[],
   byAuthorSortByLatest?: boolean,
   diagnostics?: MixedBuildDiagnostics
 ): GroupFeedResult {
@@ -1396,6 +1517,23 @@ export function toFeedResult(
   const effectiveAllPostsFilter: AllPostsFilterKey = mode === 'overview' ? normalizedAllPostsFilter : 'all';
 
   const byAuthorSortEnabled = byAuthorSortByLatest ?? runtime.savedByAuthorSortByLatest ?? DEFAULT_BY_AUTHOR_SORT_BY_LATEST;
+  // 作者行未读数与分组 unread 共用同一套基线解析与已阅判定，只是按作者拆分。
+  // 时间流不渲染作者导航列，跳过计算以避免把作者全量缓存的遍历成本翻倍。
+  const authorUnreadMap = mode === 'mixed'
+    ? new Map<number, number>()
+    : calcAuthorUnreadCountMap(
+      group,
+      authorMids,
+      authorCacheMap,
+      trackingGroupBaselineTs,
+      clickedVideos,
+      reviewedOverrides,
+      authorPreferences,
+      realGroups,
+      runtimeMap,
+      feedCacheMap,
+      settings
+    );
   let videosByAuthor: AuthorFeed[] = authorMids.map((mid) => {
     const cache = authorCacheMap[mid];
     const allVideos = getContinuousVideos(cache);
@@ -1438,7 +1576,8 @@ export function toFeedResult(
         videos.every((video) => !isWithinTrackingLowerBound(video.pubdate, authorTrackingLowerBound)),
       hasOverviewFallbackLatestVideo:
         mode === 'overview' && overviewSelection.usedLatestFallback,
-      latestPubdate: getLatestPubdate(allVideos) ?? undefined
+      latestPubdate: getLatestPubdate(allVideos) ?? undefined,
+      unreadCount: authorUnreadMap.get(mid) ?? 0
     };
   });
 

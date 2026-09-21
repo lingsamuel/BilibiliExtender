@@ -970,6 +970,16 @@ body.bbe-page-scroll-lock {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* 占满剩余宽度，把未读红点稳定推到行尾；
+     min-width 必须归零，否则 ellipsis 在 flex 子项上不生效。 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 作者导航行的未读红点：复用分组红点外观，只补行尾对齐与不被压缩的约束。 */
+.bbe-by-author-nav-dot {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .bbe-by-author-sections {

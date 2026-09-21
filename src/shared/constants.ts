@@ -55,7 +55,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   useStorageSync: true,
   debugMode: false,
   disableHeaderEntryInjection: false,
-  floatingEntryAlwaysVisible: false
+  floatingEntryAlwaysVisible: false,
+  showAuthorUnreadDot: true
 };
 
 // ===== 悬浮框入口（Header 注入不可用时的兜底入口）=====

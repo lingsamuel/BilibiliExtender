@@ -980,6 +980,9 @@ async function handleGetGroupFeed(
       activeReadMarkTs,
       showAllForMixed,
       allPostsFilter,
+      // “全部”聚合分组需要真实分组列表来解析每个作者的未读基线；
+      // 真实分组下该参数不参与作者未读计算。
+      groups,
       request.payload.byAuthorSortByLatest,
       diagnostics
     ),

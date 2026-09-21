@@ -124,6 +124,17 @@
       </div>
       <div class="bbe-setting-row">
         <div>
+          作者未读红点
+          <div class="bbe-setting-hint">
+            控制“近期投稿 / 全部投稿”作者列表每行右侧的未读红点；关闭仅是隐藏红点，悬停提示与未读计算仍然保留
+          </div>
+        </div>
+        <label>
+          <input v-model="settings.showAuthorUnreadDot" type="checkbox" /> 显示
+        </label>
+      </div>
+      <div class="bbe-setting-row">
+        <div>
           Header 入口注入
           <div class="bbe-setting-hint">关闭后不再向站点顶部导航注入“分组动态”入口，仅保留悬浮框入口</div>
         </div>
@@ -362,7 +373,8 @@ const settings = ref<ExtensionSettings>({
   useStorageSync: true,
   debugMode: false,
   disableHeaderEntryInjection: false,
-  floatingEntryAlwaysVisible: false
+  floatingEntryAlwaysVisible: false,
+  showAuthorUnreadDot: true
 });
 
 /**

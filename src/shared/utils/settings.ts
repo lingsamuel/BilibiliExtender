@@ -83,7 +83,10 @@ export function normalizeExtensionSettings(source: ExtensionSettings): Extension
     useStorageSync: source.useStorageSync === true,
     debugMode: source.debugMode === true,
     disableHeaderEntryInjection: source.disableHeaderEntryInjection === true,
-    floatingEntryAlwaysVisible: source.floatingEntryAlwaysVisible === true
+    floatingEntryAlwaysVisible: source.floatingEntryAlwaysVisible === true,
+    // 这里刻意用“!== false”而不是“=== true”：老用户存储里没有该字段，
+    // 若按 false 兜底会在升级后把作者未读红点默认关掉。
+    showAuthorUnreadDot: source.showAuthorUnreadDot !== false
   };
 }
 

@@ -41,6 +41,9 @@ export interface ExtensionSettings {
   disableHeaderEntryInjection: boolean;
   // 悬浮框常驻：即使 Header 入口注入成功也显示悬浮框。
   floatingEntryAlwaysVisible: boolean;
+  // 是否在“近期投稿 / 全部投稿”的作者导航列展示作者级未读红点。
+  // 仅控制红点本身；作者行的悬停未读提示与未读计算不受影响。
+  showAuthorUnreadDot: boolean;
 }
 
 export interface GroupRuntimeState {
@@ -144,6 +147,9 @@ export interface AuthorFeed {
   hasOverviewFallbackLatestVideo?: boolean;
   // 该作者投稿缓存里的最新发布时间（秒级时间戳）
   latestPubdate?: number;
+  // 该作者在当前分组下的未读数量，由后台与分组 unread 共用同一套口径计算。
+  // “不计算未读”（分组级 / 作者级）命中时为 0；仅出现在“全部”分组且被排除的作者同样为 0。
+  unreadCount?: number;
 }
 
 export interface GroupFeedResult {

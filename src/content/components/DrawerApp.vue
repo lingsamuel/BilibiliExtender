@@ -254,7 +254,9 @@
                   'is-drag-over-before': isByAuthorDragOver(item.authorMid, 'before'),
                   'is-drag-over-after': isByAuthorDragOver(item.authorMid, 'after')
                 }"
-                :title="`跳转到${item.authorName}`"
+                :title="item.unreadCount > 0
+                  ? `跳转到${item.authorName}（${item.unreadCount} 条未读）`
+                  : `跳转到${item.authorName}`"
                 :draggable="canReorderByAuthorNav"
                 @click.stop="onByAuthorNavItemClick(item.authorMid)"
                 @dragstart="onByAuthorNavDragStart(item.authorMid, $event)"
@@ -264,6 +266,12 @@
               >
                 <img v-if="item.authorFace" class="bbe-avatar-sm" :src="item.authorFace" alt="" />
                 <span class="bbe-by-author-nav-name">{{ item.authorName }}</span>
+                <span
+                  v-if="showAuthorUnreadDot && item.unreadCount > 0"
+                  class="bbe-dot bbe-by-author-nav-dot"
+                >
+                  {{ item.unreadCount > 99 ? '99+' : item.unreadCount }}
+                </span>
               </button>
             </aside>
 
@@ -714,6 +722,8 @@ interface ByAuthorNavItem {
   authorMid: number;
   authorName: string;
   authorFace?: string;
+  // 作者未读数，由后台与分组 unread 共用同一套口径计算；0 表示不渲染红点。
+  unreadCount: number;
 }
 
 interface VideoLikeState {
@@ -828,7 +838,19 @@ function normalizeAllPostsFilter(filter: AllPostsFilterKey | undefined): AllPost
 
 const latestGroupReadMarkTs = computed(() => readMarkTimestamps.value[0] ?? 0);
 const hasLatestGroupReadMark = computed(() => latestGroupReadMarkTs.value > 0);
-const currentSettings = ref<{ defaultReadMarkDays: number; refreshIntervalMinutes: number } | null>(null);
+// 抽屉只关心这几个会影响其展示与请求参数的设置项；
+// showAuthorUnreadDot 仅控制作者导航行的未读红点是否渲染，不影响未读计算。
+const currentSettings = ref<{
+  defaultReadMarkDays: number;
+  refreshIntervalMinutes: number;
+  showAuthorUnreadDot: boolean;
+} | null>(null);
+
+/**
+ * 作者导航行未读红点的展示开关。
+ * 缺省（设置尚未加载）时按开启处理，避免打开抽屉瞬间红点闪烁。
+ */
+const showAuthorUnreadDot = computed(() => currentSettings.value?.showAuthorUnreadDot !== false);
 
 function normalizeRecentDays(days: number | undefined): number {
   return normalizeDefaultReadMarkDays(days);
@@ -1423,7 +1445,9 @@ const byAuthorNavItems = computed<ByAuthorNavItem[]>(() => {
   return byAuthorFeeds.value.map((author) => ({
     authorMid: author.authorMid,
     authorName: author.authorName,
-    authorFace: author.authorFace
+    authorFace: author.authorFace,
+    // 未读数由后台下发；历史快照可能没有该字段，按 0 兜底。
+    unreadCount: Math.max(0, Math.floor(Number(author.unreadCount) || 0))
   }));
 });
 
@@ -2126,7 +2150,8 @@ async function loadSummary(): Promise<void> {
   globalUnreadCount.value = resp.data.unreadCount;
   currentSettings.value = {
     defaultReadMarkDays: normalizeRecentDays(resp.data.settings.defaultReadMarkDays),
-    refreshIntervalMinutes: Math.max(1, Number(resp.data.settings.refreshIntervalMinutes) || 30)
+    refreshIntervalMinutes: Math.max(1, Number(resp.data.settings.refreshIntervalMinutes) || 30),
+    showAuthorUnreadDot: resp.data.settings.showAuthorUnreadDot !== false
   };
   debugMode.value = resp.data.settings.debugMode ?? false;
   lastGroupIdFromSummary.value = resp.data.lastGroupId ?? '';
