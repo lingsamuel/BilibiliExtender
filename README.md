@@ -8,7 +8,7 @@
 - 支持默认分支 push 后自动打包并发布 GitHub Release
 
 ## 当前功能
-- 站点注入入口：`www.bilibili.com`、`space.bilibili.com`、`search.bilibili.com`
+- 站点注入入口：统一匹配 `https://*.bilibili.com/*`（含主域与消息中心等所有子域名）；Header 不可用时由悬浮框提供入口。
 - 作者分组管理注入：
   - 视频投稿页作者区域支持“添加到分组 / 已分组”
   - 用户空间作者区域支持“添加到分组 / 已分组”

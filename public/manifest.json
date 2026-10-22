@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "惊蛰：哔哩哔哩关注功能扩展",
-  "version": "0.2.191",
+  "version": "0.2.192",
   "description": "按收藏夹分组查看作者投稿动态",
   "icons": {
     "128": "icons/icon.png"
@@ -14,11 +14,7 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://www.bilibili.com/*",
-        "https://space.bilibili.com/*",
-        "https://search.bilibili.com/*"
-      ],
+      "matches": ["https://*.bilibili.com/*"],
       "js": ["content.js"],
       "css": ["assets/style.css"],
       "run_at": "document_idle"
@@ -28,11 +24,7 @@
   "web_accessible_resources": [
     {
       "resources": ["assets/*"],
-      "matches": [
-        "https://www.bilibili.com/*",
-        "https://space.bilibili.com/*",
-        "https://search.bilibili.com/*"
-      ]
+      "matches": ["https://*.bilibili.com/*"]
     }
   ]
 }
