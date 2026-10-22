@@ -49,12 +49,14 @@
  * 这里用 :has() 把适配严格限定在“插件按钮确实已注入”的按钮行上：
  *   - 站点原生两按钮形态完全不参与匹配，不受影响；
  *   - 三个按钮同高同字号，并按下方字符量规则分配主轴宽度。
+ * 视频页还需包含真实卡片根节点 .user-card-m-exp，确保选择器权重高于站点的
+ * `.user-card-m-exp .user-info-wrapper .info .btn-box a`，使间距和过渡规则也能生效。
  * 注意 flex-basis 归零后，站点写死的 width / min-width 不再参与主轴尺寸计算，
  * 因此无需（也不应该）依赖选择器权重去覆盖它们。
  */
 #action:has(> button.bbe-injected-author-group-btn) > button,
-.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > a,
-.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button {
+.usercard-wrap .user-card-m-exp .btn-box:has(> button.bbe-injected-author-group-btn) > a,
+.usercard-wrap .user-card-m-exp .btn-box:has(> button.bbe-injected-author-group-btn) > button {
   /* 主轴宽度按字符量分配：原生按钮各占 3 份（“关注”含 + 号约 3 字符、“发消息”3 字符），
      插件按钮默认也是 3 份；当其文案为“添加到分组”（5 字符）时由下方规则提升到 5 份。 */
   flex: 3 1 0;
@@ -74,26 +76,29 @@
 
 /* “添加到分组”比原生按钮多两个汉字，独占 5 份主轴宽度（5:3 ≈ 1.67 倍）。 */
 #action:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn,
-.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn {
+.usercard-wrap .user-card-m-exp .btn-box:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn {
   flex-grow: 5;
-  /* “发消息”自带 margin-left；“关注”的 margin-right 已足够承担其与分组按钮之间的间距，
-     这里再去掉分组按钮的 margin-right，避免该间隙被叠加成两倍。 */
+}
+
+/* 只有评论区的“发消息”自带 margin-left，需去掉分组按钮的右外边距以免叠加；
+   视频页没有该左外边距，继续使用按钮行统一的 8px 右外边距。 */
+#action:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn {
   margin-right: 0;
 }
 
 /* “已分组(N)”的字符量与原生按钮相当，回到三等分。 */
 #action:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn.followed,
-.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn.followed {
+.usercard-wrap .user-card-m-exp .btn-box:has(> button.bbe-injected-author-group-btn) > button.bbe-injected-author-group-btn.followed {
   flex-grow: 3;
 }
 
 #action:has(> button.bbe-injected-author-group-btn) > button:last-child,
-.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > :last-child {
+.usercard-wrap .user-card-m-exp .btn-box:has(> button.bbe-injected-author-group-btn) > :last-child {
   margin-right: 0;
 }
 
 /* 视频页卡片只给原生 <a> 定义了按钮规格，插件 <button> 需要补齐同样的尺寸 */
-.usercard-wrap .btn-box:has(> button.bbe-injected-author-group-btn) > button {
+.usercard-wrap .user-card-m-exp .btn-box:has(> button.bbe-injected-author-group-btn) > button {
   height: 30px;
   font-size: 14px;
   line-height: 1;
