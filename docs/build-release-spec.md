@@ -127,3 +127,45 @@ GitHub Actions 工作流执行步骤如下：
 3. 同步更新 README 的构建与发布说明。
 4. bump patch 版本号。
 5. 执行 `npm run build` 验证本地产物。
+
+## 7. 独立审核源码包
+
+### 7.1 使用与边界
+
+- 新增独立命令 `npm run package:source`，参考 NesoiTabManager 的 `scripts/package-source.mjs`。
+- 输出 `dist/bilibili-extender-source-v<version>.zip`，版本读取自 `package.json`。
+- 该命令只打包当前工作区源码，不要求预先构建或存在 Git 元数据，不自动安装依赖。
+- 不接入 `npm run build`，不改动 GitHub Release 工作流或安装包历史版本清理规则。
+- 同版本重复执行时重新生成压缩包，不能残留上次打包的旧条目。
+
+### 7.2 收录内容
+
+参考 Nesoi 的显式清单，源码包根层直接放置以下内容，不增加项目顶层目录：
+
+- 文件：`README.md`、`package.json`、`package-lock.json`、`vite.config.ts`、`tsconfig.json`、`index.html`、`options.html`。
+- 目录：`src/`、`public/`、`scripts/`，包含可读源码、字体、图标和全部构建脚本。
+- 构建说明：保留 `docs/source_build.md`，同时将其内容复制为根层 `README_BUILD.md`，与 Nesoi 的审核说明入口一致。
+- 不收录 `node_modules/`、`dist/`、`.git/`、本地压缩包、临时目录、编辑器配置、截图及 `docs/bilibili-API-collect` 参考文档子模块。
+
+### 7.3 实现约束
+
+- 采用 Nesoi 的“暂存目录 → 显式复制 → zip → 清理”流程，使用项目已有的系统 `zip` 工具。
+- 将现有安装包脚本的 zip 调用抽成共享辅助函数，源码包与安装包复用同一实现。
+- 暂存目录使用唯一名称，成功或失败均清理；版本缺失、必要源文件缺失或 zip 失败时返回非零退出码。
+- `docs/source_build.md` 是审核构建说明的唯一正文来源，不在脚本里维护另一份说明。
+
+### 7.4 审核构建说明
+
+- 说明操作系统、Node.js/npm 版本和依赖安装方式，使用 `npm ci` 按锁文件安装依赖。
+- 审核员执行 `npm run build:firefox` 即可在 `dist/firefox/` 重建扩展；该步骤不需要 Git、API 文档子模块或系统 zip。
+- 可选执行 `npm run build:chromium` 重建 Chromium；`npm run build` 额外依赖系统 zip，用于生成两套安装压缩包。
+- 明确源码目录与生成文件的对应关系、Firefox manifest 派生过程，以及第三方依赖来源。
+
+### 7.5 验收
+
+1. 从项目目录及其他工作目录调用脚本，均生成上述路径的源码包。
+2. 检查压缩包条目及 `README_BUILD.md`，确认构建必需文件齐全、无多余顶层目录与排除内容。
+3. 在不含 `.git/`、`node_modules/`、已有 `dist/` 和参考文档子模块的目录解压，执行 `npm ci` 与 `npm run build:firefox`。
+4. 对重建的 Firefox 目录逐文件比对，文件集合与内容均须和同版本正常构建一致。
+5. 同版本重复打包不会残留旧条目，故意制造必要文件缺失或 zip 失败时，命令失败并清理暂存目录。
+6. 按项目规范同步更新补丁版本，运行 `npm run build`，保证现有安装包打包流程仍可用。
