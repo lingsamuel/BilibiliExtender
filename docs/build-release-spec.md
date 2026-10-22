@@ -18,8 +18,8 @@
 
 在不改变扩展业务逻辑的前提下，实现以下能力：
 
-1. `npm run build` 完成后，同时产出 Chromium 与 Firefox 的 zip 包。
-2. zip 包解压后直接得到扩展文件本身，不包含额外的顶层目录。
+1. `npm run build` 完成后，同时产出 Chromium、Firefox 安装 zip 和审核源码 zip。
+2. 安装 zip 解压后直接得到扩展文件本身，不包含额外的顶层目录。
 3. GitHub Actions 仅在默认分支 push 时触发自动发布。
 4. 每次发布基于当前项目版本号创建新的 GitHub Release，并上传两个浏览器产物 zip。
 
@@ -39,8 +39,9 @@
 2. `dist/firefox/`：可直接加载的 Firefox 目录产物。
 3. `dist/bilibili-extender-chromium-v<version>.zip`
 4. `dist/bilibili-extender-firefox-v<version>.zip`
+5. `dist/bilibili-extender-source-v<version>.zip`：审核源码包，布局见第 7 节。
 
-其中 zip 内部文件布局必须满足：
+其中两个安装 zip 的内部文件布局必须满足：
 
 1. 根层直接包含 `manifest.json`、`background.js`、`content.js`、`options.html`、`assets/`、`icons/` 等文件或目录。
 2. 不出现 `chromium/`、`firefox/` 作为 zip 内的额外顶层目录。
@@ -78,7 +79,8 @@
 1. 读取当前版本号。
 2. 分别进入 `dist/chromium` 与 `dist/firefox` 目录执行 zip 打包。
 3. 输出 zip 到 `dist/` 根目录，避免把中间目录再嵌套进压缩包。
-4. 按 zip 文件名中的版本号分组，仅保留最近 3 个版本，超出的旧版本整组删除。
+4. 按安装 zip 文件名中的版本号分组，仅保留最近 3 个版本，超出的旧版本整组删除。
+5. 调用独立命令 `npm run package:source` 生成审核源码包；失败时统一构建返回非零退出码。
 
 ### 3.2 自动发布流程
 
@@ -113,8 +115,8 @@ GitHub Actions 工作流执行步骤如下：
 
 ## 5. 验收标准
 
-1. 本地执行 `npm run build` 后，`dist/` 下可见两个 zip 文件。
-2. 任一 zip 解压后，根层直接包含扩展文件，不包含额外顶层子目录。
+1. 本地执行 `npm run build` 后，`dist/` 下可见两个安装 zip 与一个审核源码 zip。
+2. 任一安装 zip 解压后，根层直接包含扩展文件，不包含额外顶层子目录。
 3. 本地存在超过 3 个历史版本时，下一次构建会自动删除更早版本的整组 zip。
 4. 默认分支 push 时，GitHub Actions 能自动创建 `v<version>` 对应 Release。
 5. Release 页面可下载 Chromium 与 Firefox 两个 zip 产物。
@@ -135,7 +137,8 @@ GitHub Actions 工作流执行步骤如下：
 - 新增独立命令 `npm run package:source`，参考 NesoiTabManager 的 `scripts/package-source.mjs`。
 - 输出 `dist/bilibili-extender-source-v<version>.zip`，版本读取自 `package.json`。
 - 该命令只打包当前工作区源码，不要求预先构建或存在 Git 元数据，不自动安装依赖。
-- 不接入 `npm run build`，不改动 GitHub Release 工作流或安装包历史版本清理规则。
+- `npm run build` 在两套安装包生成后调用该独立命令，统一产出安装包与审核源码包；源码包也可以单独生成。
+- GitHub Release 附件列表与安装包历史版本清理规则沿用现有配置。
 - 同版本重复执行时重新生成压缩包，不能残留上次打包的旧条目。
 
 ### 7.2 收录内容
@@ -158,7 +161,7 @@ GitHub Actions 工作流执行步骤如下：
 
 - 说明操作系统、Node.js/npm 版本和依赖安装方式，使用 `npm ci` 按锁文件安装依赖。
 - 审核员执行 `npm run build:firefox` 即可在 `dist/firefox/` 重建扩展；该步骤不需要 Git、API 文档子模块或系统 zip。
-- 可选执行 `npm run build:chromium` 重建 Chromium；`npm run build` 额外依赖系统 zip，用于生成两套安装压缩包。
+- 可选执行 `npm run build:chromium` 重建 Chromium；`npm run build` 额外依赖系统 zip，用于生成两套安装压缩包与审核源码包。
 - 明确源码目录与生成文件的对应关系、Firefox manifest 派生过程，以及第三方依赖来源。
 
 ### 7.5 验收
@@ -168,4 +171,4 @@ GitHub Actions 工作流执行步骤如下：
 3. 在不含 `.git/`、`node_modules/`、已有 `dist/` 和参考文档子模块的目录解压，执行 `npm ci` 与 `npm run build:firefox`。
 4. 对重建的 Firefox 目录逐文件比对，文件集合与内容均须和同版本正常构建一致。
 5. 同版本重复打包不会残留旧条目，故意制造必要文件缺失或 zip 失败时，命令失败并清理暂存目录。
-6. 按项目规范同步更新补丁版本，运行 `npm run build`，保证现有安装包打包流程仍可用。
+6. 运行 `npm run build`，确认两个安装包与审核源码包均生成成功，且独立 `package:source` 命令继续可用。

@@ -35,7 +35,7 @@ Firefox 清单由 `scripts/write-manifest.mjs` 从 `public/manifest.json` 派生
 npm run build:chromium
 ```
 
-生成目录为 `dist/chromium/`。如需重建两套目录及安装压缩包，安装系统 zip 后执行 `npm run build`。
+生成目录为 `dist/chromium/`。如需重建两套目录、安装压缩包与审核源码包，安装系统 zip 后执行 `npm run build`。
 
 ## 源码与产物对应关系
 
@@ -63,5 +63,6 @@ npm run build:chromium
 npm run package:source
 ```
 
-生成 `dist/bilibili-extender-source-v<version>.zip`。该独立命令不自动执行构建，也不修改 Release 流程。
+生成 `dist/bilibili-extender-source-v<version>.zip`。该命令可单独执行，无需预先构建。
+统一的 `npm run build` 也会在安装包生成后调用此命令，一次生成两套安装包及审核源码包。
 包根层的 `README_BUILD.md` 由本文件复制生成；上传到对应扩展版本的 AMO “Source code” 栏。
