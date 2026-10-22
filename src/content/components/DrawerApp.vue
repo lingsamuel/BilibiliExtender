@@ -561,11 +561,8 @@ import {
   getNextDayStartSecondsFromDayKey
 } from '@/content/utils/timeline';
 import SettingsPanel from '@/shared/components/SettingsPanel.vue';
+import { useDrawerWidth } from '@/content/drawer-width';
 
-const DRAWER_WIDTH_KEY = 'bbe-drawer-width';
-const MIN_DRAWER_WIDTH = 500;
-const MAX_DRAWER_WIDTH_RATIO = 0.95;
-const DEFAULT_DRAWER_WIDTH = 900;
 const PAGE_SCROLL_LOCK_CLASS = 'bbe-page-scroll-lock';
 const MIXED_TIMELINE_WINDOW_RADIUS = 2;
 const MIXED_TIMELINE_EDGE_PADDING = 12;
@@ -591,54 +588,7 @@ function isVirtualEntryId(entryId: string): boolean {
   return entryId === ENTRY_ID.SETTINGS || entryId === ENTRY_ID.DEBUG;
 }
 
-const drawerWidth = ref(DEFAULT_DRAWER_WIDTH);
-const drawerStyle = computed(() => ({
-  width: `min(${drawerWidth.value}px, 88vw)`
-}));
-
-function loadDrawerWidth(): void {
-  try {
-    const saved = localStorage.getItem(DRAWER_WIDTH_KEY);
-    if (saved) {
-      const parsed = Number(saved);
-      if (parsed >= MIN_DRAWER_WIDTH) {
-        drawerWidth.value = parsed;
-      }
-    }
-  } catch {
-    // localStorage 不可用时静默忽略
-  }
-}
-
-function saveDrawerWidth(): void {
-  try {
-    localStorage.setItem(DRAWER_WIDTH_KEY, String(Math.round(drawerWidth.value)));
-  } catch {
-    // 静默忽略
-  }
-}
-
-function onResizeStart(e: MouseEvent): void {
-  e.preventDefault();
-  const startX = e.clientX;
-  const startWidth = drawerWidth.value;
-  const maxWidth = window.innerWidth * MAX_DRAWER_WIDTH_RATIO;
-
-  function onMouseMove(ev: MouseEvent): void {
-    // 抽屉在右侧，鼠标左移 = 宽度增大
-    const delta = startX - ev.clientX;
-    drawerWidth.value = Math.max(MIN_DRAWER_WIDTH, Math.min(maxWidth, startWidth + delta));
-  }
-
-  function onMouseUp(): void {
-    document.removeEventListener('mousemove', onMouseMove);
-    document.removeEventListener('mouseup', onMouseUp);
-    saveDrawerWidth();
-  }
-
-  document.addEventListener('mousemove', onMouseMove);
-  document.addEventListener('mouseup', onMouseUp);
-}
+const { drawerStyle, onResizeStart } = useDrawerWidth();
 
 const visible = ref(false);
 const loading = ref(false);
@@ -4196,7 +4146,6 @@ watch(
 );
 
 onMounted(() => {
-  loadDrawerWidth();
   void loadGroupRefreshWarningPreference();
   window.addEventListener(EXTENSION_EVENT.TOGGLE_DRAWER, onToggleDrawer);
   window.addEventListener(EXTENSION_EVENT.OPEN_DRAWER, onOpenDrawer);

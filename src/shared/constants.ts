@@ -31,7 +31,8 @@ export const STORAGE_KEYS = {
   LIKED_VIDEOS: 'bbe:liked-videos',
   VIDEO_REVIEWED_OVERRIDES: 'bbe:video-reviewed-overrides',
   SCHEDULER_HISTORY: 'bbe:scheduler:history',
-  FLOATING_ENTRY_POSITION: 'bbe:floating-entry-position'
+  FLOATING_ENTRY_POSITION: 'bbe:floating-entry-position',
+  DRAWER_WIDTH: 'bbe:drawer-width'
 } as const;
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
