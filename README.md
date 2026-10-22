@@ -46,6 +46,17 @@ zip 包说明：
 - 解压后不会出现额外的 `chromium/` 或 `firefox/` 顶层目录。
 - 本地 `dist/` 最多只保留最近 3 个版本的 zip，每个版本会同时保留 Chromium 与 Firefox 两个包。
 
+审核源码包使用独立命令（参考 Nesoi 标签管理器的源码打包方式）：
+
+```bash
+npm run package:source
+```
+
+生成 `dist/bilibili-extender-source-v<version>.zip`，包根层直接是可读源码与 `README_BUILD.md`。
+只收录构建必需文件，不包含依赖目录、构建产物、本地文件或参考 API 文档子模块；
+审核员解压后执行 `npm ci`、`npm run build:firefox` 即可重建。构建说明正文见 `docs/source_build.md`。
+该命令不接入 `build` 或自动 Release；上述最近 3 个版本的清理规则仅针对安装包。
+
 Chrome/Edge 加载步骤：
 1. 打开 Chrome/Edge 扩展管理页
 2. 开启“开发者模式”

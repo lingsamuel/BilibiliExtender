@@ -1,29 +1,11 @@
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { runZip } from './archive-utils.mjs';
 
 const BUILD_TARGETS = ['chromium', 'firefox'];
 const ARCHIVE_VERSION_RETENTION_LIMIT = 3;
 const ARCHIVE_NAME_PATTERN = /^bilibili-extender-(chromium|firefox)-v(.+)\.zip$/;
-
-function runZip(args, cwd) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn('zip', args, {
-      cwd,
-      stdio: 'inherit'
-    });
-
-    child.once('error', rejectPromise);
-    child.once('exit', (code) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      rejectPromise(new Error(`zip 执行失败，退出码: ${code ?? '(null)'}`));
-    });
-  });
-}
 
 async function packageTarget(projectRoot, version, target) {
   const targetDir = resolve(projectRoot, 'dist', target);
